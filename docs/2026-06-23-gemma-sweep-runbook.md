@@ -50,6 +50,11 @@ The candidate matrix is:
 The batch policies are `small` and `match_context`. The run does not include the
 older `wide` policy or a `gpu_memory_utilization` sweep.
 
+The runner executes candidates in increasing estimated risk order. This means a
+high context such as 98k can appear before every lower-context concurrency pair
+has finished. Use the progress reporter and verifier for coverage, not visual
+ordering in the event log.
+
 ## Memory Telemetry
 
 Treat these memory signals as separate measurements:
@@ -79,6 +84,10 @@ High-risk candidates may start and record idle capacity, but request load is
 skipped unless the capacity and memory guards allow it. Startup-only rows still
 count as recorded parameter samples if they include telemetry and a clear
 reason.
+
+Treat `startup_only` as a boundary measurement. It should not be rerun with
+weaker guards just to force a load row unless the user explicitly approves a
+riskier experiment.
 
 ## Monitor Commands
 
@@ -140,6 +149,11 @@ go run ./cmd/localperf-sweep-check \
 That command should fail while the sweep is still below 100 rows. It should pass
 before the final report is treated as complete.
 
+Passing the command proves the minimum acceptable sweep coverage. It does not by
+itself mean the run should be stopped; if the 140-candidate runner is still
+healthy, let it continue and generate the final report from the most complete
+safe dataset.
+
 ## Completion Checklist
 
 Do not call the sweep complete until all of these are proven from current files
@@ -153,6 +167,8 @@ and command output:
   monitor data.
 - Startup-only or skipped-load rows include an explicit reason.
 - No machine OOM occurred.
+- If fewer than 140 planned candidates are recorded, the report explains why the
+  run stopped early.
 - Sanitized CSV, SVG, HTML, Markdown, and model-fit outputs are generated.
 - The final report states which memory metric is appropriate for each claim.
 - Local checks pass or unrelated pre-existing failures are documented.

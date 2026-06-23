@@ -81,6 +81,11 @@ Some candidates may be recorded as startup-only after a safe startup/capacity
 check. A startup-only candidate still records the attempted parameter tuple,
 vLLM capacity, idle memory, telemetry, and reason; it does not run request load.
 
+The runner orders candidates by increasing estimated risk, not by the table
+order above. Progress should therefore be judged by recorded coverage and the
+completion verifier, not by expecting a monotonic walk through every context at
+one concurrency before moving to the next.
+
 ## Measurement Phases Per Candidate
 
 Each candidate produces one JSONL record with nested phase results.
@@ -111,6 +116,9 @@ Each candidate produces one JSONL record with nested phase results.
    - Record successes, errors, wall time, aggregate output tokens/sec, total
      tokens/sec, latency distribution, service memory peak, and load-phase
      telemetry.
+   - If startup succeeds but the capacity or memory guard rejects request load,
+     record the row as startup-only with the guard reason. This is planned safe
+     behavior, not a failed sweep shortcut.
 
 4. `load_prefill_probe`
    - Follow-up only. It is not part of the current 140-candidate sweep.
@@ -219,6 +227,11 @@ output_tok_s ~= b0 + b1 * max_num_seqs + b2 * context_k
 
 The formulas are descriptive, not universal hardware laws.
 
+Committed report artifacts must be regenerated from the active run before the
+final report is treated as current. Older HTML, CSV, SVG, or model JSON files in
+`reports/` are placeholders or previous partial outputs until they explicitly
+reference the active run id.
+
 ## Execution Strategy
 
 1. Land this plan and push the PR branch. Done.
@@ -247,8 +260,11 @@ The formulas are descriptive, not universal hardware laws.
 
 7. Generate partial plots/reports once enough rows exist to show useful
    surfaces.
-8. Generate the final report after the sweep finishes or after at least 100
-   candidates have recorded enough safe startup/load measurements.
+8. Generate the final report after the sweep finishes. If the run must be cut
+   short for safety or time, do not finalize until at least 100 candidates have
+   recorded enough safe startup/load measurements and the strict verifier
+   passes. Passing 100 rows is a minimum reportability threshold, not a reason
+   to stop a healthy 140-candidate sweep.
 9. Commit sanitized reports and summaries. Keep raw logs and machine-path JSONL
    local unless explicitly sanitized first.
 
@@ -258,6 +274,9 @@ The formulas are descriptive, not universal hardware laws.
   machine, so total memory pressure must be read from `tegrastats` and
   `/proc/meminfo`. vLLM logs and cgroup/process memory remain useful but do not
   fully represent unified memory.
+- `startup_only` rows are expected for candidates where vLLM can start but the
+  harness decides request load would be unsafe or misleading. These rows should
+  remain in the dataset because they define the feasible boundary.
 - `tegrastats` on this machine reports RAM, swap, CPU, and temperature. It does
   not currently expose a `GR3D`/GPU utilization field in the observed output.
 - `matplotlib` and `pandas` are not installed in the system Python, so plotting
