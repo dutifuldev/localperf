@@ -18,7 +18,9 @@ def main() -> int:
     parser.add_argument("--results", default=str(ROOT / "results/sweep-results.jsonl"))
     parser.add_argument("--reports-dir", default=str(ROOT / "reports"))
     args = parser.parse_args()
-    rows = read_jsonl(Path(args.results))
+    results_path = Path(args.results)
+    source_label = display_path(results_path)
+    rows = read_jsonl(results_path)
     reports = Path(args.reports_dir)
     (reports / "plots").mkdir(parents=True, exist_ok=True)
     (reports / "tables").mkdir(parents=True, exist_ok=True)
@@ -28,8 +30,8 @@ def main() -> int:
     models = build_models(table_rows)
     write_models(reports / "models/linear-models.json", models)
     write_plots(reports / "plots", table_rows)
-    write_summary(reports / "summary.md", table_rows, rows, models)
-    write_html(reports / "index.html", table_rows, raw_rows=rows, models=models)
+    write_summary(reports / "summary.md", table_rows, rows, models, source_label=source_label)
+    write_html(reports / "index.html", table_rows, raw_rows=rows, models=models, source_label=source_label)
     print(f"wrote report files under {reports}")
     return 0
 
@@ -439,7 +441,7 @@ def plot_svg(path: Path, rows: list[dict], x_key: str, y_key: str, title: str, x
     path.write_text(svg, encoding="utf-8")
 
 
-def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: dict) -> None:
+def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: dict, source_label: str) -> None:
     statuses = {}
     for row in rows:
         statuses[row["status"]] = statuses.get(row["status"], 0) + 1
@@ -454,7 +456,7 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
     lines = [
         "# Gemma 4 vLLM Resource Sweep Report",
         "",
-        "This report is generated from `results/sweep-results.jsonl`. It covers a standalone vLLM sweep for `nvidia/Gemma-4-26B-A4B-NVFP4`; it does not use LocalPager or OpenClaw runtime paths.",
+        f"This report is generated from `{source_label}`. It covers a standalone vLLM sweep for `nvidia/Gemma-4-26B-A4B-NVFP4`; it does not use LocalPager or OpenClaw runtime paths.",
         "",
         f"Rows recorded: {len(rows)}.",
         f"Context windows covered: {', '.join(str(value) for value in contexts)}.",
@@ -557,8 +559,7 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
             "",
             "## Artifacts",
             "",
-            "- `results/sweep-results.jsonl`: machine-readable per-candidate measurements.",
-            "- `results/sweep-summary.json`: machine-readable aggregate summary.",
+            f"- Input JSONL: `{source_label}`.",
             "- `tables/measurements.csv`: flattened table for spreadsheets.",
             "- `plots/idle-memory-by-context.svg`",
             "- `plots/load-peak-memory-by-context.svg`",
@@ -1142,7 +1143,7 @@ def explorer_script() -> str:
 </script>"""
 
 
-def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict) -> None:
+def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict, source_label: str) -> None:
     statuses = {}
     for row in rows:
         statuses[row["status"]] = statuses.get(row["status"], 0) + 1
@@ -1160,7 +1161,7 @@ def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict)
         '<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>',
         page_css(),
         "<h1>Gemma 4 vLLM Resource Sweep</h1>",
-        "<p>Standalone vLLM sweep for <code>nvidia/Gemma-4-26B-A4B-NVFP4</code>. Generated from machine-readable JSONL results.</p>",
+        f"<p>Standalone vLLM sweep for <code>nvidia/Gemma-4-26B-A4B-NVFP4</code>. Generated from <code>{escape(source_label)}</code>.</p>",
         f"<p><strong>Rows:</strong> {len(rows)}. <strong>Status counts:</strong> {escape(', '.join(f'{k}={v}' for k, v in sorted(statuses.items())))}.</p>",
         "<h2>Key Findings</h2>",
         "<ul>",
@@ -1233,6 +1234,14 @@ def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def display_path(path: Path) -> str:
+    resolved = path.expanduser().resolve()
+    try:
+        return str(resolved.relative_to(ROOT.resolve()))
+    except ValueError:
+        return path.name
 
 
 def bytes_to_gib(value: object) -> float | None:
