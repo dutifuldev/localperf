@@ -20,7 +20,7 @@ The load probe uses concurrent short prompts with 64 requested output tokens. Hi
 
 - Best measured output throughput was `361.593` completion tok/s at `ctx8192-seq16-small` with `8192` context and `16` requested concurrency.
 - Best measured total token throughput was `10559.650` total tok/s at `ctx8192-seq16-small`.
-- Highest measured total RAM pressure by `tegrastats` was `82.372` GiB at `ctx4096-seq8-small`.
+- Highest observed whole-machine RAM delta by `tegrastats` was `82.372` GiB at `ctx4096-seq8-small`. This is not a per-context KV-cache size.
 - Memory reporting now separates total machine pressure (`tegrastats` RAM delta and system `MemAvailable` drop), process accounting (cgroup), and vLLM capacity.
 - The `small` batching policy (`max_num_batched_tokens` capped at 8192) is the stable high-context path in this sweep. It starts successfully at 100k and above when capacity guards allow startup.
 - The `match_context` batching policy can reduce reported concurrency at high context and may hit CUTLASS FP4 MoE kernel/config boundaries.
@@ -30,6 +30,33 @@ The load probe uses concurrent short prompts with 64 requested output tokens. Hi
 
 - 14 rows exited during startup.
 - 14 of those hit the CUTLASS FP4 MoE MAX_TOKENS_PER_EXPERT assertion, which is a kernel/config boundary rather than an observed machine OOM: ctx196608-seq1-match_context, ctx262144-seq1-match_context, ctx196608-seq2-match_context, ctx262144-seq2-match_context, ctx196608-seq4-match_context, ctx262144-seq4-match_context, ctx196608-seq8-match_context, ctx262144-seq8-match_context, ctx196608-seq16-match_context, ctx262144-seq16-match_context, ctx196608-seq24-match_context, ctx196608-seq32-match_context, ctx262144-seq24-match_context, ctx262144-seq32-match_context.
+
+## Memory Interpretation
+
+`tegrastats_ram_delta_gib` is whole-machine RAM pressure over the run, not context-window memory:
+
+$$\Delta R = R_{max\ used} - R_{baseline\ used}$$
+
+Equivalently, the raw RAM-used reading is roughly total RAM minus free/available RAM at that moment. On this machine the raw maximum is often around 90 GiB used; subtracting the pre-run baseline around 8-9 GiB produces the roughly 81-82 GiB delta.
+
+This means the RAM plot should be read by policy and startup status. It should not be read as `smaller context requires more KV cache`.
+
+- Apples-to-apples `small` policy rows are essentially flat: context-level medians range from `81.187` to `82.075` GiB.
+- `match_context` rows are a separate regime: medians range from `59.582` to `82.113` GiB because large `max_num_batched_tokens` changes vLLM capacity reservation and some high-context rows exit during startup.
+- Raw `tegrastats` baseline RAM-used values range from `8.086` to `9.275` GiB; raw max RAM-used values range from `58.374` to `91.045` GiB.
+
+| context | small median delta GiB | match_context median delta GiB | small median q | match_context median q | notes |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 4096 | 82.075 | 82.113 | 137.110 | 137.110 |  |
+| 8192 | 81.420 | 81.350 | 67.470 | 67.430 |  |
+| 16384 | 81.187 | 79.917 | 55.950 | 32.570 |  |
+| 32768 | 81.278 | 77.107 | 48.710 | 15.150 | match_context reserves much lower q |
+| 65536 | 81.414 | 70.710 | 38.490 | 6.330 | match_context reserves much lower q |
+| 98304 | 81.483 | 64.051 | 31.920 | 3.370 | match_context reserves much lower q |
+| 100000 | 81.395 | 63.624 | 31.550 | 3.280 | match_context reserves much lower q |
+| 131072 | 81.407 | 59.582 | 27.210 | 1.950 | match_context reserves much lower q |
+| 196608 | 81.729 |  | 21.060 |  | 7 startup exits |
+| 262144 | 81.770 |  | 17.170 |  | 7 startup exits |
 
 ## Simplified Capacity Model
 

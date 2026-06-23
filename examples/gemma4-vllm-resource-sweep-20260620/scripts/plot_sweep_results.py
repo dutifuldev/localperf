@@ -63,6 +63,7 @@ def flatten_rows(rows: list[dict]) -> list[dict]:
                 "kv_cache_tokens": capacity.get("gpu_kv_cache_tokens"),
                 "reported_concurrency": capacity.get("max_reported_concurrency"),
                 "system_memory_drop_gib": system_memory_drop_gib(row),
+                "tegrastats_baseline_ram_used_gib": mb_to_gib(tegrastats.get("baseline_ram_used_mb")),
                 "tegrastats_ram_delta_gib": tegrastats.get("ram_used_delta_gib"),
                 "tegrastats_max_ram_used_gib": mb_to_gib(tegrastats.get("max_ram_used_mb")),
                 "tegrastats_max_temp_c": tegrastats.get("max_temp_c"),
@@ -421,6 +422,8 @@ def write_plots(path: Path, rows: list[dict]) -> None:
     plot_svg(path / "load-peak-memory-by-context.svg", rows, "max_model_len", "load_memory_peak_gib", "Loaded peak memory by context", "context tokens", "GiB")
     plot_svg(path / "system-memory-drop-by-context.svg", rows, "max_model_len", "system_memory_drop_gib", "System memory drop by context", "context tokens", "GiB")
     plot_svg(path / "tegrastats-ram-delta-by-context.svg", rows, "max_model_len", "tegrastats_ram_delta_gib", "tegrastats RAM delta by context", "context tokens", "GiB")
+    plot_policy_svg(path / "tegrastats-ram-delta-by-policy.svg", rows, "tegrastats_ram_delta_gib", "tegrastats RAM delta by context and policy", "GiB")
+    plot_policy_svg(path / "system-memory-drop-by-policy.svg", rows, "system_memory_drop_gib", "System memory drop by context and policy", "GiB")
     plot_svg(path / "tegrastats-temperature-by-context.svg", rows, "max_model_len", "tegrastats_max_temp_c", "tegrastats max temperature by context", "context tokens", "C")
     plot_svg(path / "reported-concurrency-by-context.svg", rows, "max_model_len", "reported_concurrency", "Reported max concurrency by context", "context tokens", "reported max concurrency")
     plot_svg(path / "throughput-by-concurrency.svg", rows, "max_num_seqs", "completion_tok_s", "Output throughput by concurrency", "max_num_seqs", "completion tok/s")
@@ -464,6 +467,92 @@ def plot_svg(path: Path, rows: list[dict], x_key: str, y_key: str, title: str, x
     path.write_text(svg, encoding="utf-8")
 
 
+def plot_policy_svg(path: Path, rows: list[dict], y_key: str, title: str, y_label: str) -> None:
+    points = []
+    for row in rows:
+        x = number(row.get("max_model_len"))
+        y = number(row.get(y_key))
+        policy = row.get("batch_policy")
+        status = row.get("status")
+        if x is None or x <= 0 or y is None or not policy:
+            continue
+        points.append((x, y, str(policy), str(status), str(row.get("candidate_id"))))
+    width, height = 980, 560
+    pad = 76
+    if not points:
+        path.write_text(f"<svg width='{width}' height='{height}' xmlns='http://www.w3.org/2000/svg'><text x='20' y='40'>{escape(title)}: no data</text></svg>\n", encoding="utf-8")
+        return
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    xmin, xmax = min(xs), max(xs)
+    ymin, ymax = min(ys), max(ys)
+    if ymin == ymax:
+        ymax += 1
+    ypad = (ymax - ymin) * 0.08
+    ymin -= ypad
+    ymax += ypad
+
+    def sx(x: float) -> float:
+        return pad + (math.log(x) - math.log(xmin)) / (math.log(xmax) - math.log(xmin)) * (width - 2 * pad)
+
+    def sy(y: float) -> float:
+        return height - pad - (y - ymin) / (ymax - ymin) * (height - 2 * pad)
+
+    def color(policy: str, status: str) -> str:
+        if status == "startup_service_exit":
+            return "#64748b"
+        return "#2563eb" if policy == "small" else "#f97316"
+
+    circles = []
+    for x, y, policy, status, candidate_id in points:
+        radius = 5 if status != "startup_service_exit" else 4
+        opacity = "0.85" if status != "startup_service_exit" else "0.45"
+        circles.append(
+            f"<circle cx='{sx(x):.1f}' cy='{sy(y):.1f}' r='{radius}' fill='{color(policy, status)}' fill-opacity='{opacity}'>"
+            f"<title>{escape(candidate_id)}: context={x:.0f}, policy={escape(policy)}, status={escape(status)}, {escape(y_key)}={y:.3f}</title></circle>"
+        )
+    lines = []
+    for policy, stroke in [("small", "#2563eb"), ("match_context", "#f97316")]:
+        by_context: dict[float, list[float]] = {}
+        for x, y, point_policy, status, _ in points:
+            if point_policy == policy and status != "startup_service_exit":
+                by_context.setdefault(x, []).append(y)
+        median_points = []
+        for context, values in sorted(by_context.items()):
+            ordered = sorted(values)
+            mid = len(ordered) // 2
+            median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+            median_points.append((context, median))
+        if median_points:
+            path_data = " ".join(
+                f"{'M' if index == 0 else 'L'}{sx(context):.1f},{sy(median):.1f}"
+                for index, (context, median) in enumerate(median_points)
+            )
+            lines.append(f"<path d='{path_data}' fill='none' stroke='{stroke}' stroke-width='2.5'/>")
+
+    ticks = sorted({int(x) for x in xs})
+    x_labels = []
+    for tick in ticks:
+        label = f"{tick//1000}k" if tick >= 10000 else str(tick)
+        x_labels.append(f"<text x='{sx(tick):.1f}' y='{height-pad+24}' text-anchor='middle' font-size='11'>{label}</text>")
+    svg = f"""<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+<rect width="100%" height="100%" fill="white"/>
+<text x="{width/2}" y="32" text-anchor="middle" font-size="20">{escape(title)}</text>
+<line x1="{pad}" y1="{height-pad}" x2="{width-pad}" y2="{height-pad}" stroke="black"/>
+<line x1="{pad}" y1="{pad}" x2="{pad}" y2="{height-pad}" stroke="black"/>
+<text x="{width/2}" y="{height-20}" text-anchor="middle">context tokens, log scale</text>
+<text x="20" y="{height/2}" transform="rotate(-90 20 {height/2})" text-anchor="middle">{escape(y_label)}</text>
+{''.join(x_labels)}
+<text x="{width-pad-250}" y="58" font-size="13" fill="#2563eb">small median</text>
+<text x="{width-pad-250}" y="78" font-size="13" fill="#f97316">match_context median</text>
+<text x="{width-pad-250}" y="98" font-size="13" fill="#64748b">startup exit point</text>
+{''.join(lines)}
+{''.join(circles)}
+</svg>
+"""
+    path.write_text(svg, encoding="utf-8")
+
+
 def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: dict, source_label: str) -> None:
     statuses = {}
     for row in rows:
@@ -501,7 +590,7 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
             "",
             f"- Best measured output throughput was `{fmt(top_throughput[0].get('completion_tok_s'))}` completion tok/s at `{top_throughput[0]['candidate_id']}` with `{top_throughput[0]['max_model_len']}` context and `{top_throughput[0]['max_num_seqs']}` requested concurrency." if top_throughput else "- No load-complete rows were available for throughput ranking.",
             f"- Best measured total token throughput was `{fmt(top_total[0].get('total_tok_s'))}` total tok/s at `{top_total[0]['candidate_id']}`." if top_total else "- No total token throughput rows were available.",
-            f"- Highest measured total RAM pressure by `tegrastats` was `{fmt(top_memory[0].get('tegrastats_ram_delta_gib'))}` GiB at `{top_memory[0]['candidate_id']}`." if top_memory else "- No `tegrastats` RAM delta rows were available.",
+            f"- Highest observed whole-machine RAM delta by `tegrastats` was `{fmt(top_memory[0].get('tegrastats_ram_delta_gib'))}` GiB at `{top_memory[0]['candidate_id']}`. This is not a per-context KV-cache size." if top_memory else "- No `tegrastats` RAM delta rows were available.",
             "- Memory reporting now separates total machine pressure (`tegrastats` RAM delta and system `MemAvailable` drop), process accounting (cgroup), and vLLM capacity.",
         ]
     )
@@ -523,6 +612,7 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
         lines.extend(["", "## Startup Boundaries", ""])
         for boundary in boundaries:
             lines.append(f"- {boundary}")
+    lines.extend(memory_interpretation_markdown(rows))
     lines.extend(capacity_simplification_markdown())
     lines.extend(abstract_model_markdown())
     lines.extend(
@@ -745,6 +835,7 @@ def explorer_rows(rows: list[dict]) -> list[dict]:
         "kv_cache_tokens",
         "reported_concurrency",
         "system_memory_drop_gib",
+        "tegrastats_baseline_ram_used_gib",
         "tegrastats_ram_delta_gib",
         "tegrastats_max_ram_used_gib",
         "tegrastats_max_temp_c",
@@ -779,7 +870,7 @@ def interactive_explorer_html(rows: list[dict], models: dict) -> list[str]:
         '<div class="control"><label for="contextSlider">Context window</label><input id="contextSlider" type="range" min="4096" max="262144" step="1" value="150000"><output id="contextValue">150000</output></div>',
         '<div class="control"><label for="seqSlider">Requested concurrency</label><input id="seqSlider" type="range" min="1" max="32" step="1" value="16"><output id="seqValue">16</output></div>',
         '<div class="control"><label for="policySelect">Batch policy</label><select id="policySelect"><option value="small">small</option><option value="match_context">match_context</option></select></div>',
-        '<div class="control"><label for="metricSelect">Metric surface</label><select id="metricSelect"><option value="completion_tok_s">completion tok/s</option><option value="tegrastats_ram_delta_gib">tegrastats RAM delta GiB</option><option value="system_memory_drop_gib">system memory drop GiB</option><option value="tegrastats_max_temp_c">tegrastats max temp C</option><option value="idle_memory_gib">cgroup idle GiB</option><option value="load_memory_peak_gib">cgroup load peak GiB</option><option value="latency_p95">p95 latency</option><option value="reported_concurrency">reported concurrency (diagnostic)</option></select></div>',
+        '<div class="control"><label for="metricSelect">Metric surface</label><select id="metricSelect"><option value="completion_tok_s">completion tok/s</option><option value="tegrastats_ram_delta_gib">whole-machine tegrastats RAM delta GiB</option><option value="system_memory_drop_gib">whole-machine MemAvailable drop GiB</option><option value="tegrastats_max_temp_c">tegrastats max temp C</option><option value="idle_memory_gib">cgroup idle GiB</option><option value="load_memory_peak_gib">cgroup load peak GiB</option><option value="latency_p95">p95 latency</option><option value="reported_concurrency">reported concurrency (diagnostic)</option></select></div>',
         "</div>",
         '<div class="readouts">',
         '<div class="readout"><b>requested budget</b><span id="budgetReadout"></span></div>',
@@ -836,8 +927,8 @@ def explorer_script() -> str:
   const metricLabels = {
     reported_concurrency: 'reported concurrency',
     completion_tok_s: 'completion tok/s',
-    system_memory_drop_gib: 'system memory drop GiB',
-    tegrastats_ram_delta_gib: 'tegrastats RAM delta GiB',
+    system_memory_drop_gib: 'whole-machine MemAvailable drop GiB',
+    tegrastats_ram_delta_gib: 'whole-machine tegrastats RAM delta GiB',
     tegrastats_max_temp_c: 'tegrastats max temp C',
     idle_memory_gib: 'cgroup idle GiB',
     load_memory_peak_gib: 'cgroup load peak GiB',
@@ -1143,7 +1234,10 @@ def explorer_script() -> str:
     const nearest = nearestRows(ctx, seq, policy, metric);
     const nearestWithActual = nearest.find(row => finite(row[metric]));
     nearestReadout.textContent = nearestWithActual ? `${formatMaybe(nearestWithActual[metric])} at ${nearestWithActual.candidate_id}` : 'no nearby actual';
-    nearestText.textContent = `Surface is the fitted metric model for the selected policy and requested concurrency. Use the capacity planner above for max safe concurrency.`;
+    const memoryMetric = metric === 'tegrastats_ram_delta_gib' || metric === 'system_memory_drop_gib';
+    nearestText.textContent = memoryMetric
+      ? `This is whole-machine RAM pressure, not per-context KV memory. Compare rows with the same policy and startup status.`
+      : `Surface is the fitted metric model for the selected policy and requested concurrency. Use the capacity planner above for max safe concurrency.`;
     nearestBody.innerHTML = nearest.map(row => `<tr>
       <td><code>${escapeHtml(row.candidate_id)}</code></td>
       <td class="num">${fmt.format(row.max_model_len)}</td>
@@ -1193,7 +1287,7 @@ def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict,
     if top_throughput:
         html.append(f"<li>Best output throughput: <code>{fmt(top_throughput[0]['completion_tok_s'])}</code> completion tok/s at <code>{escape(top_throughput[0]['candidate_id'])}</code>.</li>")
     if top_memory:
-        html.append(f"<li>Highest measured total RAM pressure by <code>tegrastats</code>: <code>{fmt(top_memory[0]['tegrastats_ram_delta_gib'])}</code> GiB at <code>{escape(top_memory[0]['candidate_id'])}</code>.</li>")
+        html.append(f"<li>Highest observed whole-machine RAM delta by <code>tegrastats</code>: <code>{fmt(top_memory[0]['tegrastats_ram_delta_gib'])}</code> GiB at <code>{escape(top_memory[0]['candidate_id'])}</code>. This is not a per-context KV-cache size.</li>")
     html.extend(
         [
             "<li>Memory reporting separates total machine pressure (<code>tegrastats</code> RAM delta and system <code>MemAvailable</code> drop), process accounting (cgroup), and vLLM capacity.</li>",
@@ -1211,6 +1305,7 @@ def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict,
         [
             "<li>High-risk rows are measured at startup/idle and load is skipped when the guard says it is unsafe.</li>",
             "</ul>",
+            *memory_interpretation_html(rows),
             *capacity_planner_html(),
             *capacity_simplification_html(),
             *interactive_explorer_html(rows, models),
@@ -1218,8 +1313,8 @@ def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict,
             '<div class="grid">',
             '<figure><img src="plots/idle-memory-by-context.svg" alt="Idle memory by context"><figcaption>Idle memory by context.</figcaption></figure>',
             '<figure><img src="plots/load-peak-memory-by-context.svg" alt="Load peak memory by context"><figcaption>Loaded peak memory by context.</figcaption></figure>',
-            '<figure><img src="plots/system-memory-drop-by-context.svg" alt="System memory drop by context"><figcaption>System MemAvailable drop by context.</figcaption></figure>',
-            '<figure><img src="plots/tegrastats-ram-delta-by-context.svg" alt="tegrastats RAM delta by context"><figcaption>tegrastats RAM-used delta by context.</figcaption></figure>',
+            '<figure><img src="plots/system-memory-drop-by-policy.svg" alt="System memory drop by context and policy"><figcaption>System MemAvailable drop by context and policy.</figcaption></figure>',
+            '<figure><img src="plots/tegrastats-ram-delta-by-policy.svg" alt="tegrastats RAM delta by context and policy"><figcaption>tegrastats RAM-used delta by context and policy.</figcaption></figure>',
             '<figure><img src="plots/tegrastats-temperature-by-context.svg" alt="tegrastats temperature by context"><figcaption>tegrastats max temperature by context.</figcaption></figure>',
             '<figure><img src="plots/reported-concurrency-by-context.svg" alt="Reported concurrency by context"><figcaption>vLLM reported concurrency capacity by context.</figcaption></figure>',
             '<figure><img src="plots/throughput-by-concurrency.svg" alt="Throughput by concurrency"><figcaption>Output throughput by requested concurrency.</figcaption></figure>',
@@ -1353,6 +1448,138 @@ def context_summary(rows: list[dict]) -> list[dict]:
             }
         )
     return out
+
+
+def memory_interpretation_markdown(rows: list[dict]) -> list[str]:
+    table = memory_policy_summary(rows)
+    small_medians = [number(row.get("small_delta_median")) for row in table]
+    small_medians = [value for value in small_medians if value is not None]
+    match_medians = [number(row.get("match_delta_median")) for row in table]
+    match_medians = [value for value in match_medians if value is not None]
+    baseline_values = [number(row.get("tegrastats_baseline_ram_used_gib")) for row in rows]
+    baseline_values = [value for value in baseline_values if value is not None]
+    max_used_values = [number(row.get("tegrastats_max_ram_used_gib")) for row in rows]
+    max_used_values = [value for value in max_used_values if value is not None]
+    lines = [
+        "",
+        "## Memory Interpretation",
+        "",
+        "`tegrastats_ram_delta_gib` is whole-machine RAM pressure over the run, not context-window memory:",
+        "",
+        "$$\\Delta R = R_{max\\ used} - R_{baseline\\ used}$$",
+        "",
+        "Equivalently, the raw RAM-used reading is roughly total RAM minus free/available RAM at that moment. On this machine the raw maximum is often around 90 GiB used; subtracting the pre-run baseline around 8-9 GiB produces the roughly 81-82 GiB delta.",
+        "",
+        "This means the RAM plot should be read by policy and startup status. It should not be read as `smaller context requires more KV cache`.",
+        "",
+    ]
+    if small_medians:
+        lines.append(
+            f"- Apples-to-apples `small` policy rows are essentially flat: context-level medians range from `{fmt(min(small_medians))}` to `{fmt(max(small_medians))}` GiB."
+        )
+    if match_medians:
+        lines.append(
+            f"- `match_context` rows are a separate regime: medians range from `{fmt(min(match_medians))}` to `{fmt(max(match_medians))}` GiB because large `max_num_batched_tokens` changes vLLM capacity reservation and some high-context rows exit during startup."
+        )
+    if baseline_values and max_used_values:
+        lines.append(
+            f"- Raw `tegrastats` baseline RAM-used values range from `{fmt(min(baseline_values))}` to `{fmt(max(baseline_values))}` GiB; raw max RAM-used values range from `{fmt(min(max_used_values))}` to `{fmt(max(max_used_values))}` GiB."
+        )
+    lines.extend(
+        [
+            "",
+            "| context | small median delta GiB | match_context median delta GiB | small median q | match_context median q | notes |",
+            "| ---: | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for row in table:
+        lines.append(
+            f"| {row['context']} | {fmt(row['small_delta_median'])} | {fmt(row['match_delta_median'])} | {fmt(row['small_q_median'])} | {fmt(row['match_q_median'])} | {row['notes']} |"
+        )
+    return lines
+
+
+def memory_interpretation_html(rows: list[dict]) -> list[str]:
+    table = memory_policy_summary(rows)
+    small_medians = [number(row.get("small_delta_median")) for row in table]
+    small_medians = [value for value in small_medians if value is not None]
+    match_medians = [number(row.get("match_delta_median")) for row in table]
+    match_medians = [value for value in match_medians if value is not None]
+    baseline_values = [number(row.get("tegrastats_baseline_ram_used_gib")) for row in rows]
+    baseline_values = [value for value in baseline_values if value is not None]
+    max_used_values = [number(row.get("tegrastats_max_ram_used_gib")) for row in rows]
+    max_used_values = [value for value in max_used_values if value is not None]
+    out = [
+        "<h2>Memory Interpretation</h2>",
+        "<p><code>tegrastats_ram_delta_gib</code> is whole-machine RAM pressure over the run, not context-window memory:</p>",
+        "<p>\\[\\Delta R = R_{max\\ used} - R_{baseline\\ used}\\]</p>",
+        "<p>The raw RAM-used reading is roughly total RAM minus free/available RAM at that moment. On this machine the raw maximum is often around 90 GiB used; subtracting the pre-run baseline around 8-9 GiB produces the roughly 81-82 GiB delta.</p>",
+        "<p>Read RAM plots by policy and startup status. They should not be read as <q>smaller context requires more KV cache</q>.</p>",
+        "<ul>",
+    ]
+    if small_medians:
+        out.append(
+            f"<li>Apples-to-apples <code>small</code> policy rows are essentially flat: context-level medians range from <code>{fmt(min(small_medians))}</code> to <code>{fmt(max(small_medians))}</code> GiB.</li>"
+        )
+    if match_medians:
+        out.append(
+            f"<li><code>match_context</code> rows are a separate regime: medians range from <code>{fmt(min(match_medians))}</code> to <code>{fmt(max(match_medians))}</code> GiB because large <code>max_num_batched_tokens</code> changes vLLM capacity reservation and some high-context rows exit during startup.</li>"
+        )
+    if baseline_values and max_used_values:
+        out.append(
+            f"<li>Raw <code>tegrastats</code> baseline RAM-used values range from <code>{fmt(min(baseline_values))}</code> to <code>{fmt(max(baseline_values))}</code> GiB; raw max RAM-used values range from <code>{fmt(min(max_used_values))}</code> to <code>{fmt(max(max_used_values))}</code> GiB.</li>"
+        )
+    out.extend(
+        [
+            "</ul>",
+            '<table><tr><th class="num">context</th><th class="num">small median delta GiB</th><th class="num">match_context median delta GiB</th><th class="num">small median q</th><th class="num">match_context median q</th><th>notes</th></tr>',
+        ]
+    )
+    for row in table:
+        out.append(
+            f"<tr><td class=\"num\">{row['context']}</td><td class=\"num\">{fmt(row['small_delta_median'])}</td><td class=\"num\">{fmt(row['match_delta_median'])}</td><td class=\"num\">{fmt(row['small_q_median'])}</td><td class=\"num\">{fmt(row['match_q_median'])}</td><td>{escape(row['notes'])}</td></tr>"
+        )
+    out.append("</table>")
+    return out
+
+
+def memory_policy_summary(rows: list[dict]) -> list[dict]:
+    contexts = sorted({int(number(row.get("max_model_len")) or 0) for row in rows})
+    out = []
+    for context in contexts:
+        group = [row for row in rows if int(number(row.get("max_model_len")) or 0) == context]
+        small = [row for row in group if row.get("batch_policy") == "small" and row.get("status") != "startup_service_exit"]
+        match = [row for row in group if row.get("batch_policy") == "match_context" and row.get("status") != "startup_service_exit"]
+        exits = sum(1 for row in group if row.get("status") == "startup_service_exit")
+        notes = []
+        if exits:
+            notes.append(f"{exits} startup exits")
+        if small and match:
+            small_q = median_value([row.get("reported_concurrency") for row in small])
+            match_q = median_value([row.get("reported_concurrency") for row in match])
+            if small_q is not None and match_q is not None and match_q < small_q * 0.5:
+                notes.append("match_context reserves much lower q")
+        out.append(
+            {
+                "context": context,
+                "small_delta_median": median_value([row.get("tegrastats_ram_delta_gib") for row in small]),
+                "match_delta_median": median_value([row.get("tegrastats_ram_delta_gib") for row in match]),
+                "small_q_median": median_value([row.get("reported_concurrency") for row in small]),
+                "match_q_median": median_value([row.get("reported_concurrency") for row in match]),
+                "notes": "; ".join(notes),
+            }
+        )
+    return out
+
+
+def median_value(values: list[object]) -> float | None:
+    clean = sorted(value for value in (number(item) for item in values) if value is not None)
+    if not clean:
+        return None
+    mid = len(clean) // 2
+    if len(clean) % 2:
+        return round(clean[mid], 3)
+    return round((clean[mid - 1] + clean[mid]) / 2, 3)
 
 
 def abstract_model_markdown() -> list[str]:
