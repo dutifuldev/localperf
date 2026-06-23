@@ -18,7 +18,9 @@ def main() -> int:
     parser.add_argument("--results", default=str(ROOT / "results/sweep-results.jsonl"))
     parser.add_argument("--reports-dir", default=str(ROOT / "reports"))
     args = parser.parse_args()
-    rows = read_jsonl(Path(args.results))
+    results_path = Path(args.results)
+    source_label = display_path(results_path)
+    rows = read_jsonl(results_path)
     reports = Path(args.reports_dir)
     (reports / "plots").mkdir(parents=True, exist_ok=True)
     (reports / "tables").mkdir(parents=True, exist_ok=True)
@@ -28,8 +30,8 @@ def main() -> int:
     models = build_models(table_rows)
     write_models(reports / "models/linear-models.json", models)
     write_plots(reports / "plots", table_rows)
-    write_summary(reports / "summary.md", table_rows, rows, models)
-    write_html(reports / "index.html", table_rows, raw_rows=rows, models=models)
+    write_summary(reports / "summary.md", table_rows, rows, models, source_label=source_label)
+    write_html(reports / "index.html", table_rows, raw_rows=rows, models=models, source_label=source_label)
     print(f"wrote report files under {reports}")
     return 0
 
@@ -55,6 +57,7 @@ def flatten_rows(rows: list[dict]) -> list[dict]:
                 "max_num_batched_tokens": c.get("max_num_batched_tokens"),
                 "batch_policy": c.get("batch_policy"),
                 "risk_tier": c.get("risk_tier"),
+                "load_skip_reason": load_skip_reason(row, c, capacity),
                 "token_budget_m": safe_product(c.get("max_model_len"), c.get("max_num_seqs"), scale=1_000_000),
                 "startup_seconds": (startup or {}).get("startup_seconds"),
                 "kv_cache_tokens": capacity.get("gpu_kv_cache_tokens"),
@@ -85,9 +88,31 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         path.write_text("", encoding="utf-8")
         return
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def load_skip_reason(row: dict, candidate: dict, capacity: dict) -> str:
+    status = row.get("status")
+    if status not in {"startup_only", "skipped_load_idle_memory"}:
+        return ""
+    if status == "skipped_load_idle_memory":
+        return "idle_memory_floor"
+    notes = row.get("notes") or []
+    note_text = "; ".join(str(note) for note in notes)
+    if note_text and note_text != "load skipped by capacity or risk guard":
+        return note_text
+    risk_tier = candidate.get("risk_tier")
+    reported = number(capacity.get("max_reported_concurrency"))
+    requested = number(candidate.get("load_concurrency") or candidate.get("max_num_seqs"))
+    capacity_blocked = reported is not None and requested is not None and reported + 1e-9 < requested
+    if risk_tier in {"high", "extreme"}:
+        suffix = "+capacity_guard" if capacity_blocked else ""
+        return f"risk_guard({risk_tier}){suffix}"
+    if capacity_blocked:
+        return "capacity_guard"
+    return note_text
 
 
 def build_models(rows: list[dict]) -> dict:
@@ -439,7 +464,7 @@ def plot_svg(path: Path, rows: list[dict], x_key: str, y_key: str, title: str, x
     path.write_text(svg, encoding="utf-8")
 
 
-def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: dict) -> None:
+def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: dict, source_label: str) -> None:
     statuses = {}
     for row in rows:
         statuses[row["status"]] = statuses.get(row["status"], 0) + 1
@@ -454,7 +479,7 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
     lines = [
         "# Gemma 4 vLLM Resource Sweep Report",
         "",
-        "This report is generated from `results/sweep-results.jsonl`. It covers a standalone vLLM sweep for `nvidia/Gemma-4-26B-A4B-NVFP4`; it does not use LocalPager or OpenClaw runtime paths.",
+        f"This report is generated from `{source_label}`. It covers a standalone vLLM sweep for `nvidia/Gemma-4-26B-A4B-NVFP4`; it does not use LocalPager or OpenClaw runtime paths.",
         "",
         f"Rows recorded: {len(rows)}.",
         f"Context windows covered: {', '.join(str(value) for value in contexts)}.",
@@ -527,7 +552,7 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
         lines.extend(["", "## 100k Context Rows", "", "| candidate | status | seqs | policy | reported concurrency | idle GiB | completion tok/s | notes |", "| --- | --- | ---: | --- | ---: | ---: | ---: | --- |"])
         raw_by_id = {row.get("candidate_id"): row for row in raw_rows}
         for row in sorted(hundred_k_rows, key=lambda item: (number(item["max_num_seqs"]) or 0, item["batch_policy"])):
-            notes = "; ".join(raw_by_id.get(row["candidate_id"], {}).get("notes") or [])
+            notes = row.get("load_skip_reason") or "; ".join(raw_by_id.get(row["candidate_id"], {}).get("notes") or [])
             lines.append(
                 f"| {row['candidate_id']} | {row['status']} | {row['max_num_seqs']} | {row['batch_policy']} | {fmt(row['reported_concurrency'])} | {fmt(row['idle_memory_gib'])} | {fmt(row['completion_tok_s'])} | {notes} |"
             )
@@ -557,8 +582,7 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
             "",
             "## Artifacts",
             "",
-            "- `results/sweep-results.jsonl`: machine-readable per-candidate measurements.",
-            "- `results/sweep-summary.json`: machine-readable aggregate summary.",
+            f"- Input JSONL: `{source_label}`.",
             "- `tables/measurements.csv`: flattened table for spreadsheets.",
             "- `plots/idle-memory-by-context.svg`",
             "- `plots/load-peak-memory-by-context.svg`",
@@ -715,6 +739,7 @@ def explorer_rows(rows: list[dict]) -> list[dict]:
         "max_num_batched_tokens",
         "batch_policy",
         "risk_tier",
+        "load_skip_reason",
         "token_budget_m",
         "startup_seconds",
         "kv_cache_tokens",
@@ -735,7 +760,7 @@ def explorer_rows(rows: list[dict]) -> list[dict]:
     for row in rows:
         item = {key: row.get(key) for key in keep}
         for key in keep:
-            if key in {"candidate_id", "status", "batch_policy", "risk_tier"}:
+            if key in {"candidate_id", "status", "batch_policy", "risk_tier", "load_skip_reason"}:
                 continue
             n = number(item.get(key))
             item[key] = None if n is None else round(n, 6)
@@ -1142,7 +1167,7 @@ def explorer_script() -> str:
 </script>"""
 
 
-def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict) -> None:
+def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict, source_label: str) -> None:
     statuses = {}
     for row in rows:
         statuses[row["status"]] = statuses.get(row["status"], 0) + 1
@@ -1160,7 +1185,7 @@ def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict)
         '<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>',
         page_css(),
         "<h1>Gemma 4 vLLM Resource Sweep</h1>",
-        "<p>Standalone vLLM sweep for <code>nvidia/Gemma-4-26B-A4B-NVFP4</code>. Generated from machine-readable JSONL results.</p>",
+        f"<p>Standalone vLLM sweep for <code>nvidia/Gemma-4-26B-A4B-NVFP4</code>. Generated from <code>{escape(source_label)}</code>.</p>",
         f"<p><strong>Rows:</strong> {len(rows)}. <strong>Status counts:</strong> {escape(', '.join(f'{k}={v}' for k, v in sorted(statuses.items())))}.</p>",
         "<h2>Key Findings</h2>",
         "<ul>",
@@ -1233,6 +1258,14 @@ def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def display_path(path: Path) -> str:
+    resolved = path.expanduser().resolve()
+    try:
+        return str(resolved.relative_to(ROOT.resolve()))
+    except ValueError:
+        return path.name
 
 
 def bytes_to_gib(value: object) -> float | None:
