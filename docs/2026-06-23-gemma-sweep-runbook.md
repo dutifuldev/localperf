@@ -6,13 +6,14 @@ date: 2026-06-23
 
 # Gemma Sweep Runbook
 
-This runbook tracks the active Gemma 4 NVFP4 vLLM resource sweep. The goal is
-at least 100 recorded parameter samples with accurate memory and performance
-telemetry, without OOMing the machine.
+This runbook tracks the completed Gemma 4 NVFP4 vLLM resource sweep. The goal
+was at least 100 recorded parameter samples with accurate memory and
+performance telemetry, without OOMing the machine.
 
-## Active Run
+## Completed Run
 
-The active run was started on 2026-06-23 through a user systemd runner:
+The run was started on 2026-06-23 through a user systemd runner and completed
+the full 140-candidate matrix:
 
 ```text
 runner unit = localperf-gemma-sweep-20260623T075153Z.service
@@ -24,6 +25,16 @@ runner log = examples/gemma4-vllm-resource-sweep-20260620/results/logs/tegrastat
 The raw JSONL and logs are intentionally local-only because they contain machine
 paths and service details. Commit sanitized reports, tables, plots, and summary
 metadata after enough samples are recorded.
+
+Final coverage:
+
+```text
+rows = 140 / 140
+load_complete = 52
+startup_only = 74
+startup_service_exit = 14
+elapsed = 6h31m47s
+```
 
 ## Runtime Settings
 
@@ -89,50 +100,23 @@ Treat `startup_only` as a boundary measurement. It should not be rerun with
 weaker guards just to force a load row unless the user explicitly approves a
 riskier experiment.
 
-## Monitor Commands
+## Inspection Commands
 
-Use these commands to inspect progress:
+Use these commands to inspect the completed run or confirm that no sweep service
+is still running:
 
 ```sh
 systemctl --user status localperf-gemma-sweep-20260623T075153Z
 systemctl --user list-units 'localperf-gemma-sweep-*' 'gemma4-vllm-sweep-*' --no-pager --plain
-tail -f examples/gemma4-vllm-resource-sweep-20260620/results/tegrastats-sweep-20260623T075153Z-events.jsonl
+tail -n 50 examples/gemma4-vllm-resource-sweep-20260620/results/tegrastats-sweep-20260623T075153Z-events.jsonl
 ```
 
-Count rows and inspect the latest records:
+Count rows and inspect recorded coverage:
 
 ```sh
 go run ./cmd/localperf-sweep-progress \
   --results examples/gemma4-vllm-resource-sweep-20260620/results/tegrastats-sweep-20260623T075153Z-results.jsonl \
-  --target-rows 100
-```
-
-For lower-level inspection:
-
-```sh
-python3 - <<'PY'
-import collections
-import json
-from pathlib import Path
-
-path = Path("examples/gemma4-vllm-resource-sweep-20260620/results/tegrastats-sweep-20260623T075153Z-results.jsonl")
-rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-print("rows", len(rows))
-print("statuses", dict(collections.Counter(row.get("status") for row in rows)))
-for row in rows[-10:]:
-    tegrastats = (row.get("telemetry") or {}).get("tegrastats") or {}
-    load = row.get("load_short_decode") or {}
-    candidate = row.get("candidate") or {}
-    print(
-        row.get("candidate_id"),
-        row.get("status"),
-        "ctx", candidate.get("max_model_len"),
-        "seq", candidate.get("max_num_seqs"),
-        "samples", tegrastats.get("sample_count"),
-        "ram_delta_gib", tegrastats.get("ram_used_delta_gib"),
-        "completion_tok_s", load.get("completion_tokens_per_second"),
-    )
-PY
+  --target-rows 140
 ```
 
 Run the mechanical completion check:
@@ -146,13 +130,9 @@ go run ./cmd/localperf-sweep-check \
   --require-max-seqs 32
 ```
 
-That command should fail while the sweep is still below 100 rows. It should pass
-before the final report is treated as complete.
-
-Passing the command proves the minimum acceptable sweep coverage. It does not by
-itself mean the run should be stopped; if the 140-candidate runner is still
-healthy, let it continue and generate the final report from the most complete
-safe dataset.
+That command passed for the completed run. Passing the command proves the
+minimum acceptable sweep coverage; the final report uses the full 140-row
+dataset instead of stopping at the minimum threshold.
 
 ## Completion Checklist
 

@@ -18,7 +18,7 @@ The required end state is:
   about 100k tokens, and candidate concurrency up to 32.
 - Results must include tables, plots, and fitted relationships or formulas for
   parameter-to-resource behavior.
-- Work must stay in this scratch repo and be pushed frequently to the PR branch.
+- Work must stay in this localperf repo and be pushed frequently to the PR branch.
 - The machine must not be OOMed.
 
 ## Model And Runtime
@@ -249,8 +249,8 @@ reference the active run id.
    - 100k / c1.
 5. Push calibration/smoke harness results. Done for code/docs; raw local smoke
    JSONL remains uncommitted.
-6. Start the full safe 140-candidate sweep under a user systemd runner. Active
-   run on 2026-06-23:
+6. Start the full safe 140-candidate sweep under a user systemd runner. Done
+   on 2026-06-23:
 
    ```text
    runner unit = localperf-gemma-sweep-20260623T075153Z.service
@@ -259,14 +259,13 @@ reference the active run id.
    ```
 
 7. Generate partial plots/reports once enough rows exist to show useful
-   surfaces.
-8. Generate the final report after the sweep finishes. If the run must be cut
-   short for safety or time, do not finalize until at least 100 candidates have
-   recorded enough safe startup/load measurements and the strict verifier
-   passes. Passing 100 rows is a minimum reportability threshold, not a reason
-   to stop a healthy 140-candidate sweep.
+   surfaces. Done.
+8. Generate the final report after the sweep finishes. Done from the completed
+   140-row run. Passing 100 rows is a minimum reportability threshold, not a
+   reason to stop a healthy 140-candidate sweep.
 9. Commit sanitized reports and summaries. Keep raw logs and machine-path JSONL
-   local unless explicitly sanitized first.
+   local unless explicitly sanitized first. Done for report artifacts; raw
+   timestamped JSONL and logs remain uncommitted.
 
 ## Current Known Constraints
 

@@ -1,8 +1,8 @@
 # Gemma 4 vLLM Resource Sweep Report
 
-This report is generated from `results/sweep-results.jsonl`. It covers a standalone vLLM sweep for `nvidia/Gemma-4-26B-A4B-NVFP4`; it does not use LocalPager or OpenClaw runtime paths.
+This report is generated from `results/tegrastats-sweep-20260623T075153Z-results.jsonl`. It covers a standalone vLLM sweep for `nvidia/Gemma-4-26B-A4B-NVFP4`; it does not use LocalPager or OpenClaw runtime paths.
 
-Rows recorded: 100.
+Rows recorded: 140.
 Context windows covered: 4096, 8192, 16384, 32768, 65536, 98304, 100000, 131072, 196608, 262144.
 Highest requested concurrency covered: 32.
 
@@ -13,21 +13,23 @@ The load probe uses concurrent short prompts with 64 requested output tokens. Hi
 | status | count |
 | --- | ---: |
 | load_complete | 52 |
-| startup_only | 43 |
-| startup_service_exit | 5 |
+| startup_only | 74 |
+| startup_service_exit | 14 |
 
 ## Main Findings
 
-- Best measured output throughput was `360.694` completion tok/s at `ctx8192-seq16-small` with `8192` context and `16` requested concurrency.
-- Best measured total token throughput was `10533.390` total tok/s at `ctx8192-seq16-small`.
-- The `small` batching policy (`max_num_batched_tokens` capped at 8192) is the stable high-context path in this sweep. It starts successfully at 100k, 131k, 196k, and 262k context, though high-risk load was intentionally skipped.
-- The `match_context` batching policy often reduces reported concurrency at high context and hit a CUTLASS FP4 MoE kernel/config boundary at 196k and 262k contexts.
-- No run was classified as a machine OOM. The startup exits were vLLM/kernel assertions, and the guard stopped load when capacity or risk was unsafe.
+- Best measured output throughput was `361.593` completion tok/s at `ctx8192-seq16-small` with `8192` context and `16` requested concurrency.
+- Best measured total token throughput was `10559.650` total tok/s at `ctx8192-seq16-small`.
+- Highest measured total RAM pressure by `tegrastats` was `82.372` GiB at `ctx4096-seq8-small`.
+- Memory reporting now separates total machine pressure (`tegrastats` RAM delta and system `MemAvailable` drop), process accounting (cgroup), and vLLM capacity.
+- The `small` batching policy (`max_num_batched_tokens` capped at 8192) is the stable high-context path in this sweep. It starts successfully at 100k and above when capacity guards allow startup.
+- The `match_context` batching policy can reduce reported concurrency at high context and may hit CUTLASS FP4 MoE kernel/config boundaries.
+- Startup exits were vLLM/kernel exits rather than observed machine OOMs; load guards still block unsafe rows.
 
 ## Startup Boundaries
 
-- 5 rows exited during startup.
-- 5 of those hit the CUTLASS FP4 MoE MAX_TOKENS_PER_EXPERT assertion, which is a kernel/config boundary rather than an observed machine OOM: ctx196608-seq1-match_context, ctx262144-seq1-match_context, ctx196608-seq2-match_context, ctx262144-seq2-match_context, ctx196608-seq4-match_context.
+- 14 rows exited during startup.
+- 14 of those hit the CUTLASS FP4 MoE MAX_TOKENS_PER_EXPERT assertion, which is a kernel/config boundary rather than an observed machine OOM: ctx196608-seq1-match_context, ctx262144-seq1-match_context, ctx196608-seq2-match_context, ctx262144-seq2-match_context, ctx196608-seq4-match_context, ctx262144-seq4-match_context, ctx196608-seq8-match_context, ctx262144-seq8-match_context, ctx196608-seq16-match_context, ctx262144-seq16-match_context, ctx196608-seq24-match_context, ctx196608-seq32-match_context, ctx262144-seq24-match_context, ctx262144-seq32-match_context.
 
 ## Simplified Capacity Model
 
@@ -128,82 +130,91 @@ The coefficients for these model families are stored in `models/linear-models.js
 
 | target | rows | R2 | MAE | RMSE |
 | --- | ---: | ---: | ---: | ---: |
-| idle_memory_gib | 95 | 0.437 | 0.193 | 0.265 |
-| idle_memory_peak_gib | 95 | 0.409 | 0.201 | 0.259 |
-| load_memory_peak_gib | 52 | 0.225 | 0.139 | 0.218 |
-| reported_concurrency | 95 | 0.522 | 23.164 | 28.921 |
-| reported_concurrency_log | 95 | 0.272 | 23.180 | 35.701 |
-| reported_concurrency_empirical | 95 | 1.000 | 0.087 | 0.194 |
-| completion_tok_s | 52 | 0.911 | 17.494 | 27.832 |
-| latency_p95 | 52 | 0.099 | 0.423 | 0.535 |
+| idle_memory_gib | 126 | 0.204 | 0.270 | 0.345 |
+| idle_memory_peak_gib | 126 | 0.256 | 0.261 | 0.334 |
+| system_memory_drop_gib | 140 | 0.569 | 5.154 | 6.688 |
+| tegrastats_ram_delta_gib | 140 | 0.634 | 4.723 | 5.690 |
+| tegrastats_max_temp_c | 140 | 0.111 | 2.579 | 3.127 |
+| load_memory_peak_gib | 52 | 0.103 | 0.225 | 0.315 |
+| reported_concurrency | 126 | 0.443 | 22.433 | 29.286 |
+| reported_concurrency_log | 126 | 0.018 | 22.422 | 38.896 |
+| reported_concurrency_empirical | 126 | 1.000 | 0.100 | 0.251 |
+| completion_tok_s | 52 | 0.917 | 14.864 | 23.239 |
+| latency_p95 | 52 | 0.312 | 0.386 | 0.473 |
 
 ## Context Summary
 
 | context | rows | load complete | startup only | startup exits | max loaded seqs | best completion tok/s | max reported concurrency |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 4096 | 14 | 10 | 4 | 0 | 16 | 358.957 | 137.570 |
-| 8192 | 14 | 10 | 4 | 0 | 16 | 360.694 | 67.770 |
-| 16384 | 14 | 10 | 4 | 0 | 16 | 288.419 | 56.220 |
-| 32768 | 14 | 9 | 5 | 0 | 16 | 216.743 | 48.710 |
-| 65536 | 10 | 7 | 3 | 0 | 8 | 151.082 | 38.610 |
-| 98304 | 8 | 6 | 2 | 0 | 8 | 141.812 | 31.950 |
-| 100000 | 8 | 0 | 8 | 0 | 0 |  | 31.690 |
-| 131072 | 8 | 0 | 8 | 0 | 0 |  | 27.260 |
-| 196608 | 6 | 0 | 3 | 3 | 0 |  | 21.100 |
-| 262144 | 4 | 0 | 2 | 2 | 0 |  | 17.180 |
+| 4096 | 14 | 10 | 4 | 0 | 16 | 283.262 | 137.810 |
+| 8192 | 14 | 10 | 4 | 0 | 16 | 361.593 | 67.730 |
+| 16384 | 14 | 10 | 4 | 0 | 16 | 228.173 | 56.250 |
+| 32768 | 14 | 9 | 5 | 0 | 16 | 222.045 | 48.870 |
+| 65536 | 14 | 7 | 7 | 0 | 8 | 147.757 | 38.650 |
+| 98304 | 14 | 6 | 8 | 0 | 8 | 147.571 | 31.970 |
+| 100000 | 14 | 0 | 14 | 0 | 0 |  | 31.740 |
+| 131072 | 14 | 0 | 14 | 0 | 0 |  | 27.300 |
+| 196608 | 14 | 0 | 7 | 7 | 0 |  | 21.120 |
+| 262144 | 14 | 0 | 7 | 7 | 0 |  | 17.300 |
 
 ## Top Output Throughput Rows
 
 | rank | candidate | context | seqs | policy | completion tok/s | total tok/s | p95 latency | idle GiB | load peak GiB |
 | ---: | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| 1 | ctx8192-seq16-small | 8192 | 16 | small | 360.694 | 10533.390 | 2.835 | 3.739 | 10.837 |
-| 2 | ctx4096-seq16-small | 4096 | 16 | small | 358.957 | 10482.670 | 2.848 | 3.695 | 10.789 |
-| 3 | ctx8192-seq16-match_context | 8192 | 16 | match_context | 354.195 | 10343.592 | 2.887 | 3.817 | 10.821 |
-| 4 | ctx16384-seq16-match_context | 16384 | 16 | match_context | 288.419 | 8422.739 | 3.547 | 3.800 | 10.884 |
-| 5 | ctx16384-seq16-small | 16384 | 16 | small | 218.784 | 6389.167 | 4.678 | 3.952 | 10.837 |
-| 6 | ctx4096-seq16-match_context | 4096 | 16 | match_context | 217.576 | 6353.886 | 4.703 | 3.905 | 10.790 |
-| 7 | ctx32768-seq16-small | 32768 | 16 | small | 216.743 | 6329.567 | 4.721 | 3.975 | 10.845 |
-| 8 | ctx4096-seq8-small | 4096 | 8 | small | 196.096 | 5726.602 | 2.610 | 3.672 | 10.790 |
-| 9 | ctx8192-seq8-match_context | 8192 | 8 | match_context | 194.430 | 5677.964 | 2.632 | 3.755 | 10.840 |
-| 10 | ctx8192-seq8-small | 8192 | 8 | small | 193.529 | 5651.643 | 2.644 | 3.645 | 10.821 |
+| 1 | ctx8192-seq16-small | 8192 | 16 | small | 361.593 | 10559.650 | 2.830 | 3.723 | 10.821 |
+| 2 | ctx4096-seq16-small | 4096 | 16 | small | 283.262 | 8272.122 | 3.613 | 4.019 | 11.005 |
+| 3 | ctx16384-seq16-small | 16384 | 16 | small | 228.173 | 6663.368 | 4.486 | 3.842 | 10.820 |
+| 4 | ctx8192-seq16-match_context | 8192 | 16 | match_context | 227.390 | 6640.503 | 4.501 | 4.015 | 10.882 |
+| 5 | ctx16384-seq16-match_context | 16384 | 16 | match_context | 224.513 | 6556.476 | 4.558 | 3.842 | 10.900 |
+| 6 | ctx32768-seq16-small | 32768 | 16 | small | 222.045 | 6484.400 | 4.608 | 3.845 | 10.822 |
+| 7 | ctx4096-seq16-match_context | 4096 | 16 | match_context | 221.812 | 6477.595 | 4.613 | 4.144 | 10.991 |
+| 8 | ctx8192-seq8-small | 8192 | 8 | small | 195.998 | 5723.746 | 2.609 | 3.700 | 10.846 |
+| 9 | ctx4096-seq8-small | 4096 | 8 | small | 195.364 | 5705.240 | 2.618 | 4.069 | 10.899 |
+| 10 | ctx32768-seq8-match_context | 32768 | 8 | match_context | 159.781 | 4666.109 | 3.203 | 3.872 | 11.010 |
 
 ## 100k Context Rows
 
 | candidate | status | seqs | policy | reported concurrency | idle GiB | completion tok/s | notes |
 | --- | --- | ---: | --- | ---: | ---: | ---: | --- |
-| ctx100000-seq1-match_context | startup_only | 1 | match_context | 3.300 | 5.081 |  | load skipped by capacity or risk guard |
-| ctx100000-seq1-small | startup_only | 1 | small | 31.690 | 3.982 |  | load skipped by capacity or risk guard |
-| ctx100000-seq2-match_context | startup_only | 2 | match_context | 3.280 | 4.812 |  | load skipped by capacity or risk guard |
-| ctx100000-seq2-small | startup_only | 2 | small | 31.450 | 4.018 |  | load skipped by capacity or risk guard |
-| ctx100000-seq4-match_context | startup_only | 4 | match_context | 3.200 | 4.894 |  | load skipped by capacity or risk guard |
-| ctx100000-seq4-small | startup_only | 4 | small | 31.630 | 4.054 |  | load skipped by capacity or risk guard |
-| ctx100000-seq8-match_context | startup_only | 8 | match_context | 3.310 | 4.710 |  | load skipped by capacity or risk guard |
-| ctx100000-seq8-small | startup_only | 8 | small | 31.640 | 3.933 |  | load skipped by capacity or risk guard |
+| ctx100000-seq1-match_context | startup_only | 1 | match_context | 3.260 | 4.845 |  | risk_guard(high) |
+| ctx100000-seq1-small | startup_only | 1 | small | 31.740 | 3.906 |  | risk_guard(high) |
+| ctx100000-seq2-match_context | startup_only | 2 | match_context | 3.280 | 4.743 |  | risk_guard(high) |
+| ctx100000-seq2-small | startup_only | 2 | small | 31.550 | 3.919 |  | risk_guard(high) |
+| ctx100000-seq4-match_context | startup_only | 4 | match_context | 3.280 | 4.816 |  | risk_guard(high)+capacity_guard |
+| ctx100000-seq4-small | startup_only | 4 | small | 31.470 | 3.974 |  | risk_guard(high) |
+| ctx100000-seq8-match_context | startup_only | 8 | match_context | 3.280 | 4.631 |  | risk_guard(high)+capacity_guard |
+| ctx100000-seq8-small | startup_only | 8 | small | 31.690 | 3.838 |  | risk_guard(high) |
+| ctx100000-seq16-match_context | startup_only | 16 | match_context | 3.300 | 4.789 |  | risk_guard(extreme)+capacity_guard |
+| ctx100000-seq16-small | startup_only | 16 | small | 31.640 | 3.949 |  | risk_guard(extreme) |
+| ctx100000-seq24-match_context | startup_only | 24 | match_context | 3.270 | 4.812 |  | risk_guard(extreme)+capacity_guard |
+| ctx100000-seq24-small | startup_only | 24 | small | 31.550 | 3.953 |  | risk_guard(extreme) |
+| ctx100000-seq32-match_context | startup_only | 32 | match_context | 3.300 | 4.864 |  | risk_guard(extreme)+capacity_guard |
+| ctx100000-seq32-small | startup_only | 32 | small | 31.440 | 4.048 |  | risk_guard(extreme)+capacity_guard |
 
 ## Latest Measurements
 
 | candidate | status | context | seqs | idle GiB | tok/s |
 | --- | --- | ---: | ---: | ---: | ---: |
-| ctx65536-seq8-match_context | startup_only | 65536 | 8 | 4.251 |  |
-| ctx65536-seq8-small | load_complete | 65536 | 8 | 3.912 | 151.082 |
-| ctx131072-seq4-match_context | startup_only | 131072 | 4 | 4.915 |  |
-| ctx131072-seq4-small | startup_only | 131072 | 4 | 4.070 |  |
-| ctx262144-seq2-match_context | startup_service_exit | 262144 | 2 |  |  |
-| ctx262144-seq2-small | startup_only | 262144 | 2 | 4.046 |  |
-| ctx32768-seq24-match_context | startup_only | 32768 | 24 | 4.089 |  |
-| ctx32768-seq24-small | startup_only | 32768 | 24 | 3.991 |  |
-| ctx98304-seq8-match_context | startup_only | 98304 | 8 | 4.828 |  |
-| ctx98304-seq8-small | load_complete | 98304 | 8 | 4.078 | 141.812 |
-| ctx196608-seq4-match_context | startup_service_exit | 196608 | 4 |  |  |
-| ctx196608-seq4-small | startup_only | 196608 | 4 | 4.075 |  |
-| ctx100000-seq8-match_context | startup_only | 100000 | 8 | 4.710 |  |
-| ctx100000-seq8-small | startup_only | 100000 | 8 | 3.933 |  |
-| ctx32768-seq32-match_context | startup_only | 32768 | 32 | 4.124 |  |
-| ctx32768-seq32-small | startup_only | 32768 | 32 | 4.020 |  |
-| ctx65536-seq16-match_context | startup_only | 65536 | 16 | 4.287 |  |
-| ctx65536-seq16-small | startup_only | 65536 | 16 | 3.962 |  |
-| ctx131072-seq8-match_context | startup_only | 131072 | 8 | 4.758 |  |
-| ctx131072-seq8-small | startup_only | 131072 | 8 | 3.867 |  |
+| ctx98304-seq32-match_context | startup_only | 98304 | 32 | 4.856 |  |
+| ctx98304-seq32-small | startup_only | 98304 | 32 | 4.989 |  |
+| ctx131072-seq24-match_context | startup_only | 131072 | 24 | 4.809 |  |
+| ctx131072-seq24-small | startup_only | 131072 | 24 | 4.002 |  |
+| ctx196608-seq16-match_context | startup_service_exit | 196608 | 16 |  |  |
+| ctx196608-seq16-small | startup_only | 196608 | 16 | 3.986 |  |
+| ctx100000-seq32-match_context | startup_only | 100000 | 32 | 4.864 |  |
+| ctx100000-seq32-small | startup_only | 100000 | 32 | 4.048 |  |
+| ctx131072-seq32-match_context | startup_only | 131072 | 32 | 4.856 |  |
+| ctx131072-seq32-small | startup_only | 131072 | 32 | 4.061 |  |
+| ctx262144-seq16-match_context | startup_service_exit | 262144 | 16 |  |  |
+| ctx262144-seq16-small | startup_only | 262144 | 16 | 4.091 |  |
+| ctx196608-seq24-match_context | startup_service_exit | 196608 | 24 |  |  |
+| ctx196608-seq24-small | startup_only | 196608 | 24 | 4.024 |  |
+| ctx196608-seq32-match_context | startup_service_exit | 196608 | 32 |  |  |
+| ctx196608-seq32-small | startup_only | 196608 | 32 | 4.005 |  |
+| ctx262144-seq24-match_context | startup_service_exit | 262144 | 24 |  |  |
+| ctx262144-seq24-small | startup_only | 262144 | 24 | 4.182 |  |
+| ctx262144-seq32-match_context | startup_service_exit | 262144 | 32 |  |  |
+| ctx262144-seq32-small | startup_only | 262144 | 32 | 4.051 |  |
 
 ## Runtime And Safety
 
@@ -223,11 +234,13 @@ The coefficients for these model families are stored in `models/linear-models.js
 
 ## Artifacts
 
-- `results/sweep-results.jsonl`: machine-readable per-candidate measurements.
-- `results/sweep-summary.json`: machine-readable aggregate summary.
+- Input JSONL: `results/tegrastats-sweep-20260623T075153Z-results.jsonl`.
 - `tables/measurements.csv`: flattened table for spreadsheets.
 - `plots/idle-memory-by-context.svg`
 - `plots/load-peak-memory-by-context.svg`
+- `plots/system-memory-drop-by-context.svg`
+- `plots/tegrastats-ram-delta-by-context.svg`
+- `plots/tegrastats-temperature-by-context.svg`
 - `plots/reported-concurrency-by-context.svg`
 - `plots/throughput-by-concurrency.svg`
 - `plots/latency-p95-by-concurrency.svg`
