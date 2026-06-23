@@ -68,8 +68,8 @@ Primary sweep axes:
 | --- | --- |
 | `max_model_len` | 4096, 8192, 16384, 32768, 65536, 98304, 100000, 131072, 196608, 262144 |
 | `max_num_seqs` | 1, 2, 4, 8, 16, 24, 32 |
-| `max_num_batched_tokens` policy | `small`, `match_context`, `wide` |
-| `gpu_memory_utilization` | 0.55, 0.65, 0.75 for selected calibration points |
+| `max_num_batched_tokens` policy | `small`, `match_context` |
+| `gpu_memory_utilization` | fixed at 0.65 for this sweep |
 
 The first matrix targets at least 140 candidate settings:
 
@@ -77,9 +77,9 @@ The first matrix targets at least 140 candidate settings:
 10 context windows * 7 max_num_seqs * 2 batch policies = 140 candidates
 ```
 
-Some candidates may be marked `skipped_risk` after a safe startup/capacity
-check. A skipped candidate still records the attempted parameter tuple and
-reason, but it does not count as an executed measurement.
+Some candidates may be recorded as startup-only after a safe startup/capacity
+check. A startup-only candidate still records the attempted parameter tuple,
+vLLM capacity, idle memory, telemetry, and reason; it does not run request load.
 
 ## Measurement Phases Per Candidate
 
@@ -87,7 +87,9 @@ Each candidate produces one JSONL record with nested phase results.
 
 1. `preflight`
    - Stop conflicting local LLM services.
-   - Record system RAM, swap, process list, vLLM version, model snapshot.
+   - Start a per-candidate `tegrastats` sampler unless explicitly disabled.
+   - Record system RAM, swap, conflicting service state, vLLM version, and
+     model snapshot.
    - Estimate risk from previous successful rows and the candidate's
      `context * concurrency` token budget.
 
@@ -99,28 +101,32 @@ Each candidate produces one JSONL record with nested phase results.
      - available KV cache memory,
      - GPU KV cache token capacity,
      - maximum reported concurrency for the configured context.
-   - Record idle system memory and service cgroup memory.
+   - Record `/proc/meminfo`, service cgroup memory, `nvidia-smi` telemetry
+     where available, and `tegrastats` samples.
 
 3. `load_short_decode`
    - Send `max_num_seqs` concurrent short prompts, capped by the candidate load
      cap.
    - Use low output length, default 64 tokens, to keep samples fast.
    - Record successes, errors, wall time, aggregate output tokens/sec, total
-     tokens/sec, latency distribution, and service memory peak.
+     tokens/sec, latency distribution, service memory peak, and load-phase
+     telemetry.
 
 4. `load_prefill_probe`
-   - For a smaller selected subset, send long prompts at 25% and 75% of the
-     context window, with output capped at 16 tokens.
-   - This phase is skipped for high-risk candidates or when the estimated prompt
-     would be too slow.
+   - Follow-up only. It is not part of the current 140-candidate sweep.
+   - For a smaller selected subset, a later run can send long prompts at 25%
+     and 75% of the context window, with output capped at 16 tokens.
 
 5. `shutdown`
    - Stop the transient service.
-   - Record final cgroup status and whether cleanup completed.
+   - Stop `tegrastats`.
+   - Record final cgroup status, telemetry summary, and whether cleanup
+     completed.
 
 ## OOM Safety Rules
 
-The harness must prefer `skipped_risk` over trying a dangerous sample.
+The harness must prefer startup-only or skipped-load records over trying a
+dangerous load sample.
 
 Hard rules:
 
@@ -157,10 +163,14 @@ Required outputs:
 
 ```text
 results/sweep-candidates.jsonl
-results/sweep-results.jsonl
-results/sweep-summary.json
-results/events.jsonl
+results/<run-id>-results.jsonl
+results/<run-id>-summary.json
+results/<run-id>-events.jsonl
 ```
+
+The timestamped raw JSONL files are local-only because they can include machine
+paths, process details, and verbose logs. Final reports and sanitized summaries
+can be committed.
 
 Each result row records:
 
@@ -170,8 +180,10 @@ Each result row records:
 - service unit name,
 - startup status,
 - parsed vLLM capacity,
-- idle memory,
-- load memory,
+- `tegrastats` total RAM/swap/temperature samples and summary,
+- `/proc/meminfo` snapshots,
+- systemd cgroup memory,
+- `nvidia-smi` fields where available,
 - throughput,
 - latency,
 - skip/failure reason,
@@ -192,15 +204,16 @@ reports/models/*.json
 Required analysis:
 
 - Feasible/infeasible heatmaps for context by concurrency.
-- Idle memory versus context for each concurrency level.
-- Peak loaded memory versus context and concurrency.
+- Total machine RAM pressure versus context and concurrency using `tegrastats`
+  and `MemAvailable` drop.
+- Cgroup idle/load memory versus context for process-accounting diagnostics.
 - Aggregate output tok/s versus concurrency.
 - Latency p50/p95 versus concurrency.
 - Fitted linear or interaction models such as:
 
 ```text
-idle_memory_gib ~= b0 + b1 * context_k + b2 * max_num_seqs
-peak_memory_gib ~= b0 + b1 * context_k + b2 * max_num_seqs + b3 * context_k * max_num_seqs
+tegrastats_ram_delta_gib ~= b0 + b1 * context_k + b2 * max_num_seqs + b3 * context_k * max_num_seqs
+system_memory_drop_gib ~= b0 + b1 * context_k + b2 * max_num_seqs + b3 * context_k * max_num_seqs
 output_tok_s ~= b0 + b1 * max_num_seqs + b2 * context_k
 ```
 
@@ -208,27 +221,50 @@ The formulas are descriptive, not universal hardware laws.
 
 ## Execution Strategy
 
-1. Land this plan and push the PR branch.
-2. Add the harness and dry-run matrix generation.
-3. Run 3-5 calibration samples:
+1. Land this plan and push the PR branch. Done.
+2. Add the harness and dry-run matrix generation. Done.
+3. Add corrected memory telemetry. Done:
+   - per-candidate `tegrastats`,
+   - `/proc/meminfo` available-memory drop,
+   - systemd cgroup process accounting,
+   - `nvidia-smi` where exposed by the platform.
+4. Run 3-5 calibration samples:
    - 4k / c1,
    - 16k / c4,
    - 32k / c8,
    - 32k / c16,
    - 100k / c1.
-4. Push calibration results.
-5. Expand in batches of 10-20 candidates, pushing after each batch.
-6. Generate plots after each batch so partial results remain inspectable.
-7. Continue until at least 100 candidates are recorded and enough executed
-   samples exist to support the final report.
+5. Push calibration/smoke harness results. Done for code/docs; raw local smoke
+   JSONL remains uncommitted.
+6. Start the full safe 140-candidate sweep under a user systemd runner. Active
+   run on 2026-06-23:
+
+   ```text
+   runner unit = localperf-gemma-sweep-20260623T075153Z.service
+   results = results/tegrastats-sweep-20260623T075153Z-results.jsonl
+   events = results/tegrastats-sweep-20260623T075153Z-events.jsonl
+   ```
+
+7. Generate partial plots/reports once enough rows exist to show useful
+   surfaces.
+8. Generate the final report after the sweep finishes or after at least 100
+   candidates have recorded enough safe startup/load measurements.
+9. Commit sanitized reports and summaries. Keep raw logs and machine-path JSONL
+   local unless explicitly sanitized first.
 
 ## Current Known Constraints
 
 - `nvidia-smi` is present but reports `N/A` for GB10 memory fields on this
-  machine, so GPU memory must be inferred from vLLM logs, cgroup/process memory,
-  and system memory.
+  machine, so total memory pressure must be read from `tegrastats` and
+  `/proc/meminfo`. vLLM logs and cgroup/process memory remain useful but do not
+  fully represent unified memory.
+- `tegrastats` on this machine reports RAM, swap, CPU, and temperature. It does
+  not currently expose a `GR3D`/GPU utilization field in the observed output.
 - `matplotlib` and `pandas` are not installed in the system Python, so plotting
   uses Python standard-library SVG/HTML generation unless dependencies are
   intentionally added later.
 - Existing Qwen vLLM may be loaded before the sweep starts; the harness must
   unload it before Gemma samples.
+- The sweep runner itself should be launched with `systemd-run --user`; plain
+  shell backgrounding can leave an orphaned candidate vLLM service if the
+  parent shell exits unexpectedly.
