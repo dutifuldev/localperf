@@ -13,6 +13,7 @@ Record the signals separately and label them plainly.
 | System memory pressure | `/proc/meminfo` `MemAvailable` | Whole-machine memory lost while the model is loaded or serving | Best practical proxy for total unified-memory pressure |
 | Process/cgroup memory | `systemctl show ... MemoryCurrent MemoryPeak` or cgroup files | Memory charged to the server process by Linux | Process accounting, not total model footprint |
 | vLLM capacity | vLLM logs | KV cache memory, KV token capacity, and max concurrency reported by vLLM | Fit/capacity planning |
+| NVIDIA unified-memory telemetry | `tegrastats` when available | NVIDIA platform view of RAM, swap, GPU activity, thermals, and power on Tegra/Jetson/GB10-style systems | Preferred NVIDIA cross-check for unified-memory systems |
 | GPU telemetry | `nvtop`, NVML, DCGM, vendor tools | GPU utilization and memory counters when available | Cross-checking and live debugging |
 | Request performance | OpenAI-compatible request timings and usage | latency, output token/s, total token/s, failures | Throughput and latency characterization |
 
@@ -103,13 +104,18 @@ signal, not automatic ground truth.
 
 Prefer, in order:
 
-1. vendor-supported telemetry for the target platform,
-2. NVML/DCGM counters,
-3. `nvtop` sampled output or screenshots/logs,
-4. `nvidia-smi` if it reports useful fields.
+1. `tegrastats` on NVIDIA Tegra/Jetson/GB10-style unified-memory systems,
+2. other vendor-supported telemetry for the target platform,
+3. NVML/DCGM counters,
+4. `nvtop` sampled output or screenshots/logs,
+5. `nvidia-smi` if it reports useful fields.
 
 For each run, capture:
 
+- whether `tegrastats` was available,
+- `tegrastats` RAM and swap lines when available,
+- `tegrastats` GR3D/GPU utilization, when available,
+- `tegrastats` temperature and power lines, when available,
 - GPU memory used, if available,
 - GPU utilization,
 - memory-controller utilization, if available,
@@ -119,6 +125,16 @@ For each run, capture:
 
 On GB10-style unified-memory systems, GPU memory counters may be incomplete or
 misleading. Cross-check them against `MemAvailable` drop and vLLM KV capacity.
+
+Use `tegrastats` as a sampled time series, not as a one-off screenshot:
+
+```sh
+tegrastats --interval 1000
+```
+
+If `tegrastats` is not installed on the target machine, record that explicitly
+in the run artifact and fall back to the other signals. Do not leave the field
+blank.
 
 ## Request Performance
 
