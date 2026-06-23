@@ -4,5 +4,8 @@ __pycache__/
 results/events.jsonl
 results/sweep-results.jsonl
 results/sweep-summary.json
+results/*-events.jsonl
+results/*-results.jsonl
+results/*-summary.json
 results/logs/
 results/profiles/

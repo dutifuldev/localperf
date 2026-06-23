@@ -15,6 +15,7 @@ import json
 import os
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -34,6 +35,16 @@ CONFLICTING_SERVICES = [
     "localpager-vllm-qwen36-nvfp4.service",
     "localpager-vllm-gemma4-26b-a4b-nvfp4.service",
 ]
+TEGRASTATS_RE = re.compile(
+    r"^(?P<stamp>\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}) "
+    r"RAM (?P<ram_used>\d+)/(?P<ram_total>\d+)MB "
+    r"\(lfb (?P<lfb_count>\d+)x(?P<lfb_mb>\d+)MB\) "
+    r"SWAP (?P<swap_used>\d+)/(?P<swap_total>\d+)MB "
+    r"\(cached (?P<swap_cached>\d+)MB\) "
+    r"CPU \[(?P<cpu>[^\]]*)\](?P<rest>.*)$"
+)
+TEGRASTAT_TEMP_RE = re.compile(r"([A-Za-z0-9_]+)@([0-9.]+)C")
+TEGRASTAT_CPU_RE = re.compile(r"(\d+)%@([0-9]+)")
 
 
 def main() -> int:
@@ -61,6 +72,8 @@ def main() -> int:
     run.add_argument("--startup-timeout-sec", type=int, default=900)
     run.add_argument("--load-timeout-sec", type=int, default=300)
     run.add_argument("--idle-sleep-sec", type=float, default=5.0)
+    run.add_argument("--disable-tegrastats", action="store_true")
+    run.add_argument("--tegrastats-interval-ms", type=int, default=1000)
     run.add_argument("--host", default="127.0.0.1")
     run.add_argument("--port", type=int, default=8000)
 
@@ -187,6 +200,9 @@ def run_candidate(candidate: dict, args: argparse.Namespace, events_path: Path) 
     started_at = now()
     candidate_id = candidate["candidate_id"]
     event(events_path, "candidate_start", candidate_id=candidate_id, dry_run=args.dry_run)
+    tegrastats = TegrastatsMonitor(args.tegrastats_interval_ms, disabled=args.disable_tegrastats)
+    tegrastats.start()
+    tegrastats.set_phase("preflight")
     result = {
         "candidate_id": candidate_id,
         "started_at": started_at,
@@ -201,65 +217,81 @@ def run_candidate(candidate: dict, args: argparse.Namespace, events_path: Path) 
         "idle": None,
         "load_short_decode": None,
         "shutdown": None,
+        "telemetry": {
+            "tools": telemetry_tools(args),
+            "tegrastats": None,
+        },
         "notes": [],
     }
 
     if args.dry_run:
         result["status"] = "dry_run"
         result["finished_at"] = now()
-        return finish_candidate(result, events_path, candidate_id)
-
-    if args.stop_conflicting_services:
-        stop_services(CONFLICTING_SERVICES, events_path)
-
-    preflight_mem = system_memory()
-    if not memory_above_floor(preflight_mem, args):
-        result["status"] = "skipped_preflight_memory"
-        result["notes"].append("available memory or swap was below configured floor before startup")
-        result["finished_at"] = now()
+        tegrastats.stop()
+        result["telemetry"]["tegrastats"] = tegrastats.summary()
         return finish_candidate(result, events_path, candidate_id)
 
     unit = unit_name(candidate_id)
-    log_path = ROOT / "results/logs" / f"{candidate_id}.log"
-    profile_path = ROOT / "results/profiles" / f"{candidate_id}.env"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    profile_path.parent.mkdir(parents=True, exist_ok=True)
-    profile_path.write_text(render_profile(candidate, args), encoding="utf-8")
+    try:
+        if args.stop_conflicting_services:
+            stop_services(CONFLICTING_SERVICES, events_path)
 
-    startup = start_and_wait(candidate, args, unit, profile_path, log_path, events_path)
-    result["startup"] = startup
-    if startup["status"] != "ready":
-        result["status"] = startup["status"]
+        preflight_mem = system_memory()
+        if not memory_above_floor(preflight_mem, args):
+            result["status"] = "skipped_preflight_memory"
+            result["notes"].append("available memory or swap was below configured floor before startup")
+            result["finished_at"] = now()
+            return finish_candidate(result, events_path, candidate_id)
+
+        log_path = ROOT / "results/logs" / f"{candidate_id}.log"
+        profile_path = ROOT / "results/profiles" / f"{candidate_id}.env"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text(render_profile(candidate, args), encoding="utf-8")
+
+        tegrastats.set_phase("startup")
+        startup = start_and_wait(candidate, args, unit, profile_path, log_path, events_path)
+        result["startup"] = startup
+        if startup["status"] != "ready":
+            result["status"] = startup["status"]
+            tegrastats.set_phase("shutdown")
+            result["shutdown"] = stop_unit(unit)
+            result["finished_at"] = now()
+            return finish_candidate(result, events_path, candidate_id)
+
+        tegrastats.set_phase("idle")
+        time.sleep(args.idle_sleep_sec)
+        idle = {
+            "measured_at": now(),
+            "system_memory": system_memory(),
+            "service": service_show(unit),
+            "gpu": gpu_telemetry(),
+            "vllm_capacity": parse_vllm_capacity(log_path.read_text(errors="replace")),
+            "metrics": fetch_metrics(args.host, args.port),
+        }
+        result["idle"] = idle
+
+        if not memory_above_floor(idle["system_memory"], args):
+            result["status"] = "skipped_load_idle_memory"
+            result["notes"].append("idle memory was below configured safety floor")
+        elif should_skip_load(candidate, idle, args):
+            result["status"] = "startup_only"
+            result["notes"].append("load skipped by capacity or risk guard")
+        elif args.run_load:
+            tegrastats.set_phase("load")
+            result["load_short_decode"] = run_short_load(candidate, args, unit, events_path)
+            result["status"] = "load_complete" if result["load_short_decode"]["errors"] == 0 else "load_errors"
+        else:
+            result["status"] = "startup_only"
+            result["notes"].append("load not requested")
+
+        tegrastats.set_phase("shutdown")
         result["shutdown"] = stop_unit(unit)
         result["finished_at"] = now()
         return finish_candidate(result, events_path, candidate_id)
-
-    time.sleep(args.idle_sleep_sec)
-    idle = {
-        "measured_at": now(),
-        "system_memory": system_memory(),
-        "service": service_show(unit),
-        "vllm_capacity": parse_vllm_capacity(log_path.read_text(errors="replace")),
-        "metrics": fetch_metrics(args.host, args.port),
-    }
-    result["idle"] = idle
-
-    if not memory_above_floor(idle["system_memory"], args):
-        result["status"] = "skipped_load_idle_memory"
-        result["notes"].append("idle memory was below configured safety floor")
-    elif should_skip_load(candidate, idle, args):
-        result["status"] = "startup_only"
-        result["notes"].append("load skipped by capacity or risk guard")
-    elif args.run_load:
-        result["load_short_decode"] = run_short_load(candidate, args, unit, events_path)
-        result["status"] = "load_complete" if result["load_short_decode"]["errors"] == 0 else "load_errors"
-    else:
-        result["status"] = "startup_only"
-        result["notes"].append("load not requested")
-
-    result["shutdown"] = stop_unit(unit)
-    result["finished_at"] = now()
-    return finish_candidate(result, events_path, candidate_id)
+    finally:
+        tegrastats.stop()
+        result["telemetry"]["tegrastats"] = tegrastats.summary()
 
 
 def finish_candidate(result: dict, events_path: Path, candidate_id: str) -> dict:
@@ -326,6 +358,7 @@ def start_and_wait(candidate: dict, args: argparse.Namespace, unit: str, profile
             "at": now(),
             "service": service_show(unit),
             "system_memory": system_memory(),
+            "gpu": gpu_telemetry(),
         }
         monitor_samples.append(sample)
         if not memory_above_floor(sample["system_memory"], args):
@@ -403,7 +436,7 @@ def vllm_serve_command(candidate: dict, args: argparse.Namespace) -> list[str]:
 
 
 def systemd_environment() -> list[str]:
-    path = f"{DEFAULT_VENV / 'bin'}:{os.environ.get('PATH', '')}"
+    path = f"{DEFAULT_VENV / 'bin'}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:{os.environ.get('PATH', '')}"
     return [
         "--setenv=FLASHINFER_DISABLE_VERSION_CHECK=1",
         "--setenv=CUTE_DSL_ARCH=sm_121a",
@@ -519,19 +552,178 @@ class MemoryMonitor:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            self.samples.append({"at": now(), "service": service_show(self.unit), "system_memory": system_memory()})
+            self.samples.append(
+                {
+                    "at": now(),
+                    "service": service_show(self.unit),
+                    "system_memory": system_memory(),
+                    "gpu": gpu_telemetry(),
+                }
+            )
             self._stop.wait(1)
 
     def summary(self) -> dict:
         memory_current = [parse_int(sample["service"].get("MemoryCurrent")) for sample in self.samples]
         memory_peak = [parse_int(sample["service"].get("MemoryPeak")) for sample in self.samples]
         avail = [sample["system_memory"].get("mem_available_bytes", 0) for sample in self.samples]
+        gpu_util = [
+            sample.get("gpu", {}).get("utilization_gpu_pct")
+            for sample in self.samples
+            if isinstance(sample.get("gpu", {}).get("utilization_gpu_pct"), (int, float))
+        ]
+        power = [
+            sample.get("gpu", {}).get("power_draw_w")
+            for sample in self.samples
+            if isinstance(sample.get("gpu", {}).get("power_draw_w"), (int, float))
+        ]
         return {
             "samples": len(self.samples),
             "max_memory_current_bytes": max(memory_current) if memory_current else None,
             "max_memory_peak_bytes": max(memory_peak) if memory_peak else None,
             "min_available_memory_bytes": min(avail) if avail else None,
+            "max_gpu_utilization_pct": max(gpu_util) if gpu_util else None,
+            "max_power_draw_w": max(power) if power else None,
         }
+
+
+class TegrastatsMonitor:
+    def __init__(self, interval_ms: int, disabled: bool = False):
+        self.interval_ms = interval_ms
+        self.disabled = disabled
+        self.samples: list[dict] = []
+        self.stderr = ""
+        self.start_error = ""
+        self._phase = "init"
+        self._phase_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._process: subprocess.Popen[str] | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self.disabled:
+            self.start_error = "disabled by --disable-tegrastats"
+            return
+        if not shutil.which("tegrastats"):
+            self.start_error = "tegrastats not found on PATH"
+            return
+        try:
+            self._process = subprocess.Popen(
+                ["tegrastats", "--interval", str(self.interval_ms)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.start_error = str(exc)
+            return
+        self._thread = threading.Thread(target=self._read_stdout, daemon=True)
+        self._thread.start()
+
+    def set_phase(self, phase: str) -> None:
+        with self._phase_lock:
+            self._phase = phase
+
+    def stop(self) -> None:
+        self._stop.set()
+        if not self._process:
+            return
+        with contextlib.suppress(Exception):
+            self._process.send_signal(signal.SIGINT)
+        try:
+            self._process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait(timeout=5)
+        if self._thread:
+            self._thread.join(timeout=2)
+        if self._process.stderr:
+            with contextlib.suppress(Exception):
+                self.stderr = self._process.stderr.read().strip()
+
+    def _read_stdout(self) -> None:
+        assert self._process is not None
+        assert self._process.stdout is not None
+        while True:
+            line = self._process.stdout.readline()
+            if not line:
+                break
+            self._append_sample(line.rstrip("\n"))
+
+    def _append_sample(self, line: str) -> None:
+        with self._phase_lock:
+            phase = self._phase
+        self.samples.append(
+            {
+                "at": now(),
+                "phase": phase,
+                "raw": line,
+                "parsed": parse_tegrastats_line(line),
+            }
+        )
+
+    def summary(self) -> dict:
+        parsed = [sample["parsed"] for sample in self.samples if sample.get("parsed", {}).get("parsed")]
+        first = parsed[0] if parsed else None
+        max_ram = max((sample["ram_used_mb"] for sample in parsed), default=None)
+        ram_delta_mb = max_ram - first["ram_used_mb"] if first and max_ram is not None else None
+        phases: dict[str, int] = {}
+        for sample in self.samples:
+            phases[sample.get("phase", "unknown")] = phases.get(sample.get("phase", "unknown"), 0) + 1
+        return {
+            "available": bool(shutil.which("tegrastats")) and not self.disabled,
+            "path": shutil.which("tegrastats"),
+            "interval_ms": self.interval_ms,
+            "start_error": self.start_error,
+            "stderr": self.stderr,
+            "samples": self.samples,
+            "sample_count": len(self.samples),
+            "parsed_sample_count": len(parsed),
+            "phase_counts": phases,
+            "baseline_ram_used_mb": first.get("ram_used_mb") if first else None,
+            "max_ram_used_mb": max_ram,
+            "ram_used_delta_mb": ram_delta_mb,
+            "ram_used_delta_gib": round(ram_delta_mb / 1024, 3) if ram_delta_mb is not None else None,
+            "max_swap_used_mb": max((sample["swap_used_mb"] for sample in parsed), default=None),
+            "max_temp_c": max((sample["max_temp_c"] for sample in parsed if sample.get("max_temp_c") is not None), default=None),
+            "gpu_field_seen": any(sample.get("has_gpu_gr3d_field") for sample in parsed),
+        }
+
+
+def parse_tegrastats_line(line: str) -> dict:
+    match = TEGRASTATS_RE.match(line.strip())
+    if not match:
+        return {"parsed": False}
+    data = match.groupdict()
+    cpu_values = [
+        {"util_pct": int(util), "freq_mhz": int(freq)}
+        for util, freq in TEGRASTAT_CPU_RE.findall(data["cpu"])
+    ]
+    temps = [
+        {"name": name, "celsius": float(value)}
+        for name, value in TEGRASTAT_TEMP_RE.findall(data["rest"])
+    ]
+    ram_used = int(data["ram_used"])
+    ram_total = int(data["ram_total"])
+    return {
+        "parsed": True,
+        "device_timestamp": data["stamp"],
+        "ram_used_mb": ram_used,
+        "ram_total_mb": ram_total,
+        "ram_free_estimated_mb": ram_total - ram_used,
+        "lfb_count": int(data["lfb_count"]),
+        "lfb_mb": int(data["lfb_mb"]),
+        "swap_used_mb": int(data["swap_used"]),
+        "swap_total_mb": int(data["swap_total"]),
+        "swap_cached_mb": int(data["swap_cached"]),
+        "cpu_count": len(cpu_values),
+        "cpu_avg_util_pct": round(sum(item["util_pct"] for item in cpu_values) / len(cpu_values), 3) if cpu_values else None,
+        "cpu_max_util_pct": max((item["util_pct"] for item in cpu_values), default=None),
+        "max_temp_c": max((item["celsius"] for item in temps), default=None),
+        "temps": temps,
+        "has_gpu_gr3d_field": "GR3D" in data["rest"] or "GPU" in data["rest"],
+        "raw_tail": data["rest"].strip(),
+    }
 
 
 def summarize_command(args: argparse.Namespace) -> int:
@@ -666,6 +858,55 @@ def service_show(unit: str) -> dict:
             key, value = line.split("=", 1)
             data[key] = value
     return data
+
+
+def telemetry_tools(args: argparse.Namespace) -> dict:
+    return {
+        "tegrastats_available": shutil.which("tegrastats") is not None and not args.disable_tegrastats,
+        "tegrastats_path": shutil.which("tegrastats"),
+        "tegrastats_interval_ms": args.tegrastats_interval_ms,
+        "nvtop_available": shutil.which("nvtop") is not None,
+        "nvidia_smi_available": shutil.which("nvidia-smi") is not None,
+        "ninja_available": shutil.which("ninja") is not None,
+    }
+
+
+def gpu_telemetry() -> dict:
+    if not shutil.which("nvidia-smi"):
+        return {"ok": False, "error": "nvidia-smi not found"}
+    query = "timestamp,name,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,power.draw,temperature.gpu"
+    result = run(
+        ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],
+        check=False,
+        capture=True,
+    )
+    raw = result.stdout.strip()
+    if result.returncode != 0 or not raw:
+        return {"ok": False, "error": result.stderr.strip(), "raw": raw}
+    parts = [part.strip() for part in raw.split(",")]
+    keys = [
+        "timestamp",
+        "name",
+        "memory_total_mib",
+        "memory_used_mib",
+        "memory_free_mib",
+        "utilization_gpu_pct",
+        "utilization_memory_pct",
+        "power_draw_w",
+        "temperature_c",
+    ]
+    out: dict[str, object] = {"ok": True, "raw": raw}
+    for key, value in zip(keys, parts):
+        if value == "[N/A]":
+            out[key] = None
+        elif key in {"timestamp", "name"}:
+            out[key] = value
+        else:
+            with contextlib.suppress(ValueError):
+                out[key] = float(value)
+            if key not in out:
+                out[key] = value
+    return out
 
 
 def system_memory() -> dict:

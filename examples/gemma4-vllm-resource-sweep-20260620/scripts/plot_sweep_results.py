@@ -41,6 +41,8 @@ def flatten_rows(rows: list[dict]) -> list[dict]:
         idle = row.get("idle") or {}
         load = row.get("load_short_decode") or {}
         startup = row.get("startup") or {}
+        telemetry = row.get("telemetry") or {}
+        tegrastats = telemetry.get("tegrastats") or {}
         capacity = idle.get("vllm_capacity") or startup.get("capacity") or {}
         idle_service = idle.get("service") or startup.get("service") or {}
         load_service = load.get("service_after") or {}
@@ -57,6 +59,12 @@ def flatten_rows(rows: list[dict]) -> list[dict]:
                 "startup_seconds": (startup or {}).get("startup_seconds"),
                 "kv_cache_tokens": capacity.get("gpu_kv_cache_tokens"),
                 "reported_concurrency": capacity.get("max_reported_concurrency"),
+                "system_memory_drop_gib": system_memory_drop_gib(row),
+                "tegrastats_ram_delta_gib": tegrastats.get("ram_used_delta_gib"),
+                "tegrastats_max_ram_used_gib": mb_to_gib(tegrastats.get("max_ram_used_mb")),
+                "tegrastats_max_temp_c": tegrastats.get("max_temp_c"),
+                "tegrastats_samples": tegrastats.get("sample_count"),
+                "tegrastats_gpu_field_seen": tegrastats.get("gpu_field_seen"),
                 "idle_memory_gib": bytes_to_gib(idle_service.get("MemoryCurrent")),
                 "idle_memory_peak_gib": bytes_to_gib(idle_service.get("MemoryPeak")),
                 "load_memory_gib": bytes_to_gib(load_service.get("MemoryCurrent")),
@@ -100,6 +108,39 @@ def build_models(rows: list[dict]) -> dict:
     models["idle_memory_peak_gib"] = fit_linear(
         [r for r in rows if number(r.get("idle_memory_peak_gib")) is not None],
         "idle_memory_peak_gib",
+        [
+            ("intercept", lambda r: 1.0),
+            ("context_k", lambda r: number(r["max_model_len"]) / 1024),
+            ("max_num_seqs", lambda r: number(r["max_num_seqs"])),
+            ("context_k_x_seqs", lambda r: (number(r["max_model_len"]) / 1024) * number(r["max_num_seqs"])),
+            ("match_context_policy", lambda r: 1.0 if r.get("batch_policy") == "match_context" else 0.0),
+        ],
+    )
+    models["system_memory_drop_gib"] = fit_linear(
+        [r for r in rows if number(r.get("system_memory_drop_gib")) is not None],
+        "system_memory_drop_gib",
+        [
+            ("intercept", lambda r: 1.0),
+            ("context_k", lambda r: number(r["max_model_len"]) / 1024),
+            ("max_num_seqs", lambda r: number(r["max_num_seqs"])),
+            ("context_k_x_seqs", lambda r: (number(r["max_model_len"]) / 1024) * number(r["max_num_seqs"])),
+            ("match_context_policy", lambda r: 1.0 if r.get("batch_policy") == "match_context" else 0.0),
+        ],
+    )
+    models["tegrastats_ram_delta_gib"] = fit_linear(
+        [r for r in rows if number(r.get("tegrastats_ram_delta_gib")) is not None],
+        "tegrastats_ram_delta_gib",
+        [
+            ("intercept", lambda r: 1.0),
+            ("context_k", lambda r: number(r["max_model_len"]) / 1024),
+            ("max_num_seqs", lambda r: number(r["max_num_seqs"])),
+            ("context_k_x_seqs", lambda r: (number(r["max_model_len"]) / 1024) * number(r["max_num_seqs"])),
+            ("match_context_policy", lambda r: 1.0 if r.get("batch_policy") == "match_context" else 0.0),
+        ],
+    )
+    models["tegrastats_max_temp_c"] = fit_linear(
+        [r for r in rows if number(r.get("tegrastats_max_temp_c")) is not None],
+        "tegrastats_max_temp_c",
         [
             ("intercept", lambda r: 1.0),
             ("context_k", lambda r: number(r["max_model_len"]) / 1024),
@@ -353,6 +394,9 @@ def solve(a: list[list[float]], b: list[float]) -> list[float] | None:
 def write_plots(path: Path, rows: list[dict]) -> None:
     plot_svg(path / "idle-memory-by-context.svg", rows, "max_model_len", "idle_memory_gib", "Idle memory by context", "context tokens", "GiB")
     plot_svg(path / "load-peak-memory-by-context.svg", rows, "max_model_len", "load_memory_peak_gib", "Loaded peak memory by context", "context tokens", "GiB")
+    plot_svg(path / "system-memory-drop-by-context.svg", rows, "max_model_len", "system_memory_drop_gib", "System memory drop by context", "context tokens", "GiB")
+    plot_svg(path / "tegrastats-ram-delta-by-context.svg", rows, "max_model_len", "tegrastats_ram_delta_gib", "tegrastats RAM delta by context", "context tokens", "GiB")
+    plot_svg(path / "tegrastats-temperature-by-context.svg", rows, "max_model_len", "tegrastats_max_temp_c", "tegrastats max temperature by context", "context tokens", "C")
     plot_svg(path / "reported-concurrency-by-context.svg", rows, "max_model_len", "reported_concurrency", "Reported max concurrency by context", "context tokens", "reported max concurrency")
     plot_svg(path / "throughput-by-concurrency.svg", rows, "max_num_seqs", "completion_tok_s", "Output throughput by concurrency", "max_num_seqs", "completion tok/s")
     plot_svg(path / "latency-p95-by-concurrency.svg", rows, "max_num_seqs", "latency_p95", "P95 latency by concurrency", "max_num_seqs", "seconds")
@@ -400,9 +444,11 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
     for row in rows:
         statuses[row["status"]] = statuses.get(row["status"], 0) + 1
     contexts = sorted({int(number(row["max_model_len"]) or 0) for row in rows})
+    max_context = max(contexts) if contexts else 0
     max_requested_seqs = max(int(number(row["max_num_seqs"]) or 0) for row in rows) if rows else 0
     top_throughput = top_rows(rows, "completion_tok_s", 10)
     top_total = top_rows(rows, "total_tok_s", 5)
+    top_memory = top_rows(rows, "tegrastats_ram_delta_gib", 5)
     context_rows = context_summary(rows)
     hundred_k_rows = [row for row in rows if int(number(row.get("max_model_len")) or 0) == 100000]
     lines = [
@@ -430,11 +476,23 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
             "",
             f"- Best measured output throughput was `{fmt(top_throughput[0].get('completion_tok_s'))}` completion tok/s at `{top_throughput[0]['candidate_id']}` with `{top_throughput[0]['max_model_len']}` context and `{top_throughput[0]['max_num_seqs']}` requested concurrency." if top_throughput else "- No load-complete rows were available for throughput ranking.",
             f"- Best measured total token throughput was `{fmt(top_total[0].get('total_tok_s'))}` total tok/s at `{top_total[0]['candidate_id']}`." if top_total else "- No total token throughput rows were available.",
-            "- The `small` batching policy (`max_num_batched_tokens` capped at 8192) is the stable high-context path in this sweep. It starts successfully at 100k, 131k, 196k, and 262k context, though high-risk load was intentionally skipped.",
-            "- The `match_context` batching policy often reduces reported concurrency at high context and hit a CUTLASS FP4 MoE kernel/config boundary at 196k and 262k contexts.",
-            "- No run was classified as a machine OOM. The startup exits were vLLM/kernel assertions, and the guard stopped load when capacity or risk was unsafe.",
+            f"- Highest measured total RAM pressure by `tegrastats` was `{fmt(top_memory[0].get('tegrastats_ram_delta_gib'))}` GiB at `{top_memory[0]['candidate_id']}`." if top_memory else "- No `tegrastats` RAM delta rows were available.",
+            "- Memory reporting now separates total machine pressure (`tegrastats` RAM delta and system `MemAvailable` drop), process accounting (cgroup), and vLLM capacity.",
         ]
     )
+    if max_context >= 100000:
+        lines.extend(
+            [
+                "- The `small` batching policy (`max_num_batched_tokens` capped at 8192) is the stable high-context path in this sweep. It starts successfully at 100k and above when capacity guards allow startup.",
+                "- The `match_context` batching policy can reduce reported concurrency at high context and may hit CUTLASS FP4 MoE kernel/config boundaries.",
+            ]
+        )
+    elif max_context:
+        lines.append(f"- This result only covers up to `{max_context}` context, so it does not draw high-context capacity conclusions.")
+    if any(row.get("status") == "startup_service_exit" for row in rows):
+        lines.append("- Startup exits were vLLM/kernel exits rather than observed machine OOMs; load guards still block unsafe rows.")
+    else:
+        lines.append("- No run was classified as a machine OOM.")
     boundaries = startup_boundaries(raw_rows)
     if boundaries:
         lines.extend(["", "## Startup Boundaries", ""])
@@ -504,6 +562,9 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
             "- `tables/measurements.csv`: flattened table for spreadsheets.",
             "- `plots/idle-memory-by-context.svg`",
             "- `plots/load-peak-memory-by-context.svg`",
+            "- `plots/system-memory-drop-by-context.svg`",
+            "- `plots/tegrastats-ram-delta-by-context.svg`",
+            "- `plots/tegrastats-temperature-by-context.svg`",
             "- `plots/reported-concurrency-by-context.svg`",
             "- `plots/throughput-by-concurrency.svg`",
             "- `plots/latency-p95-by-concurrency.svg`",
@@ -658,6 +719,11 @@ def explorer_rows(rows: list[dict]) -> list[dict]:
         "startup_seconds",
         "kv_cache_tokens",
         "reported_concurrency",
+        "system_memory_drop_gib",
+        "tegrastats_ram_delta_gib",
+        "tegrastats_max_ram_used_gib",
+        "tegrastats_max_temp_c",
+        "tegrastats_samples",
         "idle_memory_gib",
         "idle_memory_peak_gib",
         "load_memory_peak_gib",
@@ -688,7 +754,7 @@ def interactive_explorer_html(rows: list[dict], models: dict) -> list[str]:
         '<div class="control"><label for="contextSlider">Context window</label><input id="contextSlider" type="range" min="4096" max="262144" step="1" value="150000"><output id="contextValue">150000</output></div>',
         '<div class="control"><label for="seqSlider">Requested concurrency</label><input id="seqSlider" type="range" min="1" max="32" step="1" value="16"><output id="seqValue">16</output></div>',
         '<div class="control"><label for="policySelect">Batch policy</label><select id="policySelect"><option value="small">small</option><option value="match_context">match_context</option></select></div>',
-        '<div class="control"><label for="metricSelect">Metric surface</label><select id="metricSelect"><option value="completion_tok_s">completion tok/s</option><option value="idle_memory_gib">idle memory GiB</option><option value="load_memory_peak_gib">load peak GiB</option><option value="latency_p95">p95 latency</option><option value="reported_concurrency">reported concurrency (diagnostic)</option></select></div>',
+        '<div class="control"><label for="metricSelect">Metric surface</label><select id="metricSelect"><option value="completion_tok_s">completion tok/s</option><option value="tegrastats_ram_delta_gib">tegrastats RAM delta GiB</option><option value="system_memory_drop_gib">system memory drop GiB</option><option value="tegrastats_max_temp_c">tegrastats max temp C</option><option value="idle_memory_gib">cgroup idle GiB</option><option value="load_memory_peak_gib">cgroup load peak GiB</option><option value="latency_p95">p95 latency</option><option value="reported_concurrency">reported concurrency (diagnostic)</option></select></div>',
         "</div>",
         '<div class="readouts">',
         '<div class="readout"><b>requested budget</b><span id="budgetReadout"></span></div>',
@@ -745,13 +811,19 @@ def explorer_script() -> str:
   const metricLabels = {
     reported_concurrency: 'reported concurrency',
     completion_tok_s: 'completion tok/s',
-    idle_memory_gib: 'idle GiB',
-    load_memory_peak_gib: 'load peak GiB',
+    system_memory_drop_gib: 'system memory drop GiB',
+    tegrastats_ram_delta_gib: 'tegrastats RAM delta GiB',
+    tegrastats_max_temp_c: 'tegrastats max temp C',
+    idle_memory_gib: 'cgroup idle GiB',
+    load_memory_peak_gib: 'cgroup load peak GiB',
     latency_p95: 'p95 latency'
   };
   const metricModels = {
     reported_concurrency: 'reported_concurrency_empirical',
     completion_tok_s: 'completion_tok_s',
+    system_memory_drop_gib: 'system_memory_drop_gib',
+    tegrastats_ram_delta_gib: 'tegrastats_ram_delta_gib',
+    tegrastats_max_temp_c: 'tegrastats_max_temp_c',
     idle_memory_gib: 'idle_memory_gib',
     load_memory_peak_gib: 'load_memory_peak_gib',
     latency_p95: 'latency_p95'
@@ -1075,8 +1147,11 @@ def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict)
     for row in rows:
         statuses[row["status"]] = statuses.get(row["status"], 0) + 1
     top_throughput = top_rows(rows, "completion_tok_s", 8)
+    top_memory = top_rows(rows, "tegrastats_ram_delta_gib", 5)
     context_rows = context_summary(rows)
     boundaries = startup_boundaries(raw_rows)
+    contexts = sorted({int(number(row["max_model_len"]) or 0) for row in rows})
+    max_context = max(contexts) if contexts else 0
     html = [
         "<!doctype html>",
         '<meta charset="utf-8">',
@@ -1092,11 +1167,24 @@ def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict)
     ]
     if top_throughput:
         html.append(f"<li>Best output throughput: <code>{fmt(top_throughput[0]['completion_tok_s'])}</code> completion tok/s at <code>{escape(top_throughput[0]['candidate_id'])}</code>.</li>")
+    if top_memory:
+        html.append(f"<li>Highest measured total RAM pressure by <code>tegrastats</code>: <code>{fmt(top_memory[0]['tegrastats_ram_delta_gib'])}</code> GiB at <code>{escape(top_memory[0]['candidate_id'])}</code>.</li>")
     html.extend(
         [
-            "<li>The small batched-token policy is the stable high-context path; match-context batching hits capacity limits earlier.</li>",
-            "<li>Startup exits were CUTLASS FP4 MoE assertion boundaries, not observed machine OOMs.</li>",
-            "<li>High-risk rows were measured at startup/idle and load was skipped when the guard said it was unsafe.</li>",
+            "<li>Memory reporting separates total machine pressure (<code>tegrastats</code> RAM delta and system <code>MemAvailable</code> drop), process accounting (cgroup), and vLLM capacity.</li>",
+        ]
+    )
+    if max_context >= 100000:
+        html.append("<li>The small batched-token policy is the stable high-context path in this result set; match-context batching can hit capacity or kernel/config limits earlier.</li>")
+    elif max_context:
+        html.append(f"<li>This result only covers up to <code>{max_context}</code> context, so it does not draw high-context capacity conclusions.</li>")
+    if any(row.get("status") == "startup_service_exit" for row in rows):
+        html.append("<li>Startup exits were vLLM/kernel exits rather than observed machine OOMs; load guards still block unsafe rows.</li>")
+    else:
+        html.append("<li>No run was classified as a machine OOM.</li>")
+    html.extend(
+        [
+            "<li>High-risk rows are measured at startup/idle and load is skipped when the guard says it is unsafe.</li>",
             "</ul>",
             *capacity_planner_html(),
             *capacity_simplification_html(),
@@ -1105,6 +1193,9 @@ def write_html(path: Path, rows: list[dict], raw_rows: list[dict], models: dict)
             '<div class="grid">',
             '<figure><img src="plots/idle-memory-by-context.svg" alt="Idle memory by context"><figcaption>Idle memory by context.</figcaption></figure>',
             '<figure><img src="plots/load-peak-memory-by-context.svg" alt="Load peak memory by context"><figcaption>Loaded peak memory by context.</figcaption></figure>',
+            '<figure><img src="plots/system-memory-drop-by-context.svg" alt="System memory drop by context"><figcaption>System MemAvailable drop by context.</figcaption></figure>',
+            '<figure><img src="plots/tegrastats-ram-delta-by-context.svg" alt="tegrastats RAM delta by context"><figcaption>tegrastats RAM-used delta by context.</figcaption></figure>',
+            '<figure><img src="plots/tegrastats-temperature-by-context.svg" alt="tegrastats temperature by context"><figcaption>tegrastats max temperature by context.</figcaption></figure>',
             '<figure><img src="plots/reported-concurrency-by-context.svg" alt="Reported concurrency by context"><figcaption>vLLM reported concurrency capacity by context.</figcaption></figure>',
             '<figure><img src="plots/throughput-by-concurrency.svg" alt="Throughput by concurrency"><figcaption>Output throughput by requested concurrency.</figcaption></figure>',
             '<figure><img src="plots/latency-p95-by-concurrency.svg" alt="Latency by concurrency"><figcaption>P95 latency by requested concurrency.</figcaption></figure>',
@@ -1149,6 +1240,36 @@ def bytes_to_gib(value: object) -> float | None:
     if n is None:
         return None
     return round(n / 1024**3, 3)
+
+
+def mb_to_gib(value: object) -> float | None:
+    n = number(value)
+    if n is None:
+        return None
+    return round(n / 1024, 3)
+
+
+def system_memory_drop_gib(row: dict) -> float | None:
+    preflight = (row.get("preflight") or {}).get("system_memory") or {}
+    baseline = number(preflight.get("mem_available_bytes"))
+    if baseline is None:
+        return None
+    values = [baseline]
+    startup = row.get("startup") or {}
+    for sample in startup.get("monitor_samples") or []:
+        value = number((sample.get("system_memory") or {}).get("mem_available_bytes"))
+        if value is not None:
+            values.append(value)
+    idle = row.get("idle") or {}
+    idle_value = number((idle.get("system_memory") or {}).get("mem_available_bytes"))
+    if idle_value is not None:
+        values.append(idle_value)
+    load = row.get("load_short_decode") or {}
+    monitor_value = number((load.get("memory_monitor") or {}).get("min_available_memory_bytes"))
+    if monitor_value is not None:
+        values.append(monitor_value)
+    minimum = min(values)
+    return round((baseline - minimum) / 1024**3, 3)
 
 
 def safe_product(left: object, right: object, scale: float = 1.0) -> float | None:
