@@ -63,8 +63,8 @@ Future LocalPerf runs should record and report these as separate signals:
 - vLLM KV cache capacity,
 - GPU telemetry from `nvtop`, NVML, DCGM, or the best available GB10 source.
 
-See [Measurement Methods](docs/measurement-methods.md) for the full recording
-and reporting policy.
+See [Measurement Methods](docs/2026-06-23-measurement-methods.md) for the full
+recording and reporting policy.
 
 ## Direction
 

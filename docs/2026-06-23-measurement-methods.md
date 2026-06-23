@@ -1,3 +1,9 @@
+---
+title: Measurement Methods
+author: Bob <dutifulbob@gmail.com>
+date: 2026-06-23
+---
+
 # Measurement Methods
 
 LocalPerf should not collapse local inference resource use into one generic
