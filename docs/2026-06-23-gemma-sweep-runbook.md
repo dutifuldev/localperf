@@ -118,6 +118,17 @@ for row in rows[-10:]:
 PY
 ```
 
+Run the mechanical completion check:
+
+```sh
+go run ./cmd/localperf-sweep-check \
+  --results examples/gemma4-vllm-resource-sweep-20260620/results/tegrastats-sweep-20260623T075153Z-results.jsonl \
+  --min-rows 100
+```
+
+That command should fail while the sweep is still below 100 rows. It should pass
+before the final report is treated as complete.
+
 ## Completion Checklist
 
 Do not call the sweep complete until all of these are proven from current files
