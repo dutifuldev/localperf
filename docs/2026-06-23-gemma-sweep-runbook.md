@@ -93,6 +93,14 @@ tail -f examples/gemma4-vllm-resource-sweep-20260620/results/tegrastats-sweep-20
 Count rows and inspect the latest records:
 
 ```sh
+go run ./cmd/localperf-sweep-progress \
+  --results examples/gemma4-vllm-resource-sweep-20260620/results/tegrastats-sweep-20260623T075153Z-results.jsonl \
+  --target-rows 100
+```
+
+For lower-level inspection:
+
+```sh
 python3 - <<'PY'
 import collections
 import json
