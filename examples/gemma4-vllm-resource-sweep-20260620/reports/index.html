@@ -1,0 +1,538 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gemma 4 vLLM Resource Sweep</title>
+<script>window.MathJax={tex:{inlineMath:[['\\(','\\)'],['$','$']]}};</script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+:root{color-scheme:light;--ink:#1d2522;--muted:#5f6d68;--line:#d8dfdc;--paper:#fbfcfa;--panel:#f2f5f1;--accent:#176b64;--accent-2:#9b5f00;--bad:#9d2f2f;--good:#286f3d}
+body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.45;margin:32px;max-width:1240px;color:var(--ink);background:var(--paper)}
+h1,h2,h3{line-height:1.15;margin:28px 0 12px}h1{font-size:2rem}h2{font-size:1.35rem}h3{font-size:1rem}
+p{max-width:78ch}table{border-collapse:collapse;margin:16px 0;width:100%;font-size:.92rem}th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:middle}th{background:#eef2ee}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+img{max-width:100%;border:1px solid var(--line);background:white}code{background:#eef2ee;padding:1px 3px;border-radius:3px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:20px}
+.explorer{display:grid;grid-template-columns:minmax(360px,.76fr) minmax(640px,1.24fr);gap:20px;align-items:start;margin:18px 0 28px}
+.capacity-planner{display:grid;grid-template-columns:minmax(320px,.62fr) minmax(620px,1.38fr);gap:20px;align-items:start;margin:18px 0 28px}.capacity-planner .control-grid{grid-template-columns:1fr}.planner-table{font-size:.84rem;margin-top:14px;table-layout:fixed}.planner-table th,.planner-table td{padding:5px 6px}.planner-table code{white-space:normal;overflow-wrap:anywhere}
+.tool-panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;min-width:0;overflow-x:auto}.control-grid{display:grid;grid-template-columns:repeat(2,minmax(180px,1fr));gap:14px}
+.control{display:grid;gap:6px}.control label{font-size:.8rem;font-weight:700;color:#2f3d39;text-transform:uppercase;letter-spacing:.02em}.control output{font-variant-numeric:tabular-nums;color:var(--accent)}
+input[type=range]{width:100%;accent-color:var(--accent)}select{width:100%;min-height:34px;border:1px solid #c5cfca;border-radius:6px;background:white;color:var(--ink);padding:4px 8px}
+.readouts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.readout{background:white;border:1px solid var(--line);border-radius:6px;padding:10px;min-width:0}.readout b{display:block;font-size:.78rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.02em}.readout span{display:block;margin-top:3px;font-size:1.15rem;font-variant-numeric:tabular-nums}
+.graph-frame{background:white;border:1px solid var(--line);border-radius:8px;padding:10px;min-height:540px}.graph-frame svg{display:block;width:100%;height:auto;overflow:visible}.legend{display:flex;flex-wrap:wrap;gap:10px 14px;margin:8px 0 0;color:var(--muted);font-size:.85rem}.legend span{display:inline-flex;align-items:center;gap:6px}.swatch{width:10px;height:10px;border-radius:999px;background:var(--accent)}.swatch.square{border-radius:2px;background:#694f9e}.swatch.hollow{background:white;border:1px solid #71807a}.swatch.surface{width:20px;height:10px;border-radius:2px;background:linear-gradient(90deg,#f7efd3,#65a98e,#33428d)}.swatch.line{width:20px;height:2px;border-radius:0;background:var(--accent)}
+.sample-panel{grid-column:1/-1;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;overflow-x:auto}.sample-table{font-size:.82rem;margin:0;min-width:900px}.sample-table th,.sample-table td{padding:5px 6px}.badge{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:1px 7px;background:white;font-size:.78rem}.ok{color:var(--good)}.warn{color:var(--accent-2)}.bad{color:var(--bad)}
+@media (max-width:900px){body{margin:18px}.explorer,.capacity-planner{grid-template-columns:1fr}.control-grid,.readouts{grid-template-columns:1fr}.grid{grid-template-columns:1fr}.graph-frame{min-height:420px}}
+</style>
+<h1>Gemma 4 vLLM Resource Sweep</h1>
+<p>Standalone vLLM sweep for <code>nvidia/Gemma-4-26B-A4B-NVFP4</code>. Generated from machine-readable JSONL results.</p>
+<p><strong>Rows:</strong> 100. <strong>Status counts:</strong> load_complete=52, startup_only=43, startup_service_exit=5.</p>
+<h2>Key Findings</h2>
+<ul>
+<li>Best output throughput: <code>360.694</code> completion tok/s at <code>ctx8192-seq16-small</code>.</li>
+<li>The small batched-token policy is the stable high-context path; match-context batching hits capacity limits earlier.</li>
+<li>Startup exits were CUTLASS FP4 MoE assertion boundaries, not observed machine OOMs.</li>
+<li>High-risk rows were measured at startup/idle and load was skipped when the guard said it was unsafe.</li>
+</ul>
+<h2>Capacity Planner</h2>
+<section class="capacity-planner" aria-label="Capacity planner">
+<div class="tool-panel">
+<div class="control-grid">
+<div class="control"><label for="capacityContextSlider">Context window</label><input id="capacityContextSlider" type="range" min="4096" max="262144" step="1" value="150000"><output id="capacityContextValue">150000</output></div>
+<div class="control"><label for="marginSlider">Safety margin</label><input id="marginSlider" type="range" min="0.5" max="1" step="0.05" value="0.8"><output id="marginValue">0.80</output></div>
+</div>
+<div class="readouts">
+<div class="readout"><b>small policy</b><span id="smallPolicyReadout"></span></div>
+<div class="readout"><b>match-context policy</b><span id="matchPolicyReadout"></span></div>
+<div class="readout"><b>small b(c)</b><span id="smallBatchReadout"></span></div>
+<div class="readout"><b>match b(c)</b><span id="matchBatchReadout"></span></div>
+</div>
+<table class="planner-table" id="capacityTable"><thead><tr><th>policy</th><th class="num">b(c)</th><th class="num">q(c)</th><th class="num">rec. s</th></tr></thead><tbody></tbody></table>
+</div>
+<div class="graph-frame">
+<svg id="capacitySvg" viewBox="0 0 940 560" role="img" aria-label="Capacity by context and policy"></svg>
+<div class="legend"><span><i class="swatch"></i>small q(c)</span><span><i class="swatch line"></i>small safe s</span><span><i class="swatch square"></i>match-context q(c)</span><span><i class="swatch hollow"></i>measured points</span></div>
+</div>
+</section>
+<h2>Capacity Model Notes</h2>
+<p>The simplified capacity view treats context length as the main input and policy as the main choice. Batch tokens and recommended concurrency are derived from those.</p>
+<table><tr><th>symbol</th><th>meaning</th><th>simplified role</th></tr>
+<tr><td>\(c\)</td><td>context window / <code>--max-model-len</code></td><td>primary input</td></tr>
+<tr><td>\(p\)</td><td>batch policy</td><td>choose <code>small</code> or <code>match_context</code></td></tr>
+<tr><td>\(b\)</td><td><code>--max-num-batched-tokens</code></td><td>derived from \(c,p\)</td></tr>
+<tr><td>\(q\)</td><td>vLLM-reported max concurrency</td><td>measured capacity curve \(Q_p(c)\)</td></tr>
+<tr><td>\(s\)</td><td><code>--max-num-seqs</code></td><td>recommended from \(q\) with a safety margin</td></tr>
+</table>
+<p>Policy definitions:</p>
+<p>\[b_{small}(c)=\min(c,8192)\]</p>
+<p>\[b_{match\_context}(c)=c\]</p>
+<p>Recommended concurrency:</p>
+<p>\[s_{recommended}(c,p,m)=\left\lfloor m\,Q_p(c)\right\rfloor\]</p>
+<p>The dashboard defaults to \(m=0.8\). For a fixed memory budget, this is the practical frontier: requested sessions should stay below \(\left\lfloor m\,Q_p(c)\right\rfloor\). At 150k context, use the slider and compare the two policy rows instead of reading a global linear interpolation.</p>
+<p>This simplification is for capacity planning only. Throughput and latency still need the separate metric surface because they depend on actual requested concurrency and load shape.</p>
+<h2>Metric Surface Explorer</h2>
+<section class="explorer" aria-label="Interactive sweep explorer">
+<div class="tool-panel">
+<div class="control-grid">
+<div class="control"><label for="contextSlider">Context window</label><input id="contextSlider" type="range" min="4096" max="262144" step="1" value="150000"><output id="contextValue">150000</output></div>
+<div class="control"><label for="seqSlider">Requested concurrency</label><input id="seqSlider" type="range" min="1" max="32" step="1" value="16"><output id="seqValue">16</output></div>
+<div class="control"><label for="policySelect">Batch policy</label><select id="policySelect"><option value="small">small</option><option value="match_context">match_context</option></select></div>
+<div class="control"><label for="metricSelect">Metric surface</label><select id="metricSelect"><option value="completion_tok_s">completion tok/s</option><option value="idle_memory_gib">idle memory GiB</option><option value="load_memory_peak_gib">load peak GiB</option><option value="latency_p95">p95 latency</option><option value="reported_concurrency">reported concurrency (diagnostic)</option></select></div>
+</div>
+<div class="readouts">
+<div class="readout"><b>requested budget</b><span id="budgetReadout"></span></div>
+<div class="readout"><b>model prediction</b><span id="predictionReadout"></span></div>
+<div class="readout"><b>nearest measured</b><span id="nearestReadout"></span></div>
+<div class="readout"><b>fit quality</b><span id="fitReadout"></span></div>
+</div>
+<p id="nearestText"></p>
+</div>
+<div class="graph-frame">
+<svg id="explorerSvg" viewBox="0 0 940 590" role="img" aria-label="Continuous fitted model surface with measured samples"></svg>
+<div class="legend"><span><i class="swatch surface"></i>continuous fitted surface</span><span><i class="swatch"></i>sample with actual metric</span><span><i class="swatch hollow"></i>sample without that metric</span><span><i class="swatch square"></i>selected point</span></div>
+</div>
+<div class="sample-panel"><table class="sample-table" id="nearestTable"><thead><tr><th>sample</th><th class="num">ctx</th><th class="num">seq</th><th>status</th><th class="num">actual</th><th class="num">model</th><th class="num">residual</th><th class="num">q</th><th class="num">tok/s</th></tr></thead><tbody></tbody></table></div>
+</section>
+<script id="sweep-data" type="application/json">[{"candidate_id":"ctx4096-seq1-small","status":"load_complete","max_model_len":4096.0,"max_num_seqs":1.0,"max_num_batched_tokens":4096.0,"batch_policy":"small","risk_tier":"low","token_budget_m":0.004096,"startup_seconds":145.214,"kv_cache_tokens":561925.0,"reported_concurrency":137.19,"idle_memory_gib":3.831,"idle_memory_peak_gib":10.92,"load_memory_peak_gib":10.92,"completion_tok_s":17.499,"total_tok_s":511.017,"latency_p95":3.656},{"candidate_id":"ctx16384-seq4-small","status":"load_complete","max_model_len":16384.0,"max_num_seqs":4.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"low","token_budget_m":0.065536,"startup_seconds":180.271,"kv_cache_tokens":915656.0,"reported_concurrency":55.89,"idle_memory_gib":5.249,"idle_memory_peak_gib":11.794,"load_memory_peak_gib":11.794,"completion_tok_s":61.644,"total_tok_s":1800.19,"latency_p95":4.151},{"candidate_id":"ctx100000-seq1-match_context","status":"startup_only","max_model_len":100000.0,"max_num_seqs":1.0,"max_num_batched_tokens":100000.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.1,"startup_seconds":190.284,"kv_cache_tokens":329994.0,"reported_concurrency":3.3,"idle_memory_gib":5.081,"idle_memory_peak_gib":11.874,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx32768-seq8-small","status":"load_complete","max_model_len":32768.0,"max_num_seqs":8.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.262144,"startup_seconds":180.258,"kv_cache_tokens":1594181.0,"reported_concurrency":48.65,"idle_memory_gib":3.904,"idle_memory_peak_gib":10.821,"load_memory_peak_gib":10.821,"completion_tok_s":140.455,"total_tok_s":4101.723,"latency_p95":3.632},{"candidate_id":"ctx32768-seq16-match_context","status":"startup_only","max_model_len":32768.0,"max_num_seqs":16.0,"max_num_batched_tokens":32768.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.524288,"startup_seconds":145.211,"kv_cache_tokens":498347.0,"reported_concurrency":15.21,"idle_memory_gib":4.388,"idle_memory_peak_gib":11.124,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx4096-seq1-match_context","status":"load_complete","max_model_len":4096.0,"max_num_seqs":1.0,"max_num_batched_tokens":4096.0,"batch_policy":"match_context","risk_tier":"low","token_budget_m":0.004096,"startup_seconds":140.21,"kv_cache_tokens":562433.0,"reported_concurrency":137.31,"idle_memory_gib":3.859,"idle_memory_peak_gib":10.805,"load_memory_peak_gib":10.805,"completion_tok_s":23.38,"total_tok_s":682.779,"latency_p95":2.736},{"candidate_id":"ctx4096-seq2-match_context","status":"load_complete","max_model_len":4096.0,"max_num_seqs":2.0,"max_num_batched_tokens":4096.0,"batch_policy":"match_context","risk_tier":"low","token_budget_m":0.008192,"startup_seconds":175.254,"kv_cache_tokens":556803.0,"reported_concurrency":135.94,"idle_memory_gib":4.001,"idle_memory_peak_gib":10.806,"load_memory_peak_gib":10.806,"completion_tok_s":39.952,"total_tok_s":1166.714,"latency_p95":3.203},{"candidate_id":"ctx4096-seq2-small","status":"load_complete","max_model_len":4096.0,"max_num_seqs":2.0,"max_num_batched_tokens":4096.0,"batch_policy":"small","risk_tier":"low","token_budget_m":0.008192,"startup_seconds":140.218,"kv_cache_tokens":561346.0,"reported_concurrency":137.05,"idle_memory_gib":3.808,"idle_memory_peak_gib":10.805,"load_memory_peak_gib":10.805,"completion_tok_s":56.246,"total_tok_s":1642.564,"latency_p95":2.275},{"candidate_id":"ctx8192-seq1-match_context","status":"load_complete","max_model_len":8192.0,"max_num_seqs":1.0,"max_num_batched_tokens":8192.0,"batch_policy":"match_context","risk_tier":"low","token_budget_m":0.008192,"startup_seconds":175.254,"kv_cache_tokens":551210.0,"reported_concurrency":67.29,"idle_memory_gib":3.999,"idle_memory_peak_gib":10.836,"load_memory_peak_gib":10.836,"completion_tok_s":17.876,"total_tok_s":522.041,"latency_p95":3.58},{"candidate_id":"ctx8192-seq1-small","status":"load_complete","max_model_len":8192.0,"max_num_seqs":1.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"low","token_budget_m":0.008192,"startup_seconds":140.2,"kv_cache_tokens":553440.0,"reported_concurrency":67.56,"idle_memory_gib":3.805,"idle_memory_peak_gib":10.836,"load_memory_peak_gib":10.836,"completion_tok_s":24.084,"total_tok_s":703.328,"latency_p95":2.657},{"candidate_id":"ctx4096-seq4-match_context","status":"load_complete","max_model_len":4096.0,"max_num_seqs":4.0,"max_num_batched_tokens":4096.0,"batch_policy":"match_context","risk_tier":"low","token_budget_m":0.016384,"startup_seconds":170.23,"kv_cache_tokens":556461.0,"reported_concurrency":135.85,"idle_memory_gib":4.037,"idle_memory_peak_gib":10.806,"load_memory_peak_gib":10.806,"completion_tok_s":72.31,"total_tok_s":2111.686,"latency_p95":3.539},{"candidate_id":"ctx4096-seq4-small","status":"load_complete","max_model_len":4096.0,"max_num_seqs":4.0,"max_num_batched_tokens":4096.0,"batch_policy":"small","risk_tier":"low","token_budget_m":0.016384,"startup_seconds":145.197,"kv_cache_tokens":560195.0,"reported_concurrency":136.77,"idle_memory_gib":4.302,"idle_memory_peak_gib":11.191,"load_memory_peak_gib":11.191,"completion_tok_s":100.427,"total_tok_s":2932.789,"latency_p95":2.543},{"candidate_id":"ctx8192-seq2-match_context","status":"load_complete","max_model_len":8192.0,"max_num_seqs":2.0,"max_num_batched_tokens":8192.0,"batch_policy":"match_context","risk_tier":"low","token_budget_m":0.016384,"startup_seconds":175.233,"kv_cache_tokens":550536.0,"reported_concurrency":67.2,"idle_memory_gib":4.328,"idle_memory_peak_gib":10.918,"load_memory_peak_gib":10.918,"completion_tok_s":39.445,"total_tok_s":1151.927,"latency_p95":3.245},{"candidate_id":"ctx8192-seq2-small","status":"load_complete","max_model_len":8192.0,"max_num_seqs":2.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"low","token_budget_m":0.016384,"startup_seconds":140.199,"kv_cache_tokens":553777.0,"reported_concurrency":67.6,"idle_memory_gib":3.82,"idle_memory_peak_gib":10.82,"load_memory_peak_gib":10.82,"completion_tok_s":56.21,"total_tok_s":1641.51,"latency_p95":2.277},{"candidate_id":"ctx16384-seq1-match_context","status":"load_complete","max_model_len":16384.0,"max_num_seqs":1.0,"max_num_batched_tokens":16384.0,"batch_policy":"match_context","risk_tier":"low","token_budget_m":0.016384,"startup_seconds":170.247,"kv_cache_tokens":533379.0,"reported_concurrency":32.55,"idle_memory_gib":3.971,"idle_memory_peak_gib":10.9,"load_memory_peak_gib":10.9,"completion_tok_s":17.507,"total_tok_s":511.257,"latency_p95":3.655},{"candidate_id":"ctx16384-seq1-small","status":"load_complete","max_model_len":16384.0,"max_num_seqs":1.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"low","token_budget_m":0.016384,"startup_seconds":175.249,"kv_cache_tokens":915478.0,"reported_concurrency":55.88,"idle_memory_gib":3.983,"idle_memory_peak_gib":10.821,"load_memory_peak_gib":10.821,"completion_tok_s":17.688,"total_tok_s":516.534,"latency_p95":3.617},{"candidate_id":"ctx4096-seq8-match_context","status":"load_complete","max_model_len":4096.0,"max_num_seqs":8.0,"max_num_batched_tokens":4096.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.032768,"startup_seconds":180.221,"kv_cache_tokens":557250.0,"reported_concurrency":136.05,"idle_memory_gib":4.017,"idle_memory_peak_gib":10.827,"load_memory_peak_gib":10.827,"completion_tok_s":141.054,"total_tok_s":4119.217,"latency_p95":3.628},{"candidate_id":"ctx4096-seq8-small","status":"load_complete","max_model_len":4096.0,"max_num_seqs":8.0,"max_num_batched_tokens":4096.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.032768,"startup_seconds":140.184,"kv_cache_tokens":563479.0,"reported_concurrency":137.57,"idle_memory_gib":3.672,"idle_memory_peak_gib":10.79,"load_memory_peak_gib":10.79,"completion_tok_s":196.096,"total_tok_s":5726.602,"latency_p95":2.61},{"candidate_id":"ctx8192-seq4-match_context","status":"load_complete","max_model_len":8192.0,"max_num_seqs":4.0,"max_num_batched_tokens":8192.0,"batch_policy":"match_context","risk_tier":"low","token_budget_m":0.032768,"startup_seconds":175.234,"kv_cache_tokens":551370.0,"reported_concurrency":67.31,"idle_memory_gib":4.101,"idle_memory_peak_gib":10.867,"load_memory_peak_gib":10.867,"completion_tok_s":77.789,"total_tok_s":2271.691,"latency_p95":3.29},{"candidate_id":"ctx8192-seq4-small","status":"load_complete","max_model_len":8192.0,"max_num_seqs":4.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"low","token_budget_m":0.032768,"startup_seconds":140.2,"kv_cache_tokens":553013.0,"reported_concurrency":67.51,"idle_memory_gib":3.854,"idle_memory_peak_gib":10.821,"load_memory_peak_gib":10.821,"completion_tok_s":77.212,"total_tok_s":2254.84,"latency_p95":3.314},{"candidate_id":"ctx16384-seq2-match_context","status":"load_complete","max_model_len":16384.0,"max_num_seqs":2.0,"max_num_batched_tokens":16384.0,"batch_policy":"match_context","risk_tier":"low","token_budget_m":0.032768,"startup_seconds":170.23,"kv_cache_tokens":530961.0,"reported_concurrency":32.41,"idle_memory_gib":3.986,"idle_memory_peak_gib":10.884,"load_memory_peak_gib":10.884,"completion_tok_s":39.313,"total_tok_s":1148.049,"latency_p95":3.256},{"candidate_id":"ctx16384-seq2-small","status":"load_complete","max_model_len":16384.0,"max_num_seqs":2.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"low","token_budget_m":0.032768,"startup_seconds":170.252,"kv_cache_tokens":915106.0,"reported_concurrency":55.85,"idle_memory_gib":3.938,"idle_memory_peak_gib":10.836,"load_memory_peak_gib":10.836,"completion_tok_s":39.545,"total_tok_s":1154.839,"latency_p95":3.236},{"candidate_id":"ctx32768-seq1-match_context","status":"load_complete","max_model_len":32768.0,"max_num_seqs":1.0,"max_num_batched_tokens":32768.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.032768,"startup_seconds":175.243,"kv_cache_tokens":495631.0,"reported_concurrency":15.13,"idle_memory_gib":4.141,"idle_memory_peak_gib":11.033,"load_memory_peak_gib":11.033,"completion_tok_s":17.614,"total_tok_s":514.381,"latency_p95":3.633},{"candidate_id":"ctx32768-seq1-small","status":"load_complete","max_model_len":32768.0,"max_num_seqs":1.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.032768,"startup_seconds":175.234,"kv_cache_tokens":1593560.0,"reported_concurrency":48.63,"idle_memory_gib":3.997,"idle_memory_peak_gib":10.837,"load_memory_peak_gib":10.837,"completion_tok_s":17.668,"total_tok_s":515.947,"latency_p95":3.622},{"candidate_id":"ctx4096-seq16-match_context","status":"load_complete","max_model_len":4096.0,"max_num_seqs":16.0,"max_num_batched_tokens":4096.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.065536,"startup_seconds":180.262,"kv_cache_tokens":555110.0,"reported_concurrency":135.53,"idle_memory_gib":3.905,"idle_memory_peak_gib":10.79,"load_memory_peak_gib":10.79,"completion_tok_s":217.576,"total_tok_s":6353.886,"latency_p95":4.703},{"candidate_id":"ctx4096-seq16-small","status":"load_complete","max_model_len":4096.0,"max_num_seqs":16.0,"max_num_batched_tokens":4096.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.065536,"startup_seconds":140.193,"kv_cache_tokens":561583.0,"reported_concurrency":137.11,"idle_memory_gib":3.695,"idle_memory_peak_gib":10.789,"load_memory_peak_gib":10.789,"completion_tok_s":358.957,"total_tok_s":10482.67,"latency_p95":2.848},{"candidate_id":"ctx8192-seq8-match_context","status":"load_complete","max_model_len":8192.0,"max_num_seqs":8.0,"max_num_batched_tokens":8192.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.065536,"startup_seconds":140.199,"kv_cache_tokens":555209.0,"reported_concurrency":67.77,"idle_memory_gib":3.755,"idle_memory_peak_gib":10.84,"load_memory_peak_gib":10.84,"completion_tok_s":194.43,"total_tok_s":5677.964,"latency_p95":2.632},{"candidate_id":"ctx8192-seq8-small","status":"load_complete","max_model_len":8192.0,"max_num_seqs":8.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.065536,"startup_seconds":140.195,"kv_cache_tokens":554631.0,"reported_concurrency":67.7,"idle_memory_gib":3.645,"idle_memory_peak_gib":10.821,"load_memory_peak_gib":10.821,"completion_tok_s":193.529,"total_tok_s":5651.643,"latency_p95":2.644},{"candidate_id":"ctx16384-seq4-match_context","status":"load_complete","max_model_len":16384.0,"max_num_seqs":4.0,"max_num_batched_tokens":16384.0,"batch_policy":"match_context","risk_tier":"low","token_budget_m":0.065536,"startup_seconds":175.241,"kv_cache_tokens":533463.0,"reported_concurrency":32.56,"idle_memory_gib":4.04,"idle_memory_peak_gib":10.9,"load_memory_peak_gib":10.9,"completion_tok_s":72.854,"total_tok_s":2127.569,"latency_p95":3.512},{"candidate_id":"ctx32768-seq2-match_context","status":"load_complete","max_model_len":32768.0,"max_num_seqs":2.0,"max_num_batched_tokens":32768.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.065536,"startup_seconds":180.276,"kv_cache_tokens":495241.0,"reported_concurrency":15.11,"idle_memory_gib":4.109,"idle_memory_peak_gib":11.01,"load_memory_peak_gib":11.01,"completion_tok_s":39.272,"total_tok_s":1146.862,"latency_p95":3.257},{"candidate_id":"ctx32768-seq2-small","status":"load_complete","max_model_len":32768.0,"max_num_seqs":2.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.065536,"startup_seconds":170.239,"kv_cache_tokens":1591163.0,"reported_concurrency":48.56,"idle_memory_gib":3.928,"idle_memory_peak_gib":10.821,"load_memory_peak_gib":10.821,"completion_tok_s":39.254,"total_tok_s":1146.35,"latency_p95":3.26},{"candidate_id":"ctx65536-seq1-match_context","status":"load_complete","max_model_len":65536.0,"max_num_seqs":1.0,"max_num_batched_tokens":65536.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.065536,"startup_seconds":190.297,"kv_cache_tokens":416724.0,"reported_concurrency":6.36,"idle_memory_gib":4.56,"idle_memory_peak_gib":11.427,"load_memory_peak_gib":11.427,"completion_tok_s":17.617,"total_tok_s":514.458,"latency_p95":3.633},{"candidate_id":"ctx65536-seq1-small","status":"load_complete","max_model_len":65536.0,"max_num_seqs":1.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.065536,"startup_seconds":175.244,"kv_cache_tokens":2529439.0,"reported_concurrency":38.6,"idle_memory_gib":4.022,"idle_memory_peak_gib":10.837,"load_memory_peak_gib":10.837,"completion_tok_s":17.598,"total_tok_s":513.904,"latency_p95":3.636},{"candidate_id":"ctx4096-seq24-match_context","status":"startup_only","max_model_len":4096.0,"max_num_seqs":24.0,"max_num_batched_tokens":4096.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.098304,"startup_seconds":180.246,"kv_cache_tokens":556255.0,"reported_concurrency":135.8,"idle_memory_gib":3.941,"idle_memory_peak_gib":10.789,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx4096-seq24-small","status":"startup_only","max_model_len":4096.0,"max_num_seqs":24.0,"max_num_batched_tokens":4096.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.098304,"startup_seconds":140.193,"kv_cache_tokens":562865.0,"reported_concurrency":137.42,"idle_memory_gib":3.734,"idle_memory_peak_gib":10.804,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx98304-seq1-match_context","status":"load_complete","max_model_len":98304.0,"max_num_seqs":1.0,"max_num_batched_tokens":98304.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.098304,"startup_seconds":200.312,"kv_cache_tokens":333509.0,"reported_concurrency":3.39,"idle_memory_gib":4.833,"idle_memory_peak_gib":11.784,"load_memory_peak_gib":11.784,"completion_tok_s":17.689,"total_tok_s":516.587,"latency_p95":3.617},{"candidate_id":"ctx98304-seq1-small","status":"load_complete","max_model_len":98304.0,"max_num_seqs":1.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.098304,"startup_seconds":175.239,"kv_cache_tokens":3140430.0,"reported_concurrency":31.95,"idle_memory_gib":3.999,"idle_memory_peak_gib":10.837,"load_memory_peak_gib":10.837,"completion_tok_s":17.841,"total_tok_s":521.023,"latency_p95":3.587},{"candidate_id":"ctx100000-seq1-small","status":"startup_only","max_model_len":100000.0,"max_num_seqs":1.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.1,"startup_seconds":175.234,"kv_cache_tokens":3168785.0,"reported_concurrency":31.69,"idle_memory_gib":3.982,"idle_memory_peak_gib":10.821,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx4096-seq32-match_context","status":"startup_only","max_model_len":4096.0,"max_num_seqs":32.0,"max_num_batched_tokens":4096.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.131072,"startup_seconds":180.254,"kv_cache_tokens":556232.0,"reported_concurrency":135.8,"idle_memory_gib":3.987,"idle_memory_peak_gib":10.809,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx4096-seq32-small","status":"startup_only","max_model_len":4096.0,"max_num_seqs":32.0,"max_num_batched_tokens":4096.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.131072,"startup_seconds":140.196,"kv_cache_tokens":562723.0,"reported_concurrency":137.38,"idle_memory_gib":3.758,"idle_memory_peak_gib":10.805,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx8192-seq16-match_context","status":"load_complete","max_model_len":8192.0,"max_num_seqs":16.0,"max_num_batched_tokens":8192.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.131072,"startup_seconds":140.207,"kv_cache_tokens":554140.0,"reported_concurrency":67.64,"idle_memory_gib":3.817,"idle_memory_peak_gib":10.821,"load_memory_peak_gib":10.821,"completion_tok_s":354.195,"total_tok_s":10343.592,"latency_p95":2.887},{"candidate_id":"ctx8192-seq16-small","status":"load_complete","max_model_len":8192.0,"max_num_seqs":16.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.131072,"startup_seconds":140.201,"kv_cache_tokens":553289.0,"reported_concurrency":67.54,"idle_memory_gib":3.739,"idle_memory_peak_gib":10.837,"load_memory_peak_gib":10.837,"completion_tok_s":360.694,"total_tok_s":10533.39,"latency_p95":2.835},{"candidate_id":"ctx16384-seq8-match_context","status":"load_complete","max_model_len":16384.0,"max_num_seqs":8.0,"max_num_batched_tokens":16384.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.131072,"startup_seconds":175.248,"kv_cache_tokens":534068.0,"reported_concurrency":32.6,"idle_memory_gib":3.902,"idle_memory_peak_gib":10.9,"load_memory_peak_gib":10.9,"completion_tok_s":113.972,"total_tok_s":3328.329,"latency_p95":4.491},{"candidate_id":"ctx16384-seq8-small","status":"load_complete","max_model_len":16384.0,"max_num_seqs":8.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.131072,"startup_seconds":140.207,"kv_cache_tokens":921188.0,"reported_concurrency":56.22,"idle_memory_gib":3.793,"idle_memory_peak_gib":10.82,"load_memory_peak_gib":10.82,"completion_tok_s":192.326,"total_tok_s":5616.533,"latency_p95":2.661},{"candidate_id":"ctx32768-seq4-match_context","status":"load_complete","max_model_len":32768.0,"max_num_seqs":4.0,"max_num_batched_tokens":32768.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.131072,"startup_seconds":180.241,"kv_cache_tokens":495811.0,"reported_concurrency":15.13,"idle_memory_gib":4.157,"idle_memory_peak_gib":11.019,"load_memory_peak_gib":11.019,"completion_tok_s":61.926,"total_tok_s":1808.429,"latency_p95":4.133},{"candidate_id":"ctx32768-seq4-small","status":"load_complete","max_model_len":32768.0,"max_num_seqs":4.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.131072,"startup_seconds":175.234,"kv_cache_tokens":1593912.0,"reported_concurrency":48.64,"idle_memory_gib":4.066,"idle_memory_peak_gib":10.836,"load_memory_peak_gib":10.836,"completion_tok_s":61.035,"total_tok_s":1782.403,"latency_p95":4.193},{"candidate_id":"ctx65536-seq2-match_context","status":"load_complete","max_model_len":65536.0,"max_num_seqs":2.0,"max_num_batched_tokens":65536.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.131072,"startup_seconds":185.257,"kv_cache_tokens":414665.0,"reported_concurrency":6.33,"idle_memory_gib":4.461,"idle_memory_peak_gib":11.311,"load_memory_peak_gib":11.311,"completion_tok_s":39.654,"total_tok_s":1158.01,"latency_p95":3.227},{"candidate_id":"ctx65536-seq2-small","status":"load_complete","max_model_len":65536.0,"max_num_seqs":2.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.131072,"startup_seconds":175.244,"kv_cache_tokens":2519980.0,"reported_concurrency":38.45,"idle_memory_gib":4.118,"idle_memory_peak_gib":10.854,"load_memory_peak_gib":10.854,"completion_tok_s":39.693,"total_tok_s":1159.171,"latency_p95":3.224},{"candidate_id":"ctx131072-seq1-match_context","status":"startup_only","max_model_len":131072.0,"max_num_seqs":1.0,"max_num_batched_tokens":131072.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.131072,"startup_seconds":210.351,"kv_cache_tokens":255346.0,"reported_concurrency":1.95,"idle_memory_gib":4.801,"idle_memory_peak_gib":11.772,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx131072-seq1-small","status":"startup_only","max_model_len":131072.0,"max_num_seqs":1.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.131072,"startup_seconds":175.247,"kv_cache_tokens":3570261.0,"reported_concurrency":27.24,"idle_memory_gib":4.001,"idle_memory_peak_gib":10.837,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx8192-seq24-match_context","status":"startup_only","max_model_len":8192.0,"max_num_seqs":24.0,"max_num_batched_tokens":8192.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.196608,"startup_seconds":180.252,"kv_cache_tokens":552023.0,"reported_concurrency":67.39,"idle_memory_gib":3.987,"idle_memory_peak_gib":10.837,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx8192-seq24-small","status":"startup_only","max_model_len":8192.0,"max_num_seqs":24.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.196608,"startup_seconds":140.201,"kv_cache_tokens":551770.0,"reported_concurrency":67.35,"idle_memory_gib":3.908,"idle_memory_peak_gib":10.926,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx98304-seq2-match_context","status":"load_complete","max_model_len":98304.0,"max_num_seqs":2.0,"max_num_batched_tokens":98304.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.196608,"startup_seconds":200.331,"kv_cache_tokens":330886.0,"reported_concurrency":3.37,"idle_memory_gib":4.865,"idle_memory_peak_gib":11.785,"load_memory_peak_gib":11.785,"completion_tok_s":39.796,"total_tok_s":1162.167,"latency_p95":3.215},{"candidate_id":"ctx98304-seq2-small","status":"load_complete","max_model_len":98304.0,"max_num_seqs":2.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.196608,"startup_seconds":175.23,"kv_cache_tokens":3130512.0,"reported_concurrency":31.85,"idle_memory_gib":4.036,"idle_memory_peak_gib":10.836,"load_memory_peak_gib":10.836,"completion_tok_s":39.135,"total_tok_s":1142.873,"latency_p95":3.27},{"candidate_id":"ctx196608-seq1-match_context","status":"startup_service_exit","max_model_len":196608.0,"max_num_seqs":1.0,"max_num_batched_tokens":196608.0,"batch_policy":"match_context","risk_tier":"extreme","token_budget_m":0.196608,"startup_seconds":170.294,"kv_cache_tokens":null,"reported_concurrency":null,"idle_memory_gib":null,"idle_memory_peak_gib":null,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx196608-seq1-small","status":"startup_only","max_model_len":196608.0,"max_num_seqs":1.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"extreme","token_budget_m":0.196608,"startup_seconds":175.239,"kv_cache_tokens":4148626.0,"reported_concurrency":21.1,"idle_memory_gib":3.998,"idle_memory_peak_gib":10.838,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx100000-seq2-match_context","status":"startup_only","max_model_len":100000.0,"max_num_seqs":2.0,"max_num_batched_tokens":100000.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.2,"startup_seconds":195.301,"kv_cache_tokens":328121.0,"reported_concurrency":3.28,"idle_memory_gib":4.812,"idle_memory_peak_gib":11.768,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx100000-seq2-small","status":"startup_only","max_model_len":100000.0,"max_num_seqs":2.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.2,"startup_seconds":175.248,"kv_cache_tokens":3144775.0,"reported_concurrency":31.45,"idle_memory_gib":4.018,"idle_memory_peak_gib":10.821,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx8192-seq32-match_context","status":"startup_only","max_model_len":8192.0,"max_num_seqs":32.0,"max_num_batched_tokens":8192.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.262144,"startup_seconds":140.195,"kv_cache_tokens":550876.0,"reported_concurrency":67.25,"idle_memory_gib":3.791,"idle_memory_peak_gib":10.821,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx8192-seq32-small","status":"startup_only","max_model_len":8192.0,"max_num_seqs":32.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.262144,"startup_seconds":140.192,"kv_cache_tokens":553103.0,"reported_concurrency":67.52,"idle_memory_gib":3.732,"idle_memory_peak_gib":10.836,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx16384-seq16-match_context","status":"load_complete","max_model_len":16384.0,"max_num_seqs":16.0,"max_num_batched_tokens":16384.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.262144,"startup_seconds":140.187,"kv_cache_tokens":535184.0,"reported_concurrency":32.67,"idle_memory_gib":3.8,"idle_memory_peak_gib":10.884,"load_memory_peak_gib":10.884,"completion_tok_s":288.419,"total_tok_s":8422.739,"latency_p95":3.547},{"candidate_id":"ctx16384-seq16-small","status":"load_complete","max_model_len":16384.0,"max_num_seqs":16.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.262144,"startup_seconds":180.271,"kv_cache_tokens":914957.0,"reported_concurrency":55.84,"idle_memory_gib":3.952,"idle_memory_peak_gib":10.837,"load_memory_peak_gib":10.837,"completion_tok_s":218.784,"total_tok_s":6389.167,"latency_p95":4.678},{"candidate_id":"ctx32768-seq8-match_context","status":"load_complete","max_model_len":32768.0,"max_num_seqs":8.0,"max_num_batched_tokens":32768.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.262144,"startup_seconds":180.256,"kv_cache_tokens":497425.0,"reported_concurrency":15.18,"idle_memory_gib":4.021,"idle_memory_peak_gib":11.026,"load_memory_peak_gib":11.026,"completion_tok_s":140.858,"total_tok_s":4113.507,"latency_p95":3.632},{"candidate_id":"ctx65536-seq4-match_context","status":"load_complete","max_model_len":65536.0,"max_num_seqs":4.0,"max_num_batched_tokens":65536.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.262144,"startup_seconds":190.277,"kv_cache_tokens":416442.0,"reported_concurrency":6.35,"idle_memory_gib":4.422,"idle_memory_peak_gib":11.291,"load_memory_peak_gib":11.291,"completion_tok_s":76.682,"total_tok_s":2239.361,"latency_p95":3.337},{"candidate_id":"ctx65536-seq4-small","status":"load_complete","max_model_len":65536.0,"max_num_seqs":4.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.262144,"startup_seconds":175.229,"kv_cache_tokens":2519276.0,"reported_concurrency":38.44,"idle_memory_gib":4.07,"idle_memory_peak_gib":10.837,"load_memory_peak_gib":10.837,"completion_tok_s":78.135,"total_tok_s":2281.783,"latency_p95":3.275},{"candidate_id":"ctx131072-seq2-match_context","status":"startup_only","max_model_len":131072.0,"max_num_seqs":2.0,"max_num_batched_tokens":131072.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.262144,"startup_seconds":200.298,"kv_cache_tokens":256181.0,"reported_concurrency":1.95,"idle_memory_gib":4.818,"idle_memory_peak_gib":11.787,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx131072-seq2-small","status":"startup_only","max_model_len":131072.0,"max_num_seqs":2.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.262144,"startup_seconds":175.262,"kv_cache_tokens":3563671.0,"reported_concurrency":27.19,"idle_memory_gib":4.011,"idle_memory_peak_gib":10.82,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx262144-seq1-match_context","status":"startup_service_exit","max_model_len":262144.0,"max_num_seqs":1.0,"max_num_batched_tokens":262144.0,"batch_policy":"match_context","risk_tier":"extreme","token_budget_m":0.262144,"startup_seconds":180.257,"kv_cache_tokens":null,"reported_concurrency":null,"idle_memory_gib":null,"idle_memory_peak_gib":null,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx262144-seq1-small","status":"startup_only","max_model_len":262144.0,"max_num_seqs":1.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"extreme","token_budget_m":0.262144,"startup_seconds":175.245,"kv_cache_tokens":4504465.0,"reported_concurrency":17.18,"idle_memory_gib":3.998,"idle_memory_peak_gib":10.837,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx16384-seq24-match_context","status":"startup_only","max_model_len":16384.0,"max_num_seqs":24.0,"max_num_batched_tokens":16384.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.393216,"startup_seconds":175.233,"kv_cache_tokens":530563.0,"reported_concurrency":32.38,"idle_memory_gib":3.962,"idle_memory_peak_gib":10.902,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx16384-seq24-small","status":"startup_only","max_model_len":16384.0,"max_num_seqs":24.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.393216,"startup_seconds":180.241,"kv_cache_tokens":914571.0,"reported_concurrency":55.82,"idle_memory_gib":3.9,"idle_memory_peak_gib":10.839,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx98304-seq4-match_context","status":"startup_only","max_model_len":98304.0,"max_num_seqs":4.0,"max_num_batched_tokens":98304.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.393216,"startup_seconds":195.282,"kv_cache_tokens":324010.0,"reported_concurrency":3.3,"idle_memory_gib":5.053,"idle_memory_peak_gib":11.897,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx98304-seq4-small","status":"load_complete","max_model_len":98304.0,"max_num_seqs":4.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.393216,"startup_seconds":175.237,"kv_cache_tokens":3138714.0,"reported_concurrency":31.93,"idle_memory_gib":4.054,"idle_memory_peak_gib":10.823,"load_memory_peak_gib":10.823,"completion_tok_s":73.072,"total_tok_s":2133.918,"latency_p95":3.502},{"candidate_id":"ctx196608-seq2-match_context","status":"startup_service_exit","max_model_len":196608.0,"max_num_seqs":2.0,"max_num_batched_tokens":196608.0,"batch_policy":"match_context","risk_tier":"extreme","token_budget_m":0.393216,"startup_seconds":170.233,"kv_cache_tokens":null,"reported_concurrency":null,"idle_memory_gib":null,"idle_memory_peak_gib":null,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx196608-seq2-small","status":"startup_only","max_model_len":196608.0,"max_num_seqs":2.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"extreme","token_budget_m":0.393216,"startup_seconds":175.256,"kv_cache_tokens":4134059.0,"reported_concurrency":21.03,"idle_memory_gib":4.032,"idle_memory_peak_gib":10.839,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx100000-seq4-match_context","status":"startup_only","max_model_len":100000.0,"max_num_seqs":4.0,"max_num_batched_tokens":100000.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.4,"startup_seconds":200.29,"kv_cache_tokens":320314.0,"reported_concurrency":3.2,"idle_memory_gib":4.894,"idle_memory_peak_gib":11.772,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx100000-seq4-small","status":"startup_only","max_model_len":100000.0,"max_num_seqs":4.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.4,"startup_seconds":175.248,"kv_cache_tokens":3162712.0,"reported_concurrency":31.63,"idle_memory_gib":4.054,"idle_memory_peak_gib":10.823,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx16384-seq32-match_context","status":"startup_only","max_model_len":16384.0,"max_num_seqs":32.0,"max_num_batched_tokens":16384.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.524288,"startup_seconds":180.242,"kv_cache_tokens":528130.0,"reported_concurrency":32.23,"idle_memory_gib":3.995,"idle_memory_peak_gib":10.902,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx16384-seq32-small","status":"startup_only","max_model_len":16384.0,"max_num_seqs":32.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.524288,"startup_seconds":180.253,"kv_cache_tokens":917976.0,"reported_concurrency":56.03,"idle_memory_gib":3.992,"idle_memory_peak_gib":10.823,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx32768-seq16-small","status":"load_complete","max_model_len":32768.0,"max_num_seqs":16.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.524288,"startup_seconds":175.241,"kv_cache_tokens":1593535.0,"reported_concurrency":48.63,"idle_memory_gib":3.975,"idle_memory_peak_gib":10.845,"load_memory_peak_gib":10.845,"completion_tok_s":216.743,"total_tok_s":6329.567,"latency_p95":4.721},{"candidate_id":"ctx65536-seq8-match_context","status":"startup_only","max_model_len":65536.0,"max_num_seqs":8.0,"max_num_batched_tokens":65536.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.524288,"startup_seconds":190.293,"kv_cache_tokens":417204.0,"reported_concurrency":6.37,"idle_memory_gib":4.251,"idle_memory_peak_gib":11.264,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx65536-seq8-small","status":"load_complete","max_model_len":65536.0,"max_num_seqs":8.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.524288,"startup_seconds":180.243,"kv_cache_tokens":2530595.0,"reported_concurrency":38.61,"idle_memory_gib":3.912,"idle_memory_peak_gib":10.823,"load_memory_peak_gib":10.823,"completion_tok_s":151.082,"total_tok_s":4412.074,"latency_p95":3.388},{"candidate_id":"ctx131072-seq4-match_context","status":"startup_only","max_model_len":131072.0,"max_num_seqs":4.0,"max_num_batched_tokens":131072.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.524288,"startup_seconds":205.301,"kv_cache_tokens":248051.0,"reported_concurrency":1.89,"idle_memory_gib":4.915,"idle_memory_peak_gib":11.814,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx131072-seq4-small","status":"startup_only","max_model_len":131072.0,"max_num_seqs":4.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.524288,"startup_seconds":175.246,"kv_cache_tokens":3572383.0,"reported_concurrency":27.26,"idle_memory_gib":4.07,"idle_memory_peak_gib":10.839,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx262144-seq2-match_context","status":"startup_service_exit","max_model_len":262144.0,"max_num_seqs":2.0,"max_num_batched_tokens":262144.0,"batch_policy":"match_context","risk_tier":"extreme","token_budget_m":0.524288,"startup_seconds":180.266,"kv_cache_tokens":null,"reported_concurrency":null,"idle_memory_gib":null,"idle_memory_peak_gib":null,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx262144-seq2-small","status":"startup_only","max_model_len":262144.0,"max_num_seqs":2.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"extreme","token_budget_m":0.524288,"startup_seconds":175.246,"kv_cache_tokens":4487686.0,"reported_concurrency":17.12,"idle_memory_gib":4.046,"idle_memory_peak_gib":10.853,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx32768-seq24-match_context","status":"startup_only","max_model_len":32768.0,"max_num_seqs":24.0,"max_num_batched_tokens":32768.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.786432,"startup_seconds":180.258,"kv_cache_tokens":494631.0,"reported_concurrency":15.09,"idle_memory_gib":4.089,"idle_memory_peak_gib":11.03,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx32768-seq24-small","status":"startup_only","max_model_len":32768.0,"max_num_seqs":24.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.786432,"startup_seconds":180.239,"kv_cache_tokens":1592311.0,"reported_concurrency":48.59,"idle_memory_gib":3.991,"idle_memory_peak_gib":10.841,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx98304-seq8-match_context","status":"startup_only","max_model_len":98304.0,"max_num_seqs":8.0,"max_num_batched_tokens":98304.0,"batch_policy":"match_context","risk_tier":"medium","token_budget_m":0.786432,"startup_seconds":205.3,"kv_cache_tokens":334082.0,"reported_concurrency":3.4,"idle_memory_gib":4.828,"idle_memory_peak_gib":11.826,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx98304-seq8-small","status":"load_complete","max_model_len":98304.0,"max_num_seqs":8.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"medium","token_budget_m":0.786432,"startup_seconds":180.249,"kv_cache_tokens":3138252.0,"reported_concurrency":31.92,"idle_memory_gib":4.078,"idle_memory_peak_gib":10.91,"load_memory_peak_gib":10.91,"completion_tok_s":141.812,"total_tok_s":4141.358,"latency_p95":3.608},{"candidate_id":"ctx196608-seq4-match_context","status":"startup_service_exit","max_model_len":196608.0,"max_num_seqs":4.0,"max_num_batched_tokens":196608.0,"batch_policy":"match_context","risk_tier":"extreme","token_budget_m":0.786432,"startup_seconds":180.288,"kv_cache_tokens":null,"reported_concurrency":null,"idle_memory_gib":null,"idle_memory_peak_gib":null,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx196608-seq4-small","status":"startup_only","max_model_len":196608.0,"max_num_seqs":4.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"extreme","token_budget_m":0.786432,"startup_seconds":175.241,"kv_cache_tokens":4140962.0,"reported_concurrency":21.06,"idle_memory_gib":4.075,"idle_memory_peak_gib":10.841,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx100000-seq8-match_context","status":"startup_only","max_model_len":100000.0,"max_num_seqs":8.0,"max_num_batched_tokens":100000.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":0.8,"startup_seconds":195.285,"kv_cache_tokens":331160.0,"reported_concurrency":3.31,"idle_memory_gib":4.71,"idle_memory_peak_gib":11.773,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx100000-seq8-small","status":"startup_only","max_model_len":100000.0,"max_num_seqs":8.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":0.8,"startup_seconds":180.251,"kv_cache_tokens":3164492.0,"reported_concurrency":31.64,"idle_memory_gib":3.933,"idle_memory_peak_gib":10.842,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx32768-seq32-match_context","status":"startup_only","max_model_len":32768.0,"max_num_seqs":32.0,"max_num_batched_tokens":32768.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":1.048576,"startup_seconds":180.265,"kv_cache_tokens":495497.0,"reported_concurrency":15.12,"idle_memory_gib":4.124,"idle_memory_peak_gib":11.031,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx32768-seq32-small","status":"startup_only","max_model_len":32768.0,"max_num_seqs":32.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":1.048576,"startup_seconds":180.253,"kv_cache_tokens":1596126.0,"reported_concurrency":48.71,"idle_memory_gib":4.02,"idle_memory_peak_gib":10.841,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx65536-seq16-match_context","status":"startup_only","max_model_len":65536.0,"max_num_seqs":16.0,"max_num_batched_tokens":65536.0,"batch_policy":"match_context","risk_tier":"high","token_budget_m":1.048576,"startup_seconds":190.272,"kv_cache_tokens":416899.0,"reported_concurrency":6.36,"idle_memory_gib":4.287,"idle_memory_peak_gib":11.268,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx65536-seq16-small","status":"startup_only","max_model_len":65536.0,"max_num_seqs":16.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"high","token_budget_m":1.048576,"startup_seconds":180.247,"kv_cache_tokens":2523793.0,"reported_concurrency":38.51,"idle_memory_gib":3.962,"idle_memory_peak_gib":10.841,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx131072-seq8-match_context","status":"startup_only","max_model_len":131072.0,"max_num_seqs":8.0,"max_num_batched_tokens":131072.0,"batch_policy":"match_context","risk_tier":"extreme","token_budget_m":1.048576,"startup_seconds":210.31,"kv_cache_tokens":256698.0,"reported_concurrency":1.96,"idle_memory_gib":4.758,"idle_memory_peak_gib":11.792,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null},{"candidate_id":"ctx131072-seq8-small","status":"startup_only","max_model_len":131072.0,"max_num_seqs":8.0,"max_num_batched_tokens":8192.0,"batch_policy":"small","risk_tier":"extreme","token_budget_m":1.048576,"startup_seconds":175.245,"kv_cache_tokens":3572533.0,"reported_concurrency":27.26,"idle_memory_gib":3.867,"idle_memory_peak_gib":10.825,"load_memory_peak_gib":null,"completion_tok_s":null,"total_tok_s":null,"latency_p95":null}]</script>
+<script id="sweep-models" type="application/json">{"idle_memory_gib":{"ok":true,"rows":95,"target":"idle_memory_gib","coefficients":{"intercept":3.88828949809557,"context_k":0.0016538204271901987,"max_num_seqs":-0.010419249784372208,"context_k_x_seqs":0.0002321961200937231,"match_context_policy":0.35242244051233723},"r2":0.4372034014036871,"mae":0.1930314845108788,"rmse":0.26480428694785785},"idle_memory_peak_gib":{"ok":true,"rows":95,"target":"idle_memory_peak_gib","coefficients":{"intercept":10.785705830176296,"context_k":0.0012984958829762223,"max_num_seqs":-0.00824828868330269,"context_k_x_seqs":0.00023316416605084623,"match_context_policy":0.3561389445205676},"r2":0.40936159500635694,"mae":0.2010663647860592,"rmse":0.25911001137037626},"load_memory_peak_gib":{"ok":true,"rows":52,"target":"load_memory_peak_gib","coefficients":{"intercept":10.853218042702766,"context_k":0.004865459834373322,"max_num_seqs":0.0019814654221362894,"context_k_x_seqs":-0.0005559755472395023},"r2":0.22524540565507523,"mae":0.1394205568944128,"rmse":0.21832165029729056},"reported_concurrency":{"ok":true,"rows":95,"target":"reported_concurrency","coefficients":{"intercept":80.52457862872836,"context_k":-0.2855682998769775,"max_num_seqs":1.1410493812290563,"context_k_x_seqs":-0.05754155913684413,"match_context_policy":-22.509837693494088},"r2":0.5224682905821784,"mae":23.164350831795552,"rmse":28.920616132279527},"reported_concurrency_log":{"ok":true,"rows":95,"target":"reported_concurrency","transform":"log_response","coefficients":{"intercept":11.638607713320255,"log_context":-0.7500709305437966,"max_num_seqs":-3.7279020308087114e-05,"match_context_policy":-1.1661867981310592},"r2":0.2723250965496873,"mae":23.180030737218104,"rmse":35.700568497946826},"reported_concurrency_empirical":{"ok":true,"rows":95,"target":"reported_concurrency","transform":"piecewise_loglog_by_policy","points":{"small":[[4096.0,137.19],[8192.0,67.54],[16384.0,55.88],[32768.0,48.63],[65536.0,38.51],[98304.0,31.925],[100000.0,31.634999999999998],[131072.0,27.25],[196608.0,21.06],[262144.0,17.15]],"match_context":[[4096.0,135.85],[8192.0,67.31],[16384.0,32.55],[32768.0,15.13],[65536.0,6.36],[98304.0,3.38],[100000.0,3.29],[131072.0,1.95]]},"r2":0.9999785544564311,"mae":0.08715789473684199,"rmse":0.19380945607260192},"completion_tok_s":{"ok":true,"rows":52,"target":"completion_tok_s","coefficients":{"intercept":10.776146987973249,"context_k":-0.15948638391762104,"max_num_seqs":17.86465691111119},"r2":0.9105308622200823,"mae":17.493767772492653,"rmse":27.831818330154274},"latency_p95":{"ok":true,"rows":52,"target":"latency_p95","coefficients":{"intercept":3.0920659393677883,"context_k":0.004492755544281538,"max_num_seqs":0.03150038355286339},"r2":0.09908995234240736,"mae":0.42282116753774335,"rmse":0.535343495932807}}</script>
+<script>
+(function(){
+  const samples = JSON.parse(document.getElementById('sweep-data').textContent);
+  const models = JSON.parse(document.getElementById('sweep-models').textContent);
+  const contextSlider = document.getElementById('contextSlider');
+  const seqSlider = document.getElementById('seqSlider');
+  const policySelect = document.getElementById('policySelect');
+  const metricSelect = document.getElementById('metricSelect');
+  const contextValue = document.getElementById('contextValue');
+  const seqValue = document.getElementById('seqValue');
+  const budgetReadout = document.getElementById('budgetReadout');
+  const predictionReadout = document.getElementById('predictionReadout');
+  const nearestReadout = document.getElementById('nearestReadout');
+  const fitReadout = document.getElementById('fitReadout');
+  const nearestText = document.getElementById('nearestText');
+  const nearestBody = document.querySelector('#nearestTable tbody');
+  const svg = document.getElementById('explorerSvg');
+  const capacityContextSlider = document.getElementById('capacityContextSlider');
+  const capacityContextValue = document.getElementById('capacityContextValue');
+  const marginSlider = document.getElementById('marginSlider');
+  const marginValue = document.getElementById('marginValue');
+  const smallPolicyReadout = document.getElementById('smallPolicyReadout');
+  const matchPolicyReadout = document.getElementById('matchPolicyReadout');
+  const smallBatchReadout = document.getElementById('smallBatchReadout');
+  const matchBatchReadout = document.getElementById('matchBatchReadout');
+  const capacityTableBody = document.querySelector('#capacityTable tbody');
+  const capacitySvg = document.getElementById('capacitySvg');
+  const contexts = [...new Set(samples.map(s => s.max_model_len).filter(Boolean))].sort((a,b)=>a-b);
+  const fmt = new Intl.NumberFormat('en-US');
+  const fmt1 = new Intl.NumberFormat('en-US', {maximumFractionDigits: 1});
+  const finite = v => typeof v === 'number' && Number.isFinite(v);
+  const metricLabels = {
+    reported_concurrency: 'reported concurrency',
+    completion_tok_s: 'completion tok/s',
+    idle_memory_gib: 'idle GiB',
+    load_memory_peak_gib: 'load peak GiB',
+    latency_p95: 'p95 latency'
+  };
+  const metricModels = {
+    reported_concurrency: 'reported_concurrency_empirical',
+    completion_tok_s: 'completion_tok_s',
+    idle_memory_gib: 'idle_memory_gib',
+    load_memory_peak_gib: 'load_memory_peak_gib',
+    latency_p95: 'latency_p95'
+  };
+  function predict(metric, ctx, seq, policy) {
+    const model = models[metricModels[metric] || metric];
+    if (!model || !model.ok || !model.coefficients) return null;
+    const contextK = ctx / 1024;
+    const features = {
+      intercept: 1,
+      context_k: contextK,
+      log_context: Math.log(ctx),
+      max_num_seqs: seq,
+      context_k_x_seqs: contextK * seq,
+      match_context_policy: policy === 'match_context' ? 1 : 0
+    };
+    let value = 0;
+    for (const [name, coefficient] of Object.entries(model.coefficients)) {
+      if (!finite(features[name])) return null;
+      value += coefficient * features[name];
+    }
+    if (model.transform === 'log_response') return Math.max(0, Math.exp(value));
+    return Math.max(0, value);
+  }
+  function predictFromModel(metric, ctx, seq, policy) {
+    const model = models[metricModels[metric] || metric];
+    if (!model || !model.ok) return null;
+    if (model.transform === 'piecewise_loglog_by_policy') return predictPiecewise(model.points && model.points[policy], ctx);
+    return predict(metric, ctx, seq, policy);
+  }
+  function predictPiecewise(points, ctx) {
+    const clean = (points || []).filter(point => point[0] > 0 && point[1] > 0).sort((a,b)=>a[0]-b[0]);
+    if (!clean.length) return null;
+    if (ctx <= clean[0][0]) return clean[0][1];
+    if (ctx >= clean[clean.length - 1][0]) return clean[clean.length - 1][1];
+    for (let i = 1; i < clean.length; i++) {
+      const left = clean[i - 1], right = clean[i];
+      if (ctx <= right[0]) {
+        const t = (Math.log(ctx) - Math.log(left[0])) / (Math.log(right[0]) - Math.log(left[0]));
+        return Math.exp(Math.log(left[1]) + t * (Math.log(right[1]) - Math.log(left[1])));
+      }
+    }
+    return clean[clean.length - 1][1];
+  }
+  function batchTokens(policy, ctx) {
+    return policy === 'small' ? Math.min(ctx, 8192) : ctx;
+  }
+  function capacityFor(policy, ctx) {
+    const model = models.reported_concurrency_empirical;
+    if (!model || !model.ok) return null;
+    return predictPiecewise(model.points && model.points[policy], ctx);
+  }
+  function recommendedSessions(capacity, margin) {
+    return finite(capacity) ? Math.max(1, Math.floor(capacity * margin)) : null;
+  }
+  function shortPolicyLabel(policy) {
+    return policy === 'match_context' ? 'match' : policy;
+  }
+  function drawCapacityPlanner(ctx, margin) {
+    if (!capacitySvg) return;
+    const width = 940, height = 560;
+    const pad = {left: 76, right: 34, top: 32, bottom: 66};
+    const xmin = Math.min(...contexts);
+    const xmax = Math.max(...contexts);
+    const model = models.reported_concurrency_empirical || {};
+    const smallPoints = ((model.points && model.points.small) || []).filter(point => point[0] > 0 && point[1] > 0);
+    const matchPoints = ((model.points && model.points.match_context) || []).filter(point => point[0] > 0 && point[1] > 0);
+    const allValues = smallPoints.concat(matchPoints).map(point => point[1]);
+    const maxValue = Math.max(2, ...allValues, capacityFor('small', ctx) || 1, capacityFor('match_context', ctx) || 1);
+    const yMax = Math.pow(2, Math.ceil(Math.log2(maxValue)));
+    const plotW = width - pad.left - pad.right;
+    const plotH = height - pad.top - pad.bottom;
+    const x = value => pad.left + (Math.log(value) - Math.log(xmin)) / (Math.log(xmax) - Math.log(xmin)) * plotW;
+    const y = value => pad.top + (1 - (Math.log(Math.max(1, value)) / Math.log(yMax))) * plotH;
+    const linePath = (policy, multiplier) => {
+      const steps = 100;
+      const parts = [];
+      for (let i = 0; i <= steps; i++) {
+        const c = Math.exp(Math.log(xmin) + (Math.log(xmax) - Math.log(xmin)) * i / steps);
+        const q = capacityFor(policy, c);
+        if (!finite(q)) continue;
+        const px = x(c).toFixed(1);
+        const py = y(Math.max(1, q * multiplier)).toFixed(1);
+        parts.push(`${parts.length ? 'L' : 'M'}${px},${py}`);
+      }
+      return parts.join(' ');
+    };
+    const xTicks = contexts.filter(tick => tick !== 98304 || !contexts.includes(100000));
+    const yTicks = [1, 2, 4, 8, 16, 32, 64, 128, 256].filter(value => value <= yMax);
+    let out = [`<rect x="0" y="0" width="${width}" height="${height}" fill="white"/>`];
+    out.push(`<text x="${pad.left}" y="22" font-size="14" font-weight="700" fill="#1d2522">capacity curve Qp(c) and recommended s</text>`);
+    for (const tick of xTicks) {
+      const px = x(tick);
+      out.push(`<line x1="${px.toFixed(1)}" y1="${pad.top}" x2="${px.toFixed(1)}" y2="${height-pad.bottom}" stroke="#eef2ee"/>`);
+      out.push(`<text x="${px.toFixed(1)}" y="${height-34}" text-anchor="middle" font-size="10" fill="#5f6d68">${fmtCompact(tick)}</text>`);
+    }
+    for (const tick of yTicks) {
+      const py = y(tick);
+      out.push(`<line x1="${pad.left}" y1="${py.toFixed(1)}" x2="${width-pad.right}" y2="${py.toFixed(1)}" stroke="#eef2ee"/>`);
+      out.push(`<text x="${pad.left-10}" y="${(py+4).toFixed(1)}" text-anchor="end" font-size="11" fill="#5f6d68">${tick}</text>`);
+    }
+    out.push(`<line x1="${pad.left}" y1="${height-pad.bottom}" x2="${width-pad.right}" y2="${height-pad.bottom}" stroke="#44514d"/>`);
+    out.push(`<line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height-pad.bottom}" stroke="#44514d"/>`);
+    out.push(`<text x="${width/2}" y="${height-8}" text-anchor="middle" font-size="12" fill="#33413c">context window tokens, log scale</text>`);
+    out.push(`<text x="18" y="${height/2}" transform="rotate(-90 18 ${height/2})" text-anchor="middle" font-size="12" fill="#33413c">concurrent sessions, log scale</text>`);
+    out.push(`<path d="${linePath('small', 1)}" fill="none" stroke="#176b64" stroke-width="3"/>`);
+    out.push(`<path d="${linePath('small', margin)}" fill="none" stroke="#176b64" stroke-width="2" stroke-dasharray="7 6"/>`);
+    out.push(`<path d="${linePath('match_context', 1)}" fill="none" stroke="#694f9e" stroke-width="3"/>`);
+    out.push(`<path d="${linePath('match_context', margin)}" fill="none" stroke="#694f9e" stroke-width="2" stroke-dasharray="7 6"/>`);
+    for (const [policy, points, color] of [['small', smallPoints, '#176b64'], ['match_context', matchPoints, '#694f9e']]) {
+      for (const point of points) {
+        out.push(`<circle cx="${x(point[0]).toFixed(1)}" cy="${y(point[1]).toFixed(1)}" r="5.8" fill="white" stroke="${color}" stroke-width="2"><title>${policy}\ncontext=${fmt.format(point[0])}\nreported q=${formatMaybe(point[1])}</title></circle>`);
+      }
+    }
+    const selectedX = x(ctx);
+    out.push(`<line x1="${selectedX.toFixed(1)}" y1="${pad.top}" x2="${selectedX.toFixed(1)}" y2="${height-pad.bottom}" stroke="#1d2522" stroke-dasharray="4 5"/>`);
+    for (const [policy, color] of [['small', '#176b64'], ['match_context', '#694f9e']]) {
+      const q = capacityFor(policy, ctx);
+      const s = recommendedSessions(q, margin);
+      if (!finite(q) || !finite(s)) continue;
+      out.push(`<circle cx="${selectedX.toFixed(1)}" cy="${y(q).toFixed(1)}" r="7" fill="${color}" stroke="white" stroke-width="2"><title>${policy} q=${formatMaybe(q)}</title></circle>`);
+      out.push(`<rect x="${(selectedX-5).toFixed(1)}" y="${(y(s)-5).toFixed(1)}" width="10" height="10" fill="white" stroke="${color}" stroke-width="2"><title>${policy} recommended s=${s}</title></rect>`);
+    }
+    capacitySvg.innerHTML = out.join('');
+  }
+  function renderCapacityPlanner() {
+    if (!capacitySvg || !capacityContextSlider || !marginSlider) return;
+    const ctx = Number(capacityContextSlider.value);
+    const margin = Number(marginSlider.value);
+    const smallQ = capacityFor('small', ctx);
+    const matchQ = capacityFor('match_context', ctx);
+    const smallS = recommendedSessions(smallQ, margin);
+    const matchS = recommendedSessions(matchQ, margin);
+    capacityContextValue.value = fmt.format(ctx);
+    marginValue.value = margin.toFixed(2);
+    smallPolicyReadout.textContent = finite(smallQ) ? `q ${formatMaybe(smallQ)}, s ${smallS}` : '';
+    matchPolicyReadout.textContent = finite(matchQ) ? `q ${formatMaybe(matchQ)}, s ${matchS}` : '';
+    smallBatchReadout.textContent = `${fmt.format(batchTokens('small', ctx))} tokens`;
+    matchBatchReadout.textContent = `${fmt.format(batchTokens('match_context', ctx))} tokens`;
+    capacityTableBody.innerHTML = [
+      ['small', batchTokens('small', ctx), smallQ, smallS],
+      ['match_context', batchTokens('match_context', ctx), matchQ, matchS]
+    ].map(row => `<tr><td><code>${shortPolicyLabel(row[0])}</code></td><td class="num">${fmt.format(row[1])}</td><td class="num">${formatMaybe(row[2])}</td><td class="num">${finite(row[3]) ? row[3] : ''}</td></tr>`).join('');
+    drawCapacityPlanner(ctx, margin);
+  }
+  function nearestRows(ctx, seq, policy, metric) {
+    return samples.map(row => {
+      const dc = Math.abs(Math.log(row.max_model_len) - Math.log(ctx));
+      const ds = Math.abs(row.max_num_seqs - seq) / 32;
+      const dp = row.batch_policy === policy ? 0 : 0.8;
+      const missing = finite(row[metric]) ? 0 : 0.25;
+      return {row, score: dc + ds + dp + missing};
+    }).sort((a,b)=>a.score-b.score).slice(0, 9).map(item => item.row);
+  }
+  function statusClass(row) {
+    if (row.status === 'load_complete') return 'ok';
+    if (row.status === 'startup_service_exit') return 'bad';
+    return 'warn';
+  }
+  function colorAt(t) {
+    const stops = [
+      [0.00, [247, 239, 211]],
+      [0.45, [101, 169, 142]],
+      [1.00, [51, 66, 141]]
+    ];
+    const clamped = Math.max(0, Math.min(1, t));
+    let left = stops[0], right = stops[stops.length - 1];
+    for (let i = 1; i < stops.length; i++) {
+      if (clamped <= stops[i][0]) {
+        left = stops[i - 1];
+        right = stops[i];
+        break;
+      }
+    }
+    const local = (clamped - left[0]) / (right[0] - left[0] || 1);
+    const rgb = left[1].map((value, index) => Math.round(value + (right[1][index] - value) * local));
+    return `rgb(${rgb.join(',')})`;
+  }
+  function gridValues(metric, policy) {
+    const xmin = Math.min(...contexts);
+    const xmax = Math.max(...contexts);
+    const values = [];
+    for (let ix = 0; ix < 60; ix++) {
+      const ctx = Math.exp(Math.log(xmin) + (Math.log(xmax) - Math.log(xmin)) * ix / 59);
+      for (let iy = 0; iy < 32; iy++) {
+        const seq = 1 + iy;
+        const value = predictFromModel(metric, ctx, seq, policy);
+        if (finite(value)) values.push(value);
+      }
+    }
+    values.sort((a,b)=>a-b);
+    const lo = values[Math.floor(values.length * 0.03)] ?? 0;
+    const hi = values[Math.floor(values.length * 0.97)] ?? 1;
+    return {lo, hi: hi <= lo ? lo + 1 : hi};
+  }
+  function draw(ctx, seq, policy, metric) {
+    const width = 940, height = 590;
+    const pad = {left: 76, right: 102, top: 34, bottom: 66};
+    const xmin = Math.min(...contexts);
+    const xmax = Math.max(...contexts);
+    const policyRows = samples.filter(s => s.batch_policy === policy);
+    const yTop = 32;
+    const plotW = width - pad.left - pad.right;
+    const plotH = height - pad.top - pad.bottom;
+    const x = value => pad.left + (Math.log(value) - Math.log(xmin)) / (Math.log(xmax) - Math.log(xmin)) * plotW;
+    const y = value => pad.top + (1 - (value - 1) / (yTop - 1)) * plotH;
+    const yTicks = [1, 4, 8, 16, 24, 32];
+    const xTicks = contexts;
+    const domain = gridValues(metric, policy);
+    let out = [`<rect x="0" y="0" width="${width}" height="${height}" fill="white"/>`];
+    out.push(`<text x="${pad.left}" y="22" font-size="14" font-weight="700" fill="#1d2522">${escapeHtml(metricLabels[metric])} fitted surface</text>`);
+    for (let ix = 0; ix < 72; ix++) {
+      const c0 = Math.exp(Math.log(xmin) + (Math.log(xmax) - Math.log(xmin)) * ix / 72);
+      const c1 = Math.exp(Math.log(xmin) + (Math.log(xmax) - Math.log(xmin)) * (ix + 1) / 72);
+      for (let iy = 0; iy < 32; iy++) {
+        const s0 = 1 + iy;
+        const value = predictFromModel(metric, (c0 + c1) / 2, s0 + 0.5, policy);
+        if (!finite(value)) continue;
+        const t = (value - domain.lo) / (domain.hi - domain.lo);
+        out.push(`<rect x="${x(c0).toFixed(1)}" y="${y(s0+1).toFixed(1)}" width="${Math.max(1, x(c1)-x(c0)+0.4).toFixed(1)}" height="${Math.max(1, y(s0)-y(s0+1)+0.4).toFixed(1)}" fill="${colorAt(t)}" opacity="0.88"/>`);
+      }
+    }
+    let lastXLabel = -Infinity;
+    for (const tick of xTicks) {
+      const px = x(tick);
+      out.push(`<line x1="${px.toFixed(1)}" y1="${pad.top}" x2="${px.toFixed(1)}" y2="${height-pad.bottom}" stroke="rgba(255,255,255,.72)"/>`);
+      const suppressCrowdedLabel = tick === 98304 && contexts.includes(100000);
+      if (!suppressCrowdedLabel && px - lastXLabel >= 44) {
+        out.push(`<text x="${px.toFixed(1)}" y="${height-34}" text-anchor="middle" font-size="10" fill="#5f6d68">${fmtCompact(tick)}</text>`);
+        lastXLabel = px;
+      }
+    }
+    for (const tick of yTicks) {
+      const py = y(tick);
+      out.push(`<line x1="${pad.left}" y1="${py.toFixed(1)}" x2="${width-pad.right}" y2="${py.toFixed(1)}" stroke="rgba(255,255,255,.72)"/>`);
+      out.push(`<text x="${pad.left-10}" y="${(py+4).toFixed(1)}" text-anchor="end" font-size="11" fill="#5f6d68">${tick}</text>`);
+    }
+    out.push(`<line x1="${pad.left}" y1="${height-pad.bottom}" x2="${width-pad.right}" y2="${height-pad.bottom}" stroke="#44514d"/>`);
+    out.push(`<line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height-pad.bottom}" stroke="#44514d"/>`);
+    out.push(`<text x="${width/2}" y="${height-8}" text-anchor="middle" font-size="12" fill="#33413c">context window tokens, log scale</text>`);
+    out.push(`<text x="18" y="${height/2}" transform="rotate(-90 18 ${height/2})" text-anchor="middle" font-size="12" fill="#33413c">requested concurrency</text>`);
+    for (const row of policyRows) {
+      const px = x(row.max_model_len);
+      const py = y(row.max_num_seqs);
+      const actual = row[metric];
+      const predicted = predictFromModel(metric, row.max_model_len, row.max_num_seqs, policy);
+      const stroke = row.status === 'startup_service_exit' ? '#9d2f2f' : row.status === 'startup_only' ? '#9b5f00' : '#1d2522';
+      if (finite(actual)) {
+        const t = (actual - domain.lo) / (domain.hi - domain.lo);
+        const residual = finite(predicted) ? actual - predicted : null;
+        out.push(`<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="6.2" fill="${colorAt(t)}" stroke="${stroke}" stroke-width="1.7"><title>${escapeHtml(row.candidate_id)}\nactual=${formatMaybe(actual)}\nmodel=${formatMaybe(predicted)}\nresidual=${formatMaybe(residual)}\nstatus=${row.status}</title></circle>`);
+      } else {
+        out.push(`<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="5.5" fill="white" fill-opacity="0.72" stroke="${stroke}" stroke-width="1.5" stroke-dasharray="2 2"><title>${escapeHtml(row.candidate_id)}\nno actual ${escapeHtml(metricLabels[metric])}\nstatus=${row.status}</title></circle>`);
+      }
+    }
+    const sx = x(ctx);
+    const sy = y(seq);
+    out.push(`<line x1="${sx.toFixed(1)}" y1="${pad.top}" x2="${sx.toFixed(1)}" y2="${height-pad.bottom}" stroke="#176b64" stroke-dasharray="4 5"/>`);
+    out.push(`<line x1="${pad.left}" y1="${sy.toFixed(1)}" x2="${width-pad.right}" y2="${sy.toFixed(1)}" stroke="#176b64" stroke-dasharray="4 5"/>`);
+    out.push(`<rect x="${(sx-7).toFixed(1)}" y="${(sy-7).toFixed(1)}" width="14" height="14" fill="none" stroke="#176b64" stroke-width="3"><title>selected: context=${ctx}, seqs=${seq}</title></rect>`);
+    for (let i = 0; i <= 8; i++) {
+      const t = i / 8;
+      out.push(`<rect x="${width-72}" y="${(pad.top + i * 36).toFixed(1)}" width="18" height="36.5" fill="${colorAt(1-t)}"/>`);
+    }
+    out.push(`<text x="${width-47}" y="${pad.top+8}" font-size="10" fill="#33413c">${formatMaybe(domain.hi)}</text>`);
+    out.push(`<text x="${width-47}" y="${pad.top+292}" font-size="10" fill="#33413c">${formatMaybe(domain.lo)}</text>`);
+    svg.innerHTML = out.join('');
+  }
+  function fmtCompact(value) {
+    if (value >= 1000) return `${Math.round(value / 1000)}k`;
+    return String(value);
+  }
+  function formatMaybe(value, digits = 1) {
+    return finite(value) ? new Intl.NumberFormat('en-US', {maximumFractionDigits: digits}).format(value) : '';
+  }
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+  }
+  function render() {
+    const ctx = Number(contextSlider.value);
+    const seq = Number(seqSlider.value);
+    const policy = policySelect.value;
+    const metric = metricSelect.value;
+    const budget = ctx * seq;
+    const prediction = predictFromModel(metric, ctx, seq, policy);
+    const model = models[metricModels[metric] || metric] || {};
+    contextValue.value = fmt.format(ctx);
+    seqValue.value = fmt.format(seq);
+    budgetReadout.textContent = `${fmt.format(budget)} tokens`;
+    predictionReadout.textContent = `${formatMaybe(prediction)} ${metricLabels[metric]}`;
+    fitReadout.textContent = model.ok ? `R2 ${formatMaybe(model.r2, 2)}, MAE ${formatMaybe(model.mae, 2)}` : 'no model';
+    const nearest = nearestRows(ctx, seq, policy, metric);
+    const nearestWithActual = nearest.find(row => finite(row[metric]));
+    nearestReadout.textContent = nearestWithActual ? `${formatMaybe(nearestWithActual[metric])} at ${nearestWithActual.candidate_id}` : 'no nearby actual';
+    nearestText.textContent = `Surface is the fitted metric model for the selected policy and requested concurrency. Use the capacity planner above for max safe concurrency.`;
+    nearestBody.innerHTML = nearest.map(row => `<tr>
+      <td><code>${escapeHtml(row.candidate_id)}</code></td>
+      <td class="num">${fmt.format(row.max_model_len)}</td>
+      <td class="num">${fmt.format(row.max_num_seqs)}</td>
+      <td><span class="badge ${statusClass(row)}">${escapeHtml(row.status)}</span></td>
+      <td class="num">${formatMaybe(row[metric])}</td>
+      <td class="num">${formatMaybe(predictFromModel(metric, row.max_model_len, row.max_num_seqs, row.batch_policy))}</td>
+      <td class="num">${finite(row[metric]) ? formatMaybe(row[metric] - predictFromModel(metric, row.max_model_len, row.max_num_seqs, row.batch_policy)) : ''}</td>
+      <td class="num">${formatMaybe(row.reported_concurrency)}</td>
+      <td class="num">${formatMaybe(row.completion_tok_s, 1)}</td>
+    </tr>`).join('');
+    draw(ctx, seq, policy, metric);
+  }
+  for (const el of [capacityContextSlider, marginSlider]) {
+    if (el) el.addEventListener('input', renderCapacityPlanner);
+  }
+  for (const el of [contextSlider, seqSlider, policySelect, metricSelect]) el.addEventListener('input', render);
+  renderCapacityPlanner();
+  render();
+})();
+</script>
+<h2>Plots</h2>
+<div class="grid">
+<figure><img src="plots/idle-memory-by-context.svg" alt="Idle memory by context"><figcaption>Idle memory by context.</figcaption></figure>
+<figure><img src="plots/load-peak-memory-by-context.svg" alt="Load peak memory by context"><figcaption>Loaded peak memory by context.</figcaption></figure>
+<figure><img src="plots/reported-concurrency-by-context.svg" alt="Reported concurrency by context"><figcaption>vLLM reported concurrency capacity by context.</figcaption></figure>
+<figure><img src="plots/throughput-by-concurrency.svg" alt="Throughput by concurrency"><figcaption>Output throughput by requested concurrency.</figcaption></figure>
+<figure><img src="plots/latency-p95-by-concurrency.svg" alt="Latency by concurrency"><figcaption>P95 latency by requested concurrency.</figcaption></figure>
+</div>
+<h2>Abstract System</h2>
+<p>The sweep is a system with startup parameters as inputs and resource/performance measurements as outputs. The symbols below are single-letter quantities used by the formulas.</p>
+<table><tr><th>symbol</th><th>quantity</th></tr>
+<tr><td>\(c\)</td><td>context window, measured in 1024-token units</td></tr>
+<tr><td>\(s\)</td><td>requested maximum concurrent sequences</td></tr>
+<tr><td>\(b\)</td><td>maximum batched tokens</td></tr>
+<tr><td>\(u\)</td><td>vLLM GPU memory utilization target</td></tr>
+<tr><td>\(p\)</td><td>batching policy indicator, where \(p=0\) for <code>small</code> and \(p=1\) for <code>match_context</code></td></tr>
+<tr><td>\(v\)</td><td>requested token budget</td></tr>
+<tr><td>\(k\)</td><td>vLLM-reported KV cache token capacity</td></tr>
+<tr><td>\(q\)</td><td>vLLM-reported maximum concurrency for the configured context</td></tr>
+<tr><td>\(m\)</td><td>idle service memory</td></tr>
+<tr><td>\(h\)</td><td>idle service peak memory</td></tr>
+<tr><td>\(a\)</td><td>loaded service peak memory</td></tr>
+<tr><td>\(y\)</td><td>completion token throughput</td></tr>
+<tr><td>\(z\)</td><td>total token throughput</td></tr>
+<tr><td>\(l\)</td><td>p95 request latency</td></tr>
+<tr><td>\(w\)</td><td>free swap memory</td></tr>
+<tr><td>\(r\)</td><td>risk guard indicator, where \(r=1\) means load is blocked by policy</td></tr>
+<tr><td>\(o\)</td><td>startup outcome</td></tr>
+<tr><td>\(d\)</td><td>load decision, where \(d=1\) means load was run</td></tr>
+</table>
+<p>Derived budget:</p>
+<p>\[v = cs\]</p>
+<p>Startup and capacity:</p>
+<p>\[o = O(c,s,b,u,p)\]</p>
+<p>\[k = K(c,s,b,u,p)\]</p>
+<p>\[q = Q(c,s,b,u,p)\]</p>
+<p>Load is run only when the configured concurrency is inside reported capacity and safety bounds:</p>
+<p>\[d = \mathbb{1}\{q \ge s \;\land\; m < m_{\max} \;\land\; w > w_{\min} \;\land\; r = 0\}\]</p>
+<p>Memory model family:</p>
+<p>\[m = M(c,s,b,u,p,cs) + \epsilon_m\]</p>
+<p>\[h = H(c,s,b,u,p,cs) + \epsilon_h\]</p>
+<p>\[a = A(c,s,b,u,p,cs) + \epsilon_a, \quad d=1\]</p>
+<p>Performance model family:</p>
+<p>\[y = Y(c,s,b,u,p,cs) + \epsilon_y, \quad d=1\]</p>
+<p>\[z = Z(c,s,b,u,p,cs) + \epsilon_z, \quad d=1\]</p>
+<p>\[l = L(c,s,b,u,p,cs) + \epsilon_l, \quad d=1\]</p>
+<p>In this run, the fitted instances of \(M,H,A,Q,Y,L\) are simple continuous response models over the observed rows. Most are linear interaction models; the interactive capacity surface uses a policy-specific piecewise log-log empirical model for \(Q\) so it follows the measured capacity curve. The abstract system is the important part; the numeric coefficients are only run-specific estimates.</p>
+<h2>Fit Quality</h2>
+<p>The coefficients for these model families are stored in <code>models/linear-models.json</code>. The report formulas define the abstract system; this table only reports fit quality.</p>
+<table><tr><th>target</th><th class="num">rows</th><th class="num">R2</th><th class="num">MAE</th><th class="num">RMSE</th></tr>
+<tr><td>idle_memory_gib</td><td class="num">95</td><td class="num">0.437</td><td class="num">0.193</td><td class="num">0.265</td></tr>
+<tr><td>idle_memory_peak_gib</td><td class="num">95</td><td class="num">0.409</td><td class="num">0.201</td><td class="num">0.259</td></tr>
+<tr><td>load_memory_peak_gib</td><td class="num">52</td><td class="num">0.225</td><td class="num">0.139</td><td class="num">0.218</td></tr>
+<tr><td>reported_concurrency</td><td class="num">95</td><td class="num">0.522</td><td class="num">23.164</td><td class="num">28.921</td></tr>
+<tr><td>reported_concurrency_log</td><td class="num">95</td><td class="num">0.272</td><td class="num">23.180</td><td class="num">35.701</td></tr>
+<tr><td>reported_concurrency_empirical</td><td class="num">95</td><td class="num">1.000</td><td class="num">0.087</td><td class="num">0.194</td></tr>
+<tr><td>completion_tok_s</td><td class="num">52</td><td class="num">0.911</td><td class="num">17.494</td><td class="num">27.832</td></tr>
+<tr><td>latency_p95</td><td class="num">52</td><td class="num">0.099</td><td class="num">0.423</td><td class="num">0.535</td></tr>
+</table>
+<h2>Context Summary</h2>
+<table><tr><th class="num">context</th><th class="num">rows</th><th class="num">load complete</th><th class="num">startup only</th><th class="num">startup exits</th><th class="num">max loaded seqs</th><th class="num">best completion tok/s</th><th class="num">max reported concurrency</th></tr>
+<tr><td class="num">4096</td><td class="num">14</td><td class="num">10</td><td class="num">4</td><td class="num">0</td><td class="num">16</td><td class="num">358.957</td><td class="num">137.570</td></tr>
+<tr><td class="num">8192</td><td class="num">14</td><td class="num">10</td><td class="num">4</td><td class="num">0</td><td class="num">16</td><td class="num">360.694</td><td class="num">67.770</td></tr>
+<tr><td class="num">16384</td><td class="num">14</td><td class="num">10</td><td class="num">4</td><td class="num">0</td><td class="num">16</td><td class="num">288.419</td><td class="num">56.220</td></tr>
+<tr><td class="num">32768</td><td class="num">14</td><td class="num">9</td><td class="num">5</td><td class="num">0</td><td class="num">16</td><td class="num">216.743</td><td class="num">48.710</td></tr>
+<tr><td class="num">65536</td><td class="num">10</td><td class="num">7</td><td class="num">3</td><td class="num">0</td><td class="num">8</td><td class="num">151.082</td><td class="num">38.610</td></tr>
+<tr><td class="num">98304</td><td class="num">8</td><td class="num">6</td><td class="num">2</td><td class="num">0</td><td class="num">8</td><td class="num">141.812</td><td class="num">31.950</td></tr>
+<tr><td class="num">100000</td><td class="num">8</td><td class="num">0</td><td class="num">8</td><td class="num">0</td><td class="num">0</td><td class="num"></td><td class="num">31.690</td></tr>
+<tr><td class="num">131072</td><td class="num">8</td><td class="num">0</td><td class="num">8</td><td class="num">0</td><td class="num">0</td><td class="num"></td><td class="num">27.260</td></tr>
+<tr><td class="num">196608</td><td class="num">6</td><td class="num">0</td><td class="num">3</td><td class="num">3</td><td class="num">0</td><td class="num"></td><td class="num">21.100</td></tr>
+<tr><td class="num">262144</td><td class="num">4</td><td class="num">0</td><td class="num">2</td><td class="num">2</td><td class="num">0</td><td class="num"></td><td class="num">17.180</td></tr>
+</table>
+<h2>Top Throughput Rows</h2>
+<table><tr><th>candidate</th><th class="num">context</th><th class="num">seqs</th><th>policy</th><th class="num">completion tok/s</th><th class="num">total tok/s</th><th class="num">p95 latency</th></tr>
+<tr><td><code>ctx8192-seq16-small</code></td><td class="num">8192</td><td class="num">16</td><td>small</td><td class="num">360.694</td><td class="num">10533.390</td><td class="num">2.835</td></tr>
+<tr><td><code>ctx4096-seq16-small</code></td><td class="num">4096</td><td class="num">16</td><td>small</td><td class="num">358.957</td><td class="num">10482.670</td><td class="num">2.848</td></tr>
+<tr><td><code>ctx8192-seq16-match_context</code></td><td class="num">8192</td><td class="num">16</td><td>match_context</td><td class="num">354.195</td><td class="num">10343.592</td><td class="num">2.887</td></tr>
+<tr><td><code>ctx16384-seq16-match_context</code></td><td class="num">16384</td><td class="num">16</td><td>match_context</td><td class="num">288.419</td><td class="num">8422.739</td><td class="num">3.547</td></tr>
+<tr><td><code>ctx16384-seq16-small</code></td><td class="num">16384</td><td class="num">16</td><td>small</td><td class="num">218.784</td><td class="num">6389.167</td><td class="num">4.678</td></tr>
+<tr><td><code>ctx4096-seq16-match_context</code></td><td class="num">4096</td><td class="num">16</td><td>match_context</td><td class="num">217.576</td><td class="num">6353.886</td><td class="num">4.703</td></tr>
+<tr><td><code>ctx32768-seq16-small</code></td><td class="num">32768</td><td class="num">16</td><td>small</td><td class="num">216.743</td><td class="num">6329.567</td><td class="num">4.721</td></tr>
+<tr><td><code>ctx4096-seq8-small</code></td><td class="num">4096</td><td class="num">8</td><td>small</td><td class="num">196.096</td><td class="num">5726.602</td><td class="num">2.610</td></tr>
+</table>
+<h2>Startup Boundaries</h2>
+<ul>
+<li>5 rows exited during startup.</li>
+<li>5 of those hit the CUTLASS FP4 MoE MAX_TOKENS_PER_EXPERT assertion, which is a kernel/config boundary rather than an observed machine OOM: ctx196608-seq1-match_context, ctx262144-seq1-match_context, ctx196608-seq2-match_context, ctx262144-seq2-match_context, ctx196608-seq4-match_context.</li>
+</ul>
+<p>Full Markdown report: <a href="summary.md">summary.md</a>. Flattened CSV: <a href="tables/measurements.csv">measurements.csv</a>. Model JSON: <a href="models/linear-models.json">linear-models.json</a>.</p>

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.tmp
+results/events.jsonl
+results/sweep-results.jsonl
+results/sweep-summary.json
+results/logs/
+results/profiles/

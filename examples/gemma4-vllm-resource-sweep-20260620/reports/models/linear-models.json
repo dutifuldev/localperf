@@ -1,0 +1,189 @@
+{
+  "idle_memory_gib": {
+    "ok": true,
+    "rows": 95,
+    "target": "idle_memory_gib",
+    "coefficients": {
+      "intercept": 3.88828949809557,
+      "context_k": 0.0016538204271901987,
+      "max_num_seqs": -0.010419249784372208,
+      "context_k_x_seqs": 0.0002321961200937231,
+      "match_context_policy": 0.35242244051233723
+    },
+    "r2": 0.4372034014036871,
+    "mae": 0.1930314845108788,
+    "rmse": 0.26480428694785785
+  },
+  "idle_memory_peak_gib": {
+    "ok": true,
+    "rows": 95,
+    "target": "idle_memory_peak_gib",
+    "coefficients": {
+      "intercept": 10.785705830176296,
+      "context_k": 0.0012984958829762223,
+      "max_num_seqs": -0.00824828868330269,
+      "context_k_x_seqs": 0.00023316416605084623,
+      "match_context_policy": 0.3561389445205676
+    },
+    "r2": 0.40936159500635694,
+    "mae": 0.2010663647860592,
+    "rmse": 0.25911001137037626
+  },
+  "load_memory_peak_gib": {
+    "ok": true,
+    "rows": 52,
+    "target": "load_memory_peak_gib",
+    "coefficients": {
+      "intercept": 10.853218042702766,
+      "context_k": 0.004865459834373322,
+      "max_num_seqs": 0.0019814654221362894,
+      "context_k_x_seqs": -0.0005559755472395023
+    },
+    "r2": 0.22524540565507523,
+    "mae": 0.1394205568944128,
+    "rmse": 0.21832165029729056
+  },
+  "reported_concurrency": {
+    "ok": true,
+    "rows": 95,
+    "target": "reported_concurrency",
+    "coefficients": {
+      "intercept": 80.52457862872836,
+      "context_k": -0.2855682998769775,
+      "max_num_seqs": 1.1410493812290563,
+      "context_k_x_seqs": -0.05754155913684413,
+      "match_context_policy": -22.509837693494088
+    },
+    "r2": 0.5224682905821784,
+    "mae": 23.164350831795552,
+    "rmse": 28.920616132279527
+  },
+  "reported_concurrency_log": {
+    "ok": true,
+    "rows": 95,
+    "target": "reported_concurrency",
+    "transform": "log_response",
+    "coefficients": {
+      "intercept": 11.638607713320255,
+      "log_context": -0.7500709305437966,
+      "max_num_seqs": -3.7279020308087114e-05,
+      "match_context_policy": -1.1661867981310592
+    },
+    "r2": 0.2723250965496873,
+    "mae": 23.180030737218104,
+    "rmse": 35.700568497946826
+  },
+  "reported_concurrency_empirical": {
+    "ok": true,
+    "rows": 95,
+    "target": "reported_concurrency",
+    "transform": "piecewise_loglog_by_policy",
+    "points": {
+      "small": [
+        [
+          4096.0,
+          137.19
+        ],
+        [
+          8192.0,
+          67.54
+        ],
+        [
+          16384.0,
+          55.88
+        ],
+        [
+          32768.0,
+          48.63
+        ],
+        [
+          65536.0,
+          38.51
+        ],
+        [
+          98304.0,
+          31.925
+        ],
+        [
+          100000.0,
+          31.634999999999998
+        ],
+        [
+          131072.0,
+          27.25
+        ],
+        [
+          196608.0,
+          21.06
+        ],
+        [
+          262144.0,
+          17.15
+        ]
+      ],
+      "match_context": [
+        [
+          4096.0,
+          135.85
+        ],
+        [
+          8192.0,
+          67.31
+        ],
+        [
+          16384.0,
+          32.55
+        ],
+        [
+          32768.0,
+          15.13
+        ],
+        [
+          65536.0,
+          6.36
+        ],
+        [
+          98304.0,
+          3.38
+        ],
+        [
+          100000.0,
+          3.29
+        ],
+        [
+          131072.0,
+          1.95
+        ]
+      ]
+    },
+    "r2": 0.9999785544564311,
+    "mae": 0.08715789473684199,
+    "rmse": 0.19380945607260192
+  },
+  "completion_tok_s": {
+    "ok": true,
+    "rows": 52,
+    "target": "completion_tok_s",
+    "coefficients": {
+      "intercept": 10.776146987973249,
+      "context_k": -0.15948638391762104,
+      "max_num_seqs": 17.86465691111119
+    },
+    "r2": 0.9105308622200823,
+    "mae": 17.493767772492653,
+    "rmse": 27.831818330154274
+  },
+  "latency_p95": {
+    "ok": true,
+    "rows": 52,
+    "target": "latency_p95",
+    "coefficients": {
+      "intercept": 3.0920659393677883,
+      "context_k": 0.004492755544281538,
+      "max_num_seqs": 0.03150038355286339
+    },
+    "r2": 0.09908995234240736,
+    "mae": 0.42282116753774335,
+    "rmse": 0.535343495932807
+  }
+}
