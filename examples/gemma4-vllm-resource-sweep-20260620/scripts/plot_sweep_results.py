@@ -57,6 +57,7 @@ def flatten_rows(rows: list[dict]) -> list[dict]:
                 "max_num_batched_tokens": c.get("max_num_batched_tokens"),
                 "batch_policy": c.get("batch_policy"),
                 "risk_tier": c.get("risk_tier"),
+                "load_skip_reason": load_skip_reason(row, c, capacity),
                 "token_budget_m": safe_product(c.get("max_model_len"), c.get("max_num_seqs"), scale=1_000_000),
                 "startup_seconds": (startup or {}).get("startup_seconds"),
                 "kv_cache_tokens": capacity.get("gpu_kv_cache_tokens"),
@@ -90,6 +91,25 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def load_skip_reason(row: dict, candidate: dict, capacity: dict) -> str:
+    status = row.get("status")
+    if status not in {"startup_only", "skipped_load_idle_memory"}:
+        return ""
+    if status == "skipped_load_idle_memory":
+        return "idle_memory_floor"
+    notes = row.get("notes") or []
+    risk_tier = candidate.get("risk_tier")
+    reported = number(capacity.get("max_reported_concurrency"))
+    requested = number(candidate.get("load_concurrency") or candidate.get("max_num_seqs"))
+    capacity_blocked = reported is not None and requested is not None and reported + 1e-9 < requested
+    if risk_tier in {"high", "extreme"}:
+        suffix = "+capacity_guard" if capacity_blocked else ""
+        return f"risk_guard({risk_tier}){suffix}"
+    if capacity_blocked:
+        return "capacity_guard"
+    return "; ".join(str(note) for note in notes)
 
 
 def build_models(rows: list[dict]) -> dict:
@@ -529,7 +549,7 @@ def write_summary(path: Path, rows: list[dict], raw_rows: list[dict], models: di
         lines.extend(["", "## 100k Context Rows", "", "| candidate | status | seqs | policy | reported concurrency | idle GiB | completion tok/s | notes |", "| --- | --- | ---: | --- | ---: | ---: | ---: | --- |"])
         raw_by_id = {row.get("candidate_id"): row for row in raw_rows}
         for row in sorted(hundred_k_rows, key=lambda item: (number(item["max_num_seqs"]) or 0, item["batch_policy"])):
-            notes = "; ".join(raw_by_id.get(row["candidate_id"], {}).get("notes") or [])
+            notes = row.get("load_skip_reason") or "; ".join(raw_by_id.get(row["candidate_id"], {}).get("notes") or [])
             lines.append(
                 f"| {row['candidate_id']} | {row['status']} | {row['max_num_seqs']} | {row['batch_policy']} | {fmt(row['reported_concurrency'])} | {fmt(row['idle_memory_gib'])} | {fmt(row['completion_tok_s'])} | {notes} |"
             )
@@ -716,6 +736,7 @@ def explorer_rows(rows: list[dict]) -> list[dict]:
         "max_num_batched_tokens",
         "batch_policy",
         "risk_tier",
+        "load_skip_reason",
         "token_budget_m",
         "startup_seconds",
         "kv_cache_tokens",
@@ -736,7 +757,7 @@ def explorer_rows(rows: list[dict]) -> list[dict]:
     for row in rows:
         item = {key: row.get(key) for key in keep}
         for key in keep:
-            if key in {"candidate_id", "status", "batch_policy", "risk_tier"}:
+            if key in {"candidate_id", "status", "batch_policy", "risk_tier", "load_skip_reason"}:
                 continue
             n = number(item.get(key))
             item[key] = None if n is None else round(n, 6)
