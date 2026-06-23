@@ -82,3 +82,18 @@ func TestCheckResultsRejectsDuplicateCandidates(t *testing.T) {
 		t.Fatalf("expected duplicate issue, got %#v", sum.Issues)
 	}
 }
+
+func TestCheckResultsAllowsPreflightMemorySkipWithoutStartup(t *testing.T) {
+	input := `{"candidate_id":"ctx4096-seq1-small","status":"skipped_preflight_memory","candidate":{"max_model_len":4096,"max_num_seqs":1},"startup":null,"shutdown":null,"telemetry":{"tools":{"tegrastats_available":false},"tegrastats":{"sample_count":0,"parsed_sample_count":0}},"notes":["available memory or swap was below configured floor before startup"]}`
+
+	sum, err := checkResults(strings.NewReader(input+"\n"), config{minRows: 1, requireTegrastats: true})
+	if err != nil {
+		t.Fatalf("checkResults returned unexpected error: %v", err)
+	}
+	if len(sum.Issues) != 0 {
+		t.Fatalf("expected no issues, got %#v", sum.Issues)
+	}
+	if sum.StartupOnlyRows != 1 {
+		t.Fatalf("expected skipped row to count as startup-only/skipped, got %#v", sum)
+	}
+}

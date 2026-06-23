@@ -100,6 +100,9 @@ def load_skip_reason(row: dict, candidate: dict, capacity: dict) -> str:
     if status == "skipped_load_idle_memory":
         return "idle_memory_floor"
     notes = row.get("notes") or []
+    note_text = "; ".join(str(note) for note in notes)
+    if note_text and note_text != "load skipped by capacity or risk guard":
+        return note_text
     risk_tier = candidate.get("risk_tier")
     reported = number(capacity.get("max_reported_concurrency"))
     requested = number(candidate.get("load_concurrency") or candidate.get("max_num_seqs"))
@@ -109,7 +112,7 @@ def load_skip_reason(row: dict, candidate: dict, capacity: dict) -> str:
         return f"risk_guard({risk_tier}){suffix}"
     if capacity_blocked:
         return "capacity_guard"
-    return "; ".join(str(note) for note in notes)
+    return note_text
 
 
 def build_models(rows: list[dict]) -> dict:

@@ -156,10 +156,10 @@ func checkRow(sum *summary, state *checkState, lineNo int, row map[string]any, c
 			}
 		}
 	}
-	if status != "dry_run" && objectField(row, "startup") == nil {
+	if requiresStartupRecord(status) && objectField(row, "startup") == nil {
 		sum.Issues = append(sum.Issues, fmt.Sprintf("%s: missing startup record", id))
 	}
-	if status != "dry_run" && objectField(row, "shutdown") == nil {
+	if requiresShutdownRecord(status) && objectField(row, "shutdown") == nil {
 		sum.Issues = append(sum.Issues, fmt.Sprintf("%s: missing shutdown record", id))
 	}
 
@@ -179,6 +179,14 @@ func checkRow(sum *summary, state *checkState, lineNo int, row map[string]any, c
 			sum.Issues = append(sum.Issues, fmt.Sprintf("%s: startup-only/skipped row has no note", id))
 		}
 	}
+}
+
+func requiresStartupRecord(status string) bool {
+	return status != "dry_run" && status != "skipped_preflight_memory"
+}
+
+func requiresShutdownRecord(status string) bool {
+	return status != "dry_run" && status != "skipped_preflight_memory"
 }
 
 func finalizeCoverage(sum *summary, state checkState, cfg config) {
