@@ -123,7 +123,10 @@ Run the mechanical completion check:
 ```sh
 go run ./cmd/localperf-sweep-check \
   --results examples/gemma4-vllm-resource-sweep-20260620/results/tegrastats-sweep-20260623T075153Z-results.jsonl \
-  --min-rows 100
+  --min-rows 100 \
+  --require-context 100000 \
+  --require-max-context 262144 \
+  --require-max-seqs 32
 ```
 
 That command should fail while the sweep is still below 100 rows. It should pass

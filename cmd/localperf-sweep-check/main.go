@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -16,6 +17,9 @@ type config struct {
 	minRows           int
 	requireTegrastats bool
 	jsonOutput        bool
+	requireContexts   intList
+	requireMaxContext int
+	requireMaxSeqs    int
 }
 
 type summary struct {
@@ -27,6 +31,11 @@ type summary struct {
 	RowsWithTegrastats    int            `json:"rows_with_tegrastats"`
 	RowsMissingTelemetry  int            `json:"rows_missing_telemetry"`
 	RowsMissingLoadFields int            `json:"rows_missing_load_fields"`
+	UniqueCandidates      int            `json:"unique_candidates"`
+	MaxContext            int            `json:"max_context"`
+	MaxSeqs               int            `json:"max_seqs"`
+	Contexts              []int          `json:"contexts"`
+	Seqs                  []int          `json:"seqs"`
 	Issues                []string       `json:"issues"`
 }
 
@@ -54,6 +63,9 @@ func parseFlags() config {
 	flag.IntVar(&cfg.minRows, "min-rows", 100, "minimum required result rows")
 	flag.BoolVar(&cfg.requireTegrastats, "require-tegrastats", true, "require parsed tegrastats samples when available")
 	flag.BoolVar(&cfg.jsonOutput, "json", false, "print machine-readable JSON summary")
+	flag.Var(&cfg.requireContexts, "require-context", "context window that must appear at least once; may be repeated")
+	flag.IntVar(&cfg.requireMaxContext, "require-max-context", 0, "minimum required maximum context window")
+	flag.IntVar(&cfg.requireMaxSeqs, "require-max-seqs", 0, "minimum required maximum max_num_seqs")
 	flag.Parse()
 	if strings.TrimSpace(cfg.resultsPath) == "" {
 		fmt.Fprintln(os.Stderr, "missing --results")
@@ -66,6 +78,11 @@ func checkResults(reader io.Reader, cfg config) (summary, error) {
 	sum := summary{
 		MinRows:  cfg.minRows,
 		Statuses: map[string]int{},
+	}
+	state := checkState{
+		candidates: map[string]int{},
+		contexts:   map[int]bool{},
+		seqs:       map[int]bool{},
 	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
@@ -81,11 +98,12 @@ func checkResults(reader io.Reader, cfg config) (summary, error) {
 			sum.Issues = append(sum.Issues, fmt.Sprintf("line %d: invalid JSON: %v", lineNo, err))
 			continue
 		}
-		checkRow(&sum, lineNo, row, cfg)
+		checkRow(&sum, &state, lineNo, row, cfg)
 	}
 	if err := scanner.Err(); err != nil {
 		return sum, err
 	}
+	finalizeCoverage(&sum, state, cfg)
 	if sum.Rows < cfg.minRows {
 		sum.Issues = append(sum.Issues, fmt.Sprintf("only %d rows recorded; need at least %d", sum.Rows, cfg.minRows))
 	}
@@ -95,12 +113,23 @@ func checkResults(reader io.Reader, cfg config) (summary, error) {
 	return sum, nil
 }
 
-func checkRow(sum *summary, lineNo int, row map[string]any, cfg config) {
+type checkState struct {
+	candidates map[string]int
+	contexts   map[int]bool
+	seqs       map[int]bool
+}
+
+func checkRow(sum *summary, state *checkState, lineNo int, row map[string]any, cfg config) {
 	sum.Rows++
 	id := stringField(row, "candidate_id")
 	if id == "" {
 		id = fmt.Sprintf("line %d", lineNo)
 		sum.Issues = append(sum.Issues, fmt.Sprintf("%s: missing candidate_id", id))
+	} else {
+		state.candidates[id]++
+		if state.candidates[id] > 1 {
+			sum.Issues = append(sum.Issues, fmt.Sprintf("%s: duplicate candidate_id", id))
+		}
 	}
 	status := stringField(row, "status")
 	if status == "" {
@@ -108,8 +137,24 @@ func checkRow(sum *summary, lineNo int, row map[string]any, cfg config) {
 	} else {
 		sum.Statuses[status]++
 	}
-	if objectField(row, "candidate") == nil {
+	candidate := objectField(row, "candidate")
+	if candidate == nil {
 		sum.Issues = append(sum.Issues, fmt.Sprintf("%s: missing candidate parameters", id))
+	} else {
+		context := int(numericField(candidate, "max_model_len"))
+		seqs := int(numericField(candidate, "max_num_seqs"))
+		if context > 0 {
+			state.contexts[context] = true
+			if context > sum.MaxContext {
+				sum.MaxContext = context
+			}
+		}
+		if seqs > 0 {
+			state.seqs[seqs] = true
+			if seqs > sum.MaxSeqs {
+				sum.MaxSeqs = seqs
+			}
+		}
 	}
 	if status != "dry_run" && objectField(row, "startup") == nil {
 		sum.Issues = append(sum.Issues, fmt.Sprintf("%s: missing startup record", id))
@@ -133,6 +178,23 @@ func checkRow(sum *summary, lineNo int, row map[string]any, cfg config) {
 		if len(arrayField(row, "notes")) == 0 {
 			sum.Issues = append(sum.Issues, fmt.Sprintf("%s: startup-only/skipped row has no note", id))
 		}
+	}
+}
+
+func finalizeCoverage(sum *summary, state checkState, cfg config) {
+	sum.UniqueCandidates = len(state.candidates)
+	sum.Contexts = sortedInts(state.contexts)
+	sum.Seqs = sortedInts(state.seqs)
+	for _, context := range cfg.requireContexts {
+		if !state.contexts[context] {
+			sum.Issues = append(sum.Issues, fmt.Sprintf("required context %d was not recorded", context))
+		}
+	}
+	if cfg.requireMaxContext > 0 && sum.MaxContext < cfg.requireMaxContext {
+		sum.Issues = append(sum.Issues, fmt.Sprintf("max context %d is below required %d", sum.MaxContext, cfg.requireMaxContext))
+	}
+	if cfg.requireMaxSeqs > 0 && sum.MaxSeqs < cfg.requireMaxSeqs {
+		sum.Issues = append(sum.Issues, fmt.Sprintf("max max_num_seqs %d is below required %d", sum.MaxSeqs, cfg.requireMaxSeqs))
 	}
 }
 
@@ -217,6 +279,9 @@ func printSummary(cfg config, sum summary) {
 	fmt.Printf("load rows: %d\n", sum.LoadRows)
 	fmt.Printf("startup-only/skipped rows: %d\n", sum.StartupOnlyRows)
 	fmt.Printf("rows with tegrastats: %d\n", sum.RowsWithTegrastats)
+	fmt.Printf("unique candidates: %d\n", sum.UniqueCandidates)
+	fmt.Printf("max context: %d\n", sum.MaxContext)
+	fmt.Printf("max max_num_seqs: %d\n", sum.MaxSeqs)
 	fmt.Println("statuses:")
 	for _, status := range sortedKeys(sum.Statuses) {
 		fmt.Printf("  %s: %d\n", status, sum.Statuses[status])
@@ -239,6 +304,15 @@ func sortedKeys(values map[string]int) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func sortedInts(values map[int]bool) []int {
+	out := make([]int, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Ints(out)
+	return out
 }
 
 func objectField(row map[string]any, key string) map[string]any {
@@ -296,4 +370,26 @@ func numericField(row map[string]any, key string) float64 {
 		return 0
 	}
 	return number
+}
+
+type intList []int
+
+func (values *intList) String() string {
+	if values == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(*values))
+	for _, value := range *values {
+		parts = append(parts, fmt.Sprint(value))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (values *intList) Set(raw string) error {
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 {
+		return fmt.Errorf("invalid positive integer %q", raw)
+	}
+	*values = append(*values, parsed)
+	return nil
 }

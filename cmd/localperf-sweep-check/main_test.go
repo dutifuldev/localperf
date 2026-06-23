@@ -49,3 +49,36 @@ func TestCheckResultsRejectsMissingTelemetry(t *testing.T) {
 		t.Fatalf("expected telemetry issue, got %#v", sum.Issues)
 	}
 }
+
+func TestCheckResultsRejectsMissingCoverage(t *testing.T) {
+	input := `{"candidate_id":"ctx4096-seq1-small","status":"load_complete","candidate":{"max_model_len":4096,"max_num_seqs":1},"startup":{},"shutdown":{},"telemetry":{"tools":{"tegrastats_available":true},"tegrastats":{"sample_count":3,"parsed_sample_count":3,"ram_used_delta_gib":81.2}},"load_short_decode":{"successes":1,"errors":0,"wall_seconds":2.1,"completion_tokens_per_second":12.3,"total_tokens_per_second":400.0,"latency_seconds":{"p50":2.1},"memory_monitor":{"samples":2}}}`
+
+	sum, err := checkResults(strings.NewReader(input+"\n"), config{
+		minRows:           1,
+		requireTegrastats: true,
+		requireContexts:   intList{100000},
+		requireMaxContext: 100000,
+		requireMaxSeqs:    32,
+	})
+	if err != nil {
+		t.Fatalf("checkResults returned unexpected error: %v", err)
+	}
+	joined := strings.Join(sum.Issues, "\n")
+	for _, want := range []string{"required context 100000", "max context 4096", "max max_num_seqs 1"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected %q in issues, got %#v", want, sum.Issues)
+		}
+	}
+}
+
+func TestCheckResultsRejectsDuplicateCandidates(t *testing.T) {
+	row := `{"candidate_id":"ctx4096-seq1-small","status":"startup_only","candidate":{"max_model_len":4096,"max_num_seqs":1},"startup":{},"shutdown":{},"telemetry":{"tools":{"tegrastats_available":false},"tegrastats":{"sample_count":0,"parsed_sample_count":0}},"notes":["load skipped"]}`
+
+	sum, err := checkResults(strings.NewReader(row+"\n"+row+"\n"), config{minRows: 1, requireTegrastats: true})
+	if err != nil {
+		t.Fatalf("checkResults returned unexpected error: %v", err)
+	}
+	if !strings.Contains(strings.Join(sum.Issues, "\n"), "duplicate candidate_id") {
+		t.Fatalf("expected duplicate issue, got %#v", sum.Issues)
+	}
+}
