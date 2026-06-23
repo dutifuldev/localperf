@@ -251,14 +251,22 @@ func checkLoadRecord(id string, row map[string]any, sum *summary) bool {
 	}
 	ok := true
 	for _, key := range []string{"successes", "errors", "wall_seconds", "completion_tokens_per_second", "total_tokens_per_second"} {
-		if _, exists := load[key]; !exists {
-			sum.Issues = append(sum.Issues, fmt.Sprintf("%s: load_short_decode missing %s", id, key))
+		if _, exists := numericFieldValue(load, key); !exists {
+			sum.Issues = append(sum.Issues, fmt.Sprintf("%s: load_short_decode missing or non-numeric %s", id, key))
 			ok = false
 		}
 	}
-	if objectField(load, "latency_seconds") == nil {
+	latency := objectField(load, "latency_seconds")
+	if latency == nil {
 		sum.Issues = append(sum.Issues, fmt.Sprintf("%s: load_short_decode missing latency_seconds", id))
 		ok = false
+	} else {
+		for _, key := range []string{"p50", "p95"} {
+			if _, exists := numericFieldValue(latency, key); !exists {
+				sum.Issues = append(sum.Issues, fmt.Sprintf("%s: latency_seconds missing or non-numeric %s", id, key))
+				ok = false
+			}
+		}
 	}
 	monitor := objectField(load, "memory_monitor")
 	if monitor == nil {
@@ -369,15 +377,23 @@ func boolField(row map[string]any, key string) bool {
 }
 
 func numericField(row map[string]any, key string) float64 {
-	value, ok := row[key]
-	if !ok || value == nil {
-		return 0
-	}
-	number, ok := value.(float64)
+	number, ok := numericFieldValue(row, key)
 	if !ok {
 		return 0
 	}
 	return number
+}
+
+func numericFieldValue(row map[string]any, key string) (float64, bool) {
+	value, ok := row[key]
+	if !ok || value == nil {
+		return 0, false
+	}
+	number, ok := value.(float64)
+	if !ok {
+		return 0, false
+	}
+	return number, true
 }
 
 type intList []int

@@ -152,4 +152,4 @@ and command output:
 - Sanitized CSV, SVG, HTML, Markdown, and model-fit outputs are generated.
 - The final report states which memory metric is appropriate for each claim.
 - Local checks pass or unrelated pre-existing failures are documented.
-- Codex review finds no P0/P1 issues before final PR handoff.
+- Automated review finds no P0/P1 issues before final PR handoff.
