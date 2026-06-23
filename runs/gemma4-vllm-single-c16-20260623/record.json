@@ -1,0 +1,3312 @@
+{
+  "run_id": "gemma4-vllm-single-c16-20260623",
+  "started_at": "2026-06-23T06:21:15Z",
+  "config": {
+    "model": "nvidia/Gemma-4-26B-A4B-NVFP4",
+    "backend": "vllm",
+    "vllm_version_expected": "0.23.1rc1.dev49+ga7fdfeef7",
+    "max_model_len": 16384,
+    "max_num_seqs": 16,
+    "max_num_batched_tokens": 8192,
+    "batch_policy": "small",
+    "gpu_memory_utilization": 0.65,
+    "kv_cache_dtype": "fp8",
+    "moe_backend": "cutlass",
+    "language_model_only": true,
+    "disable_flashinfer_autotune": true,
+    "host": "127.0.0.1",
+    "port": 8000,
+    "request_concurrency": 16,
+    "request_max_tokens": 64,
+    "request_prompt_words": 256,
+    "temperature": 0
+  },
+  "server_flags": [
+    "serve",
+    "nvidia/Gemma-4-26B-A4B-NVFP4",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8000",
+    "--trust-remote-code",
+    "--gpu-memory-utilization",
+    "0.65",
+    "--max-model-len",
+    "16384",
+    "--max-num-seqs",
+    "16",
+    "--max-num-batched-tokens",
+    "8192",
+    "--enable-prefix-caching",
+    "--reasoning-parser",
+    "gemma4",
+    "--enable-auto-tool-choice",
+    "--tool-call-parser",
+    "gemma4",
+    "--kv-cache-dtype",
+    "fp8",
+    "--mm-processor-cache-gb",
+    "0",
+    "--moe-backend",
+    "cutlass",
+    "--language-model-only",
+    "--no-enable-flashinfer-autotune"
+  ],
+  "telemetry_tools": {
+    "nvtop_available": true,
+    "nvidia_smi_available": true
+  },
+  "samples": [
+    {
+      "at": "2026-06-23T06:21:16Z",
+      "label": "baseline",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 121783881728,
+        "mem_free_bytes": 49383661568,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "0",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "[not set]",
+        "MemoryPeak": "[not set]",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:16.035, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.61, 42",
+        "timestamp": "2026/06/23 14:21:16.035",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.61,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:16Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 121769250816,
+        "mem_free_bytes": 49369030656,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3670016",
+        "MemoryPeak": "3670016",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:16.095, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.61, 42",
+        "timestamp": "2026/06/23 14:21:16.095",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.61,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:18Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 121343332352,
+        "mem_free_bytes": 48871989248,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "526725120",
+        "MemoryPeak": "526725120",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:18.145, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.67, 42",
+        "timestamp": "2026/06/23 14:21:18.145",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.67,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:20Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 121206874112,
+        "mem_free_bytes": 48714375168,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "657154048",
+        "MemoryPeak": "657874944",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:20.180, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.64, 42",
+        "timestamp": "2026/06/23 14:21:20.180",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.64,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:22Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 121171570688,
+        "mem_free_bytes": 48679071744,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "682741760",
+        "MemoryPeak": "682991616",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:22.215, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.81, 42",
+        "timestamp": "2026/06/23 14:21:22.215",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.81,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:24Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 120849985536,
+        "mem_free_bytes": 48357482496,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "893964288",
+        "MemoryPeak": "954478592",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:24.252, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.67, 42",
+        "timestamp": "2026/06/23 14:21:24.252",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.67,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:26Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 120638103552,
+        "mem_free_bytes": 48145571840,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "1080348672",
+        "MemoryPeak": "1148526592",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:26.287, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.64, 42",
+        "timestamp": "2026/06/23 14:21:26.287",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.64,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:28Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 120368402432,
+        "mem_free_bytes": 47875862528,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "1428025344",
+        "MemoryPeak": "1428025344",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:28.319, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.69, 42",
+        "timestamp": "2026/06/23 14:21:28.319",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.69,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:30Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 119832440832,
+        "mem_free_bytes": 47339855872,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "1956741120",
+        "MemoryPeak": "1956741120",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:30.353, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.79, 42",
+        "timestamp": "2026/06/23 14:21:30.353",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.79,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:32Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 119683747840,
+        "mem_free_bytes": 47191150592,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2128072704",
+        "MemoryPeak": "2128076800",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:32.387, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.69, 42",
+        "timestamp": "2026/06/23 14:21:32.387",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.69,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:34Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 119298961408,
+        "mem_free_bytes": 46806360064,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2534625280",
+        "MemoryPeak": "2555682816",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:34.421, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.63, 42",
+        "timestamp": "2026/06/23 14:21:34.421",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.63,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:36Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 118987014144,
+        "mem_free_bytes": 46481469440,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12355985408
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2524995584",
+        "MemoryPeak": "2593284096",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:36.456, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 3.76, 42",
+        "timestamp": "2026/06/23 14:21:36.456",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 3.76,
+        "temperature_c": 42.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:38Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 97965969408,
+        "mem_free_bytes": 25459290112,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356005888
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2832408576",
+        "MemoryPeak": "2832461824",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:38.486, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 10.94, 43",
+        "timestamp": "2026/06/23 14:21:38.486",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 10.94,
+        "temperature_c": 43.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:40Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 97827225600,
+        "mem_free_bytes": 25320542208,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356005888
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3009478656",
+        "MemoryPeak": "3009720320",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:40.516, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 10.74, 43",
+        "timestamp": "2026/06/23 14:21:40.516",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 10.74,
+        "temperature_c": 43.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:42Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 97443852288,
+        "mem_free_bytes": 24937172992,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356005888
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3395928064",
+        "MemoryPeak": "3396046848",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:42.545, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.10, 44",
+        "timestamp": "2026/06/23 14:21:42.545",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.1,
+        "temperature_c": 44.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:44Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 97092526080,
+        "mem_free_bytes": 24585846784,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356005888
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3779923968",
+        "MemoryPeak": "3779923968",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:44.575, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.09, 44",
+        "timestamp": "2026/06/23 14:21:44.575",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.09,
+        "temperature_c": 44.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:46Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 96684310528,
+        "mem_free_bytes": 24177664000,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356038656
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4169916416",
+        "MemoryPeak": "4169916416",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:46.605, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.11, 44",
+        "timestamp": "2026/06/23 14:21:46.605",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.11,
+        "temperature_c": 44.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:48Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 96254382080,
+        "mem_free_bytes": 23747698688,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356059136
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4569096192",
+        "MemoryPeak": "4569096192",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:48.635, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.12, 44",
+        "timestamp": "2026/06/23 14:21:48.635",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.12,
+        "temperature_c": 44.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:50Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 95855038464,
+        "mem_free_bytes": 23348330496,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356075520
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4975886336",
+        "MemoryPeak": "4975886336",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:50.665, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.14, 44",
+        "timestamp": "2026/06/23 14:21:50.665",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.14,
+        "temperature_c": 44.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:52Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 95475556352,
+        "mem_free_bytes": 22968852480,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356079616
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "5393223680",
+        "MemoryPeak": "5393223680",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:52.694, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.20, 44",
+        "timestamp": "2026/06/23 14:21:52.694",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.2,
+        "temperature_c": 44.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:54Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 95078105088,
+        "mem_free_bytes": 22571372544,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356079616
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "5797195776",
+        "MemoryPeak": "5797195776",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:54.723, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.22, 44",
+        "timestamp": "2026/06/23 14:21:54.723",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.22,
+        "temperature_c": 44.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:56Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 94545616896,
+        "mem_free_bytes": 22038888448,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356136960
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "6277156864",
+        "MemoryPeak": "6277156864",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:56.754, NVIDIA GB10, [N/A], [N/A], [N/A], 3, 0, 11.29, 44",
+        "timestamp": "2026/06/23 14:21:56.754",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 3.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.29,
+        "temperature_c": 44.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:21:58Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 94094135296,
+        "mem_free_bytes": 21587374080,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356182016
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "6685454336",
+        "MemoryPeak": "6685454336",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:21:58.784, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.26, 44",
+        "timestamp": "2026/06/23 14:21:58.784",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.26,
+        "temperature_c": 44.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:00Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 93740146688,
+        "mem_free_bytes": 21233324032,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "7084490752",
+        "MemoryPeak": "7084490752",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:00.812, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.29, 45",
+        "timestamp": "2026/06/23 14:22:00.812",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.29,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:02Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 93333323776,
+        "mem_free_bytes": 20826546176,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "7478755328",
+        "MemoryPeak": "7478755328",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:02.842, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.26, 45",
+        "timestamp": "2026/06/23 14:22:02.842",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.26,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:04Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 92925521920,
+        "mem_free_bytes": 20418744320,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "7873282048",
+        "MemoryPeak": "7873282048",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:04.870, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.31, 45",
+        "timestamp": "2026/06/23 14:22:04.870",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.31,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:06Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 92482834432,
+        "mem_free_bytes": 19976056832,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "8276983808",
+        "MemoryPeak": "8276983808",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:06.901, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.33, 45",
+        "timestamp": "2026/06/23 14:22:06.901",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.33,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:08Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 92071043072,
+        "mem_free_bytes": 19564253184,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "8680992768",
+        "MemoryPeak": "8680992768",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:08.942, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.27, 45",
+        "timestamp": "2026/06/23 14:22:08.942",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.27,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:10Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 91685720064,
+        "mem_free_bytes": 19178917888,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "9094742016",
+        "MemoryPeak": "9094742016",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:10.971, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.30, 45",
+        "timestamp": "2026/06/23 14:22:10.971",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.3,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:12Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 91321643008,
+        "mem_free_bytes": 18814844928,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "9498165248",
+        "MemoryPeak": "9498165248",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:13.002, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.31, 45",
+        "timestamp": "2026/06/23 14:22:13.002",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.31,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:15Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 90915057664,
+        "mem_free_bytes": 18408239104,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "9904111616",
+        "MemoryPeak": "9904111616",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:15.030, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.32, 45",
+        "timestamp": "2026/06/23 14:22:15.030",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.32,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:17Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 90530009088,
+        "mem_free_bytes": 18023186432,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "10314588160",
+        "MemoryPeak": "10314850304",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:17.059, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.33, 45",
+        "timestamp": "2026/06/23 14:22:17.059",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.33,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:19Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 90112483328,
+        "mem_free_bytes": 17605652480,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "10712064000",
+        "MemoryPeak": "10712064000",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:19.088, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.34, 45",
+        "timestamp": "2026/06/23 14:22:19.088",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.34,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:21Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 89709903872,
+        "mem_free_bytes": 17203056640,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "11117613056",
+        "MemoryPeak": "11117613056",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:21.116, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.32, 45",
+        "timestamp": "2026/06/23 14:22:21.116",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.32,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:23Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 89323560960,
+        "mem_free_bytes": 16816713728,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "11517853696",
+        "MemoryPeak": "11517853696",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:23.145, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.34, 45",
+        "timestamp": "2026/06/23 14:22:23.145",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.34,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:25Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 97878208512,
+        "mem_free_bytes": 25371344896,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2903089152",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:25.177, NVIDIA GB10, [N/A], [N/A], [N/A], 1, 0, 10.94, 45",
+        "timestamp": "2026/06/23 14:22:25.177",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 1.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 10.94,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:27Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 97520988160,
+        "mem_free_bytes": 25014128640,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3299909632",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:27.208, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.32, 45",
+        "timestamp": "2026/06/23 14:22:27.208",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.32,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:29Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 97103355904,
+        "mem_free_bytes": 24596496384,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3694432256",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:29.239, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.33, 45",
+        "timestamp": "2026/06/23 14:22:29.239",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.33,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:31Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 96718077952,
+        "mem_free_bytes": 24211169280,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4093333504",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:31.267, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.36, 45",
+        "timestamp": "2026/06/23 14:22:31.267",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.36,
+        "temperature_c": 45.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:33Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 96350818304,
+        "mem_free_bytes": 23844368384,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4490219520",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:33.297, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.39, 46",
+        "timestamp": "2026/06/23 14:22:33.297",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.39,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:35Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 95965990912,
+        "mem_free_bytes": 23376760832,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4893388800",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:35.325, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.37, 46",
+        "timestamp": "2026/06/23 14:22:35.325",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.37,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:37Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 95527813120,
+        "mem_free_bytes": 22548520960,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12356227072
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "5297459200",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:37.356, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.42, 46",
+        "timestamp": "2026/06/23 14:22:37.356",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.42,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:39Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 95101276160,
+        "mem_free_bytes": 21726007296,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357423104
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "5714145280",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:39.385, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.43, 46",
+        "timestamp": "2026/06/23 14:22:39.385",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.43,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:41Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 94726103040,
+        "mem_free_bytes": 20956299264,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357427200
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "6131003392",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:41.415, NVIDIA GB10, [N/A], [N/A], [N/A], 3, 0, 11.39, 46",
+        "timestamp": "2026/06/23 14:22:41.415",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 3.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.39,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:43Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 94250803200,
+        "mem_free_bytes": 20045045760,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357427200
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "6638936064",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:43.446, NVIDIA GB10, [N/A], [N/A], [N/A], 3, 0, 11.36, 46",
+        "timestamp": "2026/06/23 14:22:43.446",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 3.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.36,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:45Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 93838970880,
+        "mem_free_bytes": 19248906240,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357488640
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "7040516096",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:45.476, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.38, 46",
+        "timestamp": "2026/06/23 14:22:45.476",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.38,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:47Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 93453230080,
+        "mem_free_bytes": 18414878720,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357537792
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "7569559552",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:47.508, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.43, 46",
+        "timestamp": "2026/06/23 14:22:47.508",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.43,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:49Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 93061840896,
+        "mem_free_bytes": 17627590656,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357537792
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "7985934336",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:49.538, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.42, 46",
+        "timestamp": "2026/06/23 14:22:49.538",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.42,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:51Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 92681875456,
+        "mem_free_bytes": 16856768512,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357537792
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "8393261056",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:51.568, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.44, 46",
+        "timestamp": "2026/06/23 14:22:51.568",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.44,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:53Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 92278308864,
+        "mem_free_bytes": 16062840832,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357537792
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "8798646272",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:53.598, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.51, 46",
+        "timestamp": "2026/06/23 14:22:53.598",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.51,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:55Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 91834228736,
+        "mem_free_bytes": 15213989888,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357599232
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "9235468288",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:55.626, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.44, 46",
+        "timestamp": "2026/06/23 14:22:55.626",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.44,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:57Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 91428167680,
+        "mem_free_bytes": 14413123584,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357623808
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "9651482624",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:57.654, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.42, 46",
+        "timestamp": "2026/06/23 14:22:57.654",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.42,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:22:59Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 91075928064,
+        "mem_free_bytes": 13678120960,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357623808
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "10049609728",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:22:59.684, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.43, 46",
+        "timestamp": "2026/06/23 14:22:59.684",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.43,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:01Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 90718388224,
+        "mem_free_bytes": 12935184384,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357623808
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "10450980864",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:01.714, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.46, 46",
+        "timestamp": "2026/06/23 14:23:01.714",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.46,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:03Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 90309132288,
+        "mem_free_bytes": 12124315648,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357623808
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "10887340032",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:03.744, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.45, 46",
+        "timestamp": "2026/06/23 14:23:03.744",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.45,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:05Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 89925435392,
+        "mem_free_bytes": 11361267712,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357627904
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "11284668416",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:05.780, NVIDIA GB10, [N/A], [N/A], [N/A], 3, 0, 11.49, 46",
+        "timestamp": "2026/06/23 14:23:05.780",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 3.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.49,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:07Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 89518997504,
+        "mem_free_bytes": 10571046912,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357627904
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "11684540416",
+        "MemoryPeak": "11728347136",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:07.811, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.49, 46",
+        "timestamp": "2026/06/23 14:23:07.811",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.49,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:09Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 89131855872,
+        "mem_free_bytes": 9790894080,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357627904
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "12092805120",
+        "MemoryPeak": "12092805120",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:09.842, NVIDIA GB10, [N/A], [N/A], [N/A], 2, 0, 11.45, 46",
+        "timestamp": "2026/06/23 14:23:09.842",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 2.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.45,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:11Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 99743641600,
+        "mem_free_bytes": 20376256512,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357627904
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3519881216",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:11.871, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.04, 46",
+        "timestamp": "2026/06/23 14:23:11.871",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.04,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:13Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 99336048640,
+        "mem_free_bytes": 19367428096,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357627904
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4280795136",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:13.901, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 10.99, 46",
+        "timestamp": "2026/06/23 14:23:13.901",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 10.99,
+        "temperature_c": 46.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:15Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 96945573888,
+        "mem_free_bytes": 16836706304,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357627904
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4630847488",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:15.940, NVIDIA GB10, [N/A], [N/A], [N/A], 95, 0, 34.32, 50",
+        "timestamp": "2026/06/23 14:23:15.940",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 95.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 34.32,
+        "temperature_c": 50.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:17Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 96825888768,
+        "mem_free_bytes": 16697032704,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357627904
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4769587200",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:17.980, NVIDIA GB10, [N/A], [N/A], [N/A], 96, 0, 42.69, 53",
+        "timestamp": "2026/06/23 14:23:17.980",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 96.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 42.69,
+        "temperature_c": 53.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:19Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 84445786112,
+        "mem_free_bytes": 5415493632,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357627904
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4798394368",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:21.019, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.27, 47",
+        "timestamp": "2026/06/23 14:23:21.019",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.27,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:23Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 67916275712,
+        "mem_free_bytes": 2566283264,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357619712
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4166012928",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:24.426, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.27, 47",
+        "timestamp": "2026/06/23 14:23:24.426",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.27,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:26Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 46862852096,
+        "mem_free_bytes": 1065185280,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 12357619712
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "4149084160",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:31.732, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 12.02, 48",
+        "timestamp": "2026/06/23 14:23:31.732",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 12.02,
+        "temperature_c": 48.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:33Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 38075527168,
+        "mem_free_bytes": 980570112,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10339008512
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2464018432",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:33.764, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.07, 48",
+        "timestamp": "2026/06/23 14:23:33.764",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.07,
+        "temperature_c": 48.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:35Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36457410560,
+        "mem_free_bytes": 1146400768,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10357178368
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2514714624",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:35.792, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 13.68, 48",
+        "timestamp": "2026/06/23 14:23:35.792",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 13.68,
+        "temperature_c": 48.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:37Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 37253517312,
+        "mem_free_bytes": 1432436736,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10354622464
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2518495232",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:37.823, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.08, 48",
+        "timestamp": "2026/06/23 14:23:37.823",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.08,
+        "temperature_c": 48.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:39Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 37229608960,
+        "mem_free_bytes": 1405857792,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10354630656
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2520580096",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:39.850, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.02, 47",
+        "timestamp": "2026/06/23 14:23:39.850",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.02,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:41Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 37204807680,
+        "mem_free_bytes": 1376940032,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10355666944
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2528243712",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:41.880, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.05, 47",
+        "timestamp": "2026/06/23 14:23:41.880",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.05,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:43Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 37033050112,
+        "mem_free_bytes": 1172074496,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10373152768
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "2726039552",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:43.910, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.03, 47",
+        "timestamp": "2026/06/23 14:23:43.910",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.03,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:45Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36690862080,
+        "mem_free_bytes": 826695680,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10420908032
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3044552704",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:45.941, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.10, 47",
+        "timestamp": "2026/06/23 14:23:45.941",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.1,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:47Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36696207360,
+        "mem_free_bytes": 831762432,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10470174720
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3060609024",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:47.972, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.07, 47",
+        "timestamp": "2026/06/23 14:23:47.972",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.07,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:49Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36700983296,
+        "mem_free_bytes": 830820352,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10471006208
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3068915712",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:50.001, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.08, 47",
+        "timestamp": "2026/06/23 14:23:50.001",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.08,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:52Z",
+      "label": "startup",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36697231360,
+        "mem_free_bytes": 826626048,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10471010304
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3068788736",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:52.029, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.02, 47",
+        "timestamp": "2026/06/23 14:23:52.029",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.02,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:57Z",
+      "label": "idle",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36688281600,
+        "mem_free_bytes": 814198784,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10471010304
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3068653568",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:57.064, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.10, 47",
+        "timestamp": "2026/06/23 14:23:57.064",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.1,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:57Z",
+      "label": "load",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36689473536,
+        "mem_free_bytes": 815390720,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10471010304
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3069173760",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:57.102, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.10, 47",
+        "timestamp": "2026/06/23 14:23:57.102",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.1,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:57Z",
+      "label": "load",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36682194944,
+        "mem_free_bytes": 725962752,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10471071744
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3178491904",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:57.631, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.23, 47",
+        "timestamp": "2026/06/23 14:23:57.631",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.23,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:58Z",
+      "label": "load",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36452052992,
+        "mem_free_bytes": 1062608896,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10463002624
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3153780736",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:58.173, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 13.26, 47",
+        "timestamp": "2026/06/23 14:23:58.173",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 13.26,
+        "temperature_c": 47.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:58Z",
+      "label": "load",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36416708608,
+        "mem_free_bytes": 1025736704,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10463006720
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3130134528",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:58.713, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 26.91, 51",
+        "timestamp": "2026/06/23 14:23:58.713",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 26.91,
+        "temperature_c": 51.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:59Z",
+      "label": "load",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36414218240,
+        "mem_free_bytes": 1022668800,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10463006720
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3130273792",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:59.261, NVIDIA GB10, [N/A], [N/A], [N/A], 96, 0, 35.51, 51",
+        "timestamp": "2026/06/23 14:23:59.261",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 96.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 35.51,
+        "temperature_c": 51.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:23:59Z",
+      "label": "load",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36405219328,
+        "mem_free_bytes": 1013669888,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10463014912
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3130011648",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:59.807, NVIDIA GB10, [N/A], [N/A], [N/A], 96, 0, 32.61, 51",
+        "timestamp": "2026/06/23 14:23:59.807",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 96.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 32.61,
+        "temperature_c": 51.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:24:00Z",
+      "label": "load",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36392730624,
+        "mem_free_bytes": 1000800256,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10463096832
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3130220544",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:24:00.353, NVIDIA GB10, [N/A], [N/A], [N/A], 96, 0, 32.46, 51",
+        "timestamp": "2026/06/23 14:24:00.353",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 96.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 32.46,
+        "temperature_c": 51.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:24:00Z",
+      "label": "load",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36385222656,
+        "mem_free_bytes": 989573120,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10463105024
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3130105856",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:24:00.901, NVIDIA GB10, [N/A], [N/A], [N/A], 96, 0, 32.44, 51",
+        "timestamp": "2026/06/23 14:24:00.901",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 96.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 32.44,
+        "temperature_c": 51.0
+      }
+    },
+    {
+      "at": "2026-06-23T06:24:01Z",
+      "label": "after_load",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36357894144,
+        "mem_free_bytes": 959963136,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10463113216
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3161812992",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:24:01.441, NVIDIA GB10, [N/A], [N/A], [N/A], 8, 0, 30.55, 49",
+        "timestamp": "2026/06/23 14:24:01.441",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 8.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 30.55,
+        "temperature_c": 49.0
+      }
+    }
+  ],
+  "startup": {
+    "systemd_run_returncode": 0,
+    "systemd_run_stdout": "",
+    "systemd_run_stderr": "Running as unit: localperf-gemma4-single-c16.service; invocation ID: f123dba7dd2c4fc8b26307d5b598b6e8",
+    "ready": true,
+    "seconds": 155.996,
+    "last_error": "<urlopen error [Errno 111] Connection refused>",
+    "capacity": {
+      "available_kv_cache_memory_gib": 58.21,
+      "gpu_kv_cache_tokens": 919891,
+      "max_reported_context_tokens": 16384,
+      "max_reported_concurrency": 56.15
+    }
+  },
+  "idle": {
+    "sample": {
+      "at": "2026-06-23T06:23:57Z",
+      "label": "idle",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36688281600,
+        "mem_free_bytes": 814198784,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10471010304
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3068653568",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:23:57.064, NVIDIA GB10, [N/A], [N/A], [N/A], 0, 0, 11.10, 47",
+        "timestamp": "2026/06/23 14:23:57.064",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 0.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 11.1,
+        "temperature_c": 47.0
+      }
+    },
+    "metrics": {
+      "ok": true,
+      "selected": {
+        "vllm:num_requests_running{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\"}": "0.0",
+        "vllm:num_requests_waiting{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\"}": "0.0",
+        "vllm:num_requests_waiting_by_reason{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\",reason=\"capacity\"}": "0.0",
+        "vllm:num_requests_waiting_by_reason{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\",reason=\"deferred\"}": "0.0",
+        "vllm:prompt_tokens_total{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\"}": "0.0",
+        "vllm:generation_tokens_total{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\"}": "0.0"
+      }
+    },
+    "capacity": {
+      "available_kv_cache_memory_gib": 58.21,
+      "gpu_kv_cache_tokens": 919891,
+      "max_reported_context_tokens": 16384,
+      "max_reported_concurrency": 56.15
+    }
+  },
+  "load": {
+    "status": "done",
+    "wall_seconds": 4.333,
+    "requested_concurrency": 16,
+    "successes": 16,
+    "errors": 0,
+    "responses": [
+      {
+        "index": 0,
+        "ok": true,
+        "elapsed_seconds": 3.899,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 1,
+        "ok": true,
+        "elapsed_seconds": 3.938,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 2,
+        "ok": true,
+        "elapsed_seconds": 3.938,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 3,
+        "ok": true,
+        "elapsed_seconds": 3.939,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 4,
+        "ok": true,
+        "elapsed_seconds": 3.937,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 5,
+        "ok": true,
+        "elapsed_seconds": 3.938,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 6,
+        "ok": true,
+        "elapsed_seconds": 3.939,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 7,
+        "ok": true,
+        "elapsed_seconds": 3.937,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 8,
+        "ok": true,
+        "elapsed_seconds": 3.937,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 9,
+        "ok": true,
+        "elapsed_seconds": 3.938,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 10,
+        "ok": true,
+        "elapsed_seconds": 3.937,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 11,
+        "ok": true,
+        "elapsed_seconds": 3.936,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 12,
+        "ok": true,
+        "elapsed_seconds": 3.936,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 13,
+        "ok": true,
+        "elapsed_seconds": 3.936,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 14,
+        "ok": true,
+        "elapsed_seconds": 3.936,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      },
+      {
+        "index": 15,
+        "ok": true,
+        "elapsed_seconds": 3.937,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 1805,
+          "total_tokens": 1869,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        }
+      }
+    ],
+    "prompt_tokens": 28880,
+    "completion_tokens": 1024,
+    "total_tokens": 29904,
+    "completion_tokens_per_second": 236.304,
+    "total_tokens_per_second": 6900.803,
+    "latency_seconds": {
+      "min": 3.899,
+      "p50": 3.937,
+      "p95": 3.939,
+      "max": 3.939
+    },
+    "metrics_after": {
+      "ok": true,
+      "selected": {
+        "vllm:num_requests_running{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\"}": "0.0",
+        "vllm:num_requests_waiting{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\"}": "0.0",
+        "vllm:num_requests_waiting_by_reason{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\",reason=\"capacity\"}": "0.0",
+        "vllm:num_requests_waiting_by_reason{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\",reason=\"deferred\"}": "0.0",
+        "vllm:prompt_tokens_total{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\"}": "28880.0",
+        "vllm:generation_tokens_total{engine=\"0\",model_name=\"nvidia/Gemma-4-26B-A4B-NVFP4\"}": "1024.0"
+      }
+    },
+    "sample_after": {
+      "at": "2026-06-23T06:24:01Z",
+      "label": "after_load",
+      "system_memory": {
+        "mem_total_bytes": 130596577280,
+        "mem_available_bytes": 36357894144,
+        "mem_free_bytes": 959963136,
+        "swap_total_bytes": 17179865088,
+        "swap_free_bytes": 10463113216
+      },
+      "service": {
+        "MainPID": "2226282",
+        "Result": "success",
+        "NRestarts": "0",
+        "MemoryCurrent": "3161812992",
+        "MemoryPeak": "12096737280",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "gpu": {
+        "ok": true,
+        "raw": "2026/06/23 14:24:01.441, NVIDIA GB10, [N/A], [N/A], [N/A], 8, 0, 30.55, 49",
+        "timestamp": "2026/06/23 14:24:01.441",
+        "name": "NVIDIA GB10",
+        "memory_total_mib": null,
+        "memory_used_mib": null,
+        "memory_free_mib": null,
+        "utilization_gpu_pct": 8.0,
+        "utilization_memory_pct": 0.0,
+        "power_draw_w": 30.55,
+        "temperature_c": 49.0
+      }
+    }
+  },
+  "shutdown": {
+    "before": {
+      "MainPID": "2226282",
+      "Result": "success",
+      "NRestarts": "0",
+      "MemoryCurrent": "3161812992",
+      "MemoryPeak": "12096737280",
+      "LoadState": "loaded",
+      "ActiveState": "active",
+      "SubState": "running"
+    },
+    "after": {
+      "MainPID": "0",
+      "Result": "success",
+      "NRestarts": "0",
+      "MemoryCurrent": "[not set]",
+      "MemoryPeak": "[not set]",
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead"
+    }
+  },
+  "status": "load_complete",
+  "finished_at": "2026-06-23T06:24:04Z",
+  "derived": {
+    "baseline_mem_available_bytes": 121783881728,
+    "min_mem_available_bytes": 36357894144,
+    "system_memory_drop_gib": 79.559,
+    "min_mem_available_gib": 33.861,
+    "max_cgroup_memory_current_gib": 11.262,
+    "max_cgroup_memory_peak_gib": 11.266,
+    "max_gpu_utilization_pct": 96.0,
+    "max_gpu_memory_utilization_pct": 0.0,
+    "max_power_draw_w": 42.69,
+    "gpu_memory_counter_available": false,
+    "sample_count": 85
+  }
+}
