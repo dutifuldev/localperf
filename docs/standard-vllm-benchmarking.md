@@ -106,6 +106,10 @@ profile, runs all workloads for that profile, then sleeps it again. Use level 2
 sleep first on the Spark/GB10 machine because it drops GPU/unified-memory
 pressure much more aggressively than level 1.
 
+With `one_awake_profile=true`, every managed prebooted profile must also set
+`enable_sleep_mode=true`. LocalPerf rejects unsafe specs instead of keeping a
+non-sleeping model resident while starting the next profile.
+
 ## OOM Avoidance
 
 The benchmark runner checks `MemAvailable` before profile startup, wake, warmup,

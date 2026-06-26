@@ -53,6 +53,20 @@ func TestValidateSpecRequiresMemoryFloor(t *testing.T) {
 	}
 }
 
+func TestValidatePrebootOneAwakeRequiresSleepMode(t *testing.T) {
+	spec := testSpec()
+	spec.Runner.PrebootProfiles = true
+	spec.Profiles[0].EnableSleepMode = false
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "enable_sleep_mode") {
+		t.Fatalf("ValidateSpec error = %v, want enable_sleep_mode issue", err)
+	}
+	oneAwake := false
+	spec.Runner.OneAwakeProfile = &oneAwake
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec with one_awake_profile=false = %v", err)
+	}
+}
+
 func TestApplyFilter(t *testing.T) {
 	spec := testSpec()
 	err := ApplyFilter(&spec, Filter{
@@ -309,6 +323,51 @@ func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
 	}
 	if len(report.Rows) != 1 || report.Rows[0].Failed != 1 {
 		t.Fatalf("report rows = %+v, want failed request row", report.Rows)
+	}
+}
+
+func TestExecuteFailsWhenWarmupReportsRequestFailures(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-warmup-failure"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Env["FAKE_BENCH_FAILED"] = "1"
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = true
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{{
+		Name:            "fake-random",
+		Profiles:        []string{spec.Profiles[0].Name},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  128,
+		RandomOutputLen: 16,
+		NumPrompts:      1,
+		MaxConcurrency:  []int{1},
+		RequestRate:     "inf",
+	}}
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
+		t.Fatalf("Execute error = %v, want failed benchmark run", err)
+	}
+	if summary.CompletedRuns != 0 || summary.FailedRuns != 1 {
+		t.Fatalf("summary = %+v, want failed profile before workload", summary)
+	}
+	events, err := os.ReadFile(filepath.Join(summary.RunDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(events), `"type":"warmup_finish"`) || !strings.Contains(string(events), "warmup result reported") {
+		t.Fatalf("events did not record failed warmup:\n%s", events)
 	}
 }
 

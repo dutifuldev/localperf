@@ -228,6 +228,7 @@ func ValidateSpec(spec Spec) error {
 	if len(spec.Profiles) == 0 {
 		issues = append(issues, "at least one profile is required")
 	}
+	oneAwakeProfile := spec.Runner.OneAwakeProfile == nil || *spec.Runner.OneAwakeProfile
 	for i, profile := range spec.Profiles {
 		prefix := fmt.Sprintf("profiles[%d]", i)
 		if strings.TrimSpace(profile.Name) == "" {
@@ -249,6 +250,9 @@ func ValidateSpec(spec Spec) error {
 			}
 			if profile.MaxNumSeqs <= 0 {
 				issues = append(issues, prefix+": max_num_seqs must be positive for managed profiles")
+			}
+			if spec.Runner.PrebootProfiles && oneAwakeProfile && !profile.EnableSleepMode {
+				issues = append(issues, prefix+": enable_sleep_mode is required when runner.preboot_profiles and runner.one_awake_profile are true")
 			}
 		}
 		if profile.SleepLevel < 0 || profile.SleepLevel > 2 {

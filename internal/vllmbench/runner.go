@@ -412,6 +412,21 @@ func runWarmup(ctx context.Context, spec Spec, profile Profile, runDir string, e
 		events.Write(event)
 		return err
 	}
+	if rows, err := ParseResultFile(event.ResultFile); err != nil {
+		event.Error = err.Error()
+		events.Write(event)
+		return err
+	} else if len(rows) == 0 {
+		err := errors.New("warmup result file did not contain a parseable row")
+		event.Error = err.Error()
+		events.Write(event)
+		return err
+	} else if failed := failedRequestCount(rows); failed > 0 {
+		err := fmt.Errorf("warmup result reported %d failed request(s)", failed)
+		event.Error = err.Error()
+		events.Write(event)
+		return err
+	}
 	events.Write(event)
 	return nil
 }
@@ -467,10 +482,18 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	row.RandomOutputLen = planned.Workload.RandomOutputLen
 	row.DatasetName = planned.Workload.DatasetName
 	row.ResultFile = planned.ResultFile
-	if row.Failed > 0 {
-		return &row, fmt.Errorf("benchmark result reported %d failed request(s)", row.Failed)
+	if failed := failedRequestCount(rows); failed > 0 {
+		return &row, fmt.Errorf("benchmark result reported %d failed request(s)", failed)
 	}
 	return &row, nil
+}
+
+func failedRequestCount(rows []ReportRow) int {
+	failed := 0
+	for _, row := range rows {
+		failed += row.Failed
+	}
+	return failed
 }
 
 type commandResult struct {
