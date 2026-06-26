@@ -118,9 +118,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 		})
 	}
 	if opts.DryRun {
-		summary.FinishedAt = time.Now().UTC()
-		events.Write(Event{Timestamp: summary.FinishedAt, Type: "run_finish"})
-		if err := writeJSONFile(filepath.Join(runDir, "summary.json"), summary); err != nil {
+		if err := finalizeRun(runDir, &summary, events, nil); err != nil {
 			return summary, err
 		}
 		return summary, nil
@@ -130,6 +128,11 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 	defer stopAll(processes)
 	if spec.Runner.PrebootProfiles {
 		if err := prebootProfiles(ctx, spec, runDir, plan, events, processes); err != nil {
+			summary.FailedRuns += remainingUnaccountedRuns(summary)
+			events.Write(Event{Timestamp: time.Now().UTC(), Type: "preboot_failed", Error: err.Error()})
+			if finishErr := finalizeRun(runDir, &summary, events, fmt.Errorf("preboot profiles failed: %w", err)); finishErr != nil {
+				return summary, finishErr
+			}
 			return summary, err
 		}
 	}
@@ -181,22 +184,11 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 					delete(processes, profile.Name)
 				}
 				summary.FailedRuns += remainingRunsAfterProfile(spec.Profiles, plan, profile.Name)
-				summary.FinishedAt = time.Now().UTC()
-				events.Write(Event{Timestamp: summary.FinishedAt, Type: "run_finish", Error: err.Error(), Details: mustJSON(map[string]any{
-					"completed_runs": summary.CompletedRuns,
-					"failed_runs":    summary.FailedRuns,
-				})})
-				report, reportErr := BuildReport(runDir)
-				if reportErr == nil {
-					reportPath := filepath.Join(runDir, "report.md")
-					if writeErr := os.WriteFile(reportPath, []byte(RenderMarkdown(report)), 0o644); writeErr == nil {
-						summary.ReportPath = reportPath
-					}
+				runErr := fmt.Errorf("profile %s sleep failed: %w", profile.Name, err)
+				if finishErr := finalizeRun(runDir, &summary, events, runErr); finishErr != nil {
+					return summary, finishErr
 				}
-				if writeErr := writeJSONFile(filepath.Join(runDir, "summary.json"), summary); writeErr != nil {
-					return summary, writeErr
-				}
-				return summary, fmt.Errorf("profile %s sleep failed: %w", profile.Name, err)
+				return summary, runErr
 			}
 		}
 		if proc != nil && shouldStopManaged(spec) && !spec.Runner.PrebootProfiles {
@@ -204,25 +196,47 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 			delete(processes, profile.Name)
 		}
 	}
+	if err := finalizeRun(runDir, &summary, events, nil); err != nil {
+		return summary, err
+	}
+	return summary, nil
+}
+
+func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, runErr error) error {
 	summary.FinishedAt = time.Now().UTC()
-	events.Write(Event{Timestamp: summary.FinishedAt, Type: "run_finish", Details: mustJSON(map[string]any{
+	event := Event{Timestamp: summary.FinishedAt, Type: "run_finish", Details: mustJSON(map[string]any{
 		"completed_runs": summary.CompletedRuns,
 		"failed_runs":    summary.FailedRuns,
-	})})
+	})}
+	if runErr != nil {
+		event.Error = runErr.Error()
+	}
+	events.Write(event)
 	report, err := BuildReport(runDir)
 	if err == nil {
 		reportPath := filepath.Join(runDir, "report.md")
-		if err := os.WriteFile(reportPath, []byte(RenderMarkdown(report)), 0o644); err == nil {
+		if err := WriteReportFiles(report, reportPath); err == nil {
 			summary.ReportPath = reportPath
 		}
 	}
 	if err := writeJSONFile(filepath.Join(runDir, "summary.json"), summary); err != nil {
-		return summary, err
+		return err
+	}
+	if runErr != nil {
+		return runErr
 	}
 	if summary.FailedRuns > 0 {
-		return summary, fmt.Errorf("%d benchmark run(s) failed", summary.FailedRuns)
+		return fmt.Errorf("%d benchmark run(s) failed", summary.FailedRuns)
 	}
-	return summary, nil
+	return nil
+}
+
+func remainingUnaccountedRuns(summary RunSummary) int {
+	remaining := summary.PlannedRuns - summary.CompletedRuns - summary.FailedRuns
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func prebootProfiles(ctx context.Context, spec Spec, runDir string, plan []PlannedRun, events *eventWriter, processes map[string]*serverProcess) error {

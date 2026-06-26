@@ -470,8 +470,45 @@ func resolveResultPath(runDir, path string) string {
 	if path == "" || filepath.IsAbs(path) {
 		return path
 	}
-	if _, err := os.Stat(path); err == nil {
-		return path
+	cleanPath := filepath.Clean(path)
+	cleanRunDir := filepath.Clean(runDir)
+	if !filepath.IsAbs(cleanRunDir) {
+		if _, err := os.Stat(cleanPath); err == nil {
+			return cleanPath
+		}
+		return filepath.Join(cleanRunDir, cleanPath)
 	}
-	return filepath.Join(runDir, path)
+	candidate := filepath.Join(cleanRunDir, cleanPath)
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+	if stripped, ok := stripRunDirPrefix(cleanRunDir, cleanPath); ok {
+		return filepath.Join(cleanRunDir, stripped)
+	}
+	if _, err := os.Stat(cleanPath); err == nil {
+		return cleanPath
+	}
+	return candidate
+}
+
+func stripRunDirPrefix(runDir, path string) (string, bool) {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(runDir)), "/")
+	path = filepath.Clean(path)
+	for i := 0; i < len(parts); i++ {
+		if parts[i] == "" {
+			continue
+		}
+		suffix := filepath.FromSlash(strings.Join(parts[i:], "/"))
+		if suffix == "." || suffix == "" {
+			continue
+		}
+		if path == suffix {
+			return "", true
+		}
+		prefix := suffix + string(filepath.Separator)
+		if strings.HasPrefix(path, prefix) {
+			return strings.TrimPrefix(path, prefix), true
+		}
+	}
+	return "", false
 }

@@ -297,6 +297,61 @@ func TestExecuteFailsWhenSleepFails(t *testing.T) {
 	}
 }
 
+func TestExecuteFinalizesArtifactsWhenPrebootFails(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-preboot-failure"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.PrebootProfiles = true
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].Env = map[string]string{"FAKE_SLEEP_FAIL": "1"}
+	spec.Workloads = []Workload{{
+		Name:            "fake-random",
+		Profiles:        []string{spec.Profiles[0].Name},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  128,
+		RandomOutputLen: 16,
+		NumPrompts:      1,
+		MaxConcurrency:  []int{1},
+		RequestRate:     "inf",
+	}}
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "preboot profiles failed") {
+		t.Fatalf("Execute error = %v, want preboot failure", err)
+	}
+	if summary.CompletedRuns != 0 || summary.FailedRuns != 1 || summary.FinishedAt.IsZero() {
+		t.Fatalf("summary = %+v, want finalized failed run", summary)
+	}
+	for _, path := range []string{
+		filepath.Join(summary.RunDir, "events.jsonl"),
+		filepath.Join(summary.RunDir, "summary.json"),
+		filepath.Join(summary.RunDir, "report.md"),
+		filepath.Join(summary.RunDir, "report.json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected artifact %s: %v", path, err)
+		}
+	}
+	events, err := os.ReadFile(filepath.Join(summary.RunDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(events), `"type":"preboot_failed"`) || !strings.Contains(string(events), `"type":"run_finish"`) {
+		t.Fatalf("events did not record preboot failure and run finish:\n%s", events)
+	}
+}
+
 func TestBuildReportEnrichesFromSpec(t *testing.T) {
 	spec := testSpec()
 	runDir := t.TempDir()
@@ -321,6 +376,28 @@ func TestBuildReportEnrichesFromSpec(t *testing.T) {
 	row := report.Rows[0]
 	if row.Context != 8192 || row.RandomInputLen != 8192 || row.RandomOutputLen != 16 || row.DatasetName != "random" {
 		t.Fatalf("row was not enriched from spec: %+v", row)
+	}
+}
+
+func TestBuildReportResolvesCWDRelativeResultPathsWithAbsoluteRunDir(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, "runs", "foo")
+	resultPath := filepath.Join(runDir, "results", "p__w__c1.json")
+	if err := os.MkdirAll(filepath.Dir(resultPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, resultPath, `{"max_concurrency":1,"completed":1,"output_throughput":10}`)
+	writeFile(t, filepath.Join(runDir, "events.jsonl"), `{"timestamp":"2026-06-26T00:00:00Z","type":"workload_finish","profile":"p","workload":"w","concurrency":1,"result_file":"runs/foo/results/p__w__c1.json"}`+"\n")
+	t.Chdir(t.TempDir())
+	report, err := BuildReport(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(report.Rows))
+	}
+	if report.Rows[0].ResultFile != resultPath {
+		t.Fatalf("result path = %q, want %q", report.Rows[0].ResultFile, resultPath)
 	}
 }
 
