@@ -67,6 +67,15 @@ func TestValidatePrebootOneAwakeRequiresSleepMode(t *testing.T) {
 	}
 }
 
+func TestApplyDefaultsHonorsSleepLevelZero(t *testing.T) {
+	spec := testSpec()
+	spec.Profiles[0].SleepLevel = 0
+	ApplyDefaults(&spec)
+	if spec.Profiles[0].SleepLevel != 0 {
+		t.Fatalf("sleep level = %d, want explicit zero", spec.Profiles[0].SleepLevel)
+	}
+}
+
 func TestApplyFilter(t *testing.T) {
 	spec := testSpec()
 	err := ApplyFilter(&spec, Filter{
@@ -368,6 +377,50 @@ func TestExecuteFailsWhenWarmupReportsRequestFailures(t *testing.T) {
 	}
 	if !strings.Contains(string(events), `"type":"warmup_finish"`) || !strings.Contains(string(events), "warmup result reported") {
 		t.Fatalf("events did not record failed warmup:\n%s", events)
+	}
+}
+
+func TestExecuteWarmsPrebootedProfileAfterWake(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-preboot-warm-after-wake"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.PrebootProfiles = true
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = true
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Workloads = []Workload{{
+		Name:            "fake-random",
+		Profiles:        []string{spec.Profiles[0].Name},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  128,
+		RandomOutputLen: 16,
+		NumPrompts:      1,
+		MaxConcurrency:  []int{1},
+		RequestRate:     "inf",
+	}}
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.CompletedRuns != 1 || summary.FailedRuns != 0 {
+		t.Fatalf("summary = %+v, want one completed run", summary)
+	}
+	events, err := os.ReadFile(filepath.Join(summary.RunDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(events), `"type":"warmup_finish"`); got != 2 {
+		t.Fatalf("warmup_finish events = %d, want preboot and post-wake warmups:\n%s", got, events)
 	}
 }
 

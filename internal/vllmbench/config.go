@@ -158,9 +158,6 @@ func ApplyDefaults(spec *Spec) {
 		if strings.TrimSpace(profile.HealthPath) == "" {
 			profile.HealthPath = DefaultHealthPath
 		}
-		if profile.SleepLevel == 0 {
-			profile.SleepLevel = 2
-		}
 	}
 	if spec.Warmup.Enabled {
 		if strings.TrimSpace(spec.Warmup.DatasetName) == "" {

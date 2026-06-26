@@ -156,10 +156,28 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 			if proc != nil {
 				processes[profile.Name] = proc
 			}
-		} else if err := wakeProfile(ctx, spec, profile, events); err != nil {
-			summary.FailedRuns += len(runs)
-			events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
-			continue
+		} else {
+			if err := wakeProfile(ctx, spec, profile, events); err != nil {
+				summary.FailedRuns += len(runs)
+				events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
+				continue
+			}
+			if spec.Warmup.Enabled {
+				if err := runWarmup(ctx, spec, profile, runDir, events); err != nil {
+					summary.FailedRuns += len(runs)
+					events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
+					if profile.EnableSleepMode {
+						if sleepErr := sleepProfile(ctx, spec, profile, events); sleepErr != nil {
+							events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_sleep_failed", Profile: profile.Name, Error: sleepErr.Error()})
+							if proc != nil {
+								stopProcess(proc)
+								delete(processes, profile.Name)
+							}
+						}
+					}
+					continue
+				}
+			}
 		}
 		for _, planned := range runs {
 			if err := checkMemoryEvent(spec, events, "before_workload", planned.Profile.Name); err != nil {
