@@ -46,6 +46,27 @@ func TestBuildPlanAndBenchCommand(t *testing.T) {
 	}
 }
 
+func TestCommandSummaryRedactsSensitiveEnv(t *testing.T) {
+	summary := CommandSummary(CommandSpec{
+		Env: map[string]string{
+			"CUTE_DSL_ARCH":  "sm_121a",
+			"HF_TOKEN":       "hf_secret",
+			"OPENAI_API_KEY": "sk-secret",
+		},
+		Args: []string{"vllm", "serve", "model"},
+	})
+	for _, secret := range []string{"hf_secret", "sk-secret"} {
+		if strings.Contains(summary, secret) {
+			t.Fatalf("summary leaked secret %q: %s", secret, summary)
+		}
+	}
+	for _, want := range []string{"HF_TOKEN='<redacted>'", "OPENAI_API_KEY='<redacted>'", "CUTE_DSL_ARCH=sm_121a"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary %q missing %q", summary, want)
+		}
+	}
+}
+
 func TestValidateSpecRequiresMemoryFloor(t *testing.T) {
 	spec := testSpec()
 	spec.Safety.MinMemAvailableGiB = 0
@@ -284,6 +305,38 @@ func TestExecuteDryRunAndReport(t *testing.T) {
 	}
 }
 
+func TestExecuteRedactsSensitiveEnvInArtifacts(t *testing.T) {
+	spec := testSpec()
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Env["HF_TOKEN"] = "hf_secret"
+	spec.Profiles[0].Env = map[string]string{"OPENAI_API_KEY": "sk-secret"}
+	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{summary.SpecPath, summary.EventsPath} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, secret := range []string{"hf_secret", "sk-secret"} {
+			if strings.Contains(text, secret) {
+				t.Fatalf("%s leaked secret %q:\n%s", path, secret, text)
+			}
+		}
+		if !containsRedactedMarker(text) {
+			t.Fatalf("%s did not contain redacted marker:\n%s", path, text)
+		}
+	}
+}
+
+func containsRedactedMarker(text string) bool {
+	return strings.Contains(text, "<redacted>") || strings.Contains(text, `\u003credacted\u003e`)
+}
+
 func TestExecuteWithFakeVLLMEndToEnd(t *testing.T) {
 	spec := testSpec()
 	spec.Name = "fake-vllm-e2e"
@@ -446,8 +499,9 @@ func TestExecuteStopsManagedProfileAfterWorkloadMemoryFloorAbort(t *testing.T) {
 	spec.Runner.VLLMCommand = fakeVLLMScript(t)
 	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
 	spec.Env["FAKE_BENCH_STARTED_FILE"] = startFile
-	spec.Env["FAKE_BENCH_SLEEP_MS"] = "3000"
+	spec.Env["FAKE_BENCH_SLEEP_MS"] = "500"
 	spec.Safety.MinMemAvailableGiB = 40
+	spec.Safety.PollIntervalMillis = 20
 	spec.Safety.StartupTimeoutSec = 10
 	spec.Safety.WorkloadTimeoutSec = 10
 	spec.Safety.HTTPTimeoutSec = 2

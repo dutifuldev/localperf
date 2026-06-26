@@ -202,6 +202,16 @@ func ApplyDefaults(spec *Spec) {
 	}
 }
 
+func RedactedSpec(spec Spec) Spec {
+	out := spec
+	out.Env = redactedEnv(spec.Env)
+	out.Profiles = append([]Profile(nil), spec.Profiles...)
+	for i := range out.Profiles {
+		out.Profiles[i].Env = redactedEnv(spec.Profiles[i].Env)
+	}
+	return out
+}
+
 func defaultEndpoint(backend string) string {
 	switch backend {
 	case "openai-chat":

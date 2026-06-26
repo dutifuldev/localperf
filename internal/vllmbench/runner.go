@@ -94,7 +94,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 	if err := os.MkdirAll(filepath.Join(runDir, "logs"), 0o755); err != nil {
 		return summary, err
 	}
-	if err := writeJSONFile(summary.SpecPath, spec); err != nil {
+	if err := writeJSONFile(summary.SpecPath, RedactedSpec(spec)); err != nil {
 		return summary, err
 	}
 	events, err := newEventWriter(summary.EventsPath)
@@ -444,7 +444,7 @@ func runWarmup(ctx context.Context, spec Spec, profile Profile, runDir string, e
 	}
 	command := WarmupCommand(spec, profile, runDir)
 	logPath := filepath.Join(runDir, "logs", Slug(profile.Name)+"__warmup.log")
-	result, err := executeCommand(ctx, command, logPath, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second, spec.Safety.MinMemAvailableGiB)
+	result, err := executeCommand(ctx, command, logPath, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second, spec.Safety.MinMemAvailableGiB, time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond)
 	event := Event{
 		Timestamp:       time.Now().UTC(),
 		Type:            "warmup_finish",
@@ -494,7 +494,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		ResultFile:  planned.ResultFile,
 		LogFile:     logPath,
 	})
-	result, err := executeCommand(ctx, command, logPath, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second, spec.Safety.MinMemAvailableGiB)
+	result, err := executeCommand(ctx, command, logPath, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second, spec.Safety.MinMemAvailableGiB, time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond)
 	event := Event{
 		Timestamp:       time.Now().UTC(),
 		Type:            "workload_finish",
@@ -551,7 +551,7 @@ type commandResult struct {
 	ExitCode int
 }
 
-func executeCommand(ctx context.Context, command CommandSpec, logPath string, timeout time.Duration, minMemAvailableGiB float64) (commandResult, error) {
+func executeCommand(ctx context.Context, command CommandSpec, logPath string, timeout time.Duration, minMemAvailableGiB float64, pollInterval time.Duration) (commandResult, error) {
 	if len(command.Args) == 0 {
 		return commandResult{ExitCode: -1}, errors.New("empty command")
 	}
@@ -570,7 +570,7 @@ func executeCommand(ctx context.Context, command CommandSpec, logPath string, ti
 	defer logFile.Close()
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	memoryMonitor := monitorMemoryFloor(runCtx, cancel, minMemAvailableGiB, time.Second)
+	memoryMonitor := monitorMemoryFloor(runCtx, cancel, minMemAvailableGiB, pollInterval)
 	cmd := exec.CommandContext(runCtx, command.Args[0], command.Args[1:]...)
 	cmd.Env = WithProcessEnv(command.Env)
 	cmd.Stdout = logFile
@@ -605,6 +605,9 @@ func monitorMemoryFloor(ctx context.Context, cancel context.CancelFunc, minGiB f
 			<-ctx.Done()
 			done <- nil
 			return
+		}
+		if interval <= 0 {
+			interval = time.Second
 		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

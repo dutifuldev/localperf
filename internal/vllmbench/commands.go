@@ -195,8 +195,45 @@ func CommandSummary(command CommandSpec) string {
 	}
 	parts := make([]string, 0, len(command.Env)+len(command.Args))
 	for _, key := range sortedMapKeys(command.Env) {
-		parts = append(parts, fmt.Sprintf("%s=%s", key, shellQuote(command.Env[key])))
+		parts = append(parts, fmt.Sprintf("%s=%s", key, shellQuote(redactEnvValue(key, command.Env[key]))))
 	}
 	parts = append(parts, ShellQuote(command.Args))
 	return strings.Join(parts, " ")
+}
+
+func redactedEnv(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = redactEnvValue(key, value)
+	}
+	return out
+}
+
+func redactEnvValue(key, value string) string {
+	if isSensitiveEnvKey(key) {
+		return "<redacted>"
+	}
+	return value
+}
+
+func isSensitiveEnvKey(key string) bool {
+	upper := strings.ToUpper(key)
+	parts := strings.FieldsFunc(upper, func(r rune) bool {
+		return !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+	})
+	for _, part := range parts {
+		switch part {
+		case "AUTH", "AUTHORIZATION", "COOKIE", "CREDENTIAL", "CREDENTIALS", "KEY", "PASS", "PASSWORD", "SECRET", "TOKEN":
+			return true
+		}
+	}
+	for _, marker := range []string{"TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return false
 }
