@@ -34,32 +34,43 @@ func ApplyFilter(spec *Spec, filter Filter) error {
 		spec.Workloads = workloads
 	}
 	if len(profileFilter) > 0 {
-		for i := range spec.Workloads {
-			workload := &spec.Workloads[i]
+		workloads := spec.Workloads[:0]
+		for _, workload := range spec.Workloads {
 			if len(workload.Profiles) == 0 {
 				workload.Profiles = filter.Profiles
+				workloads = append(workloads, workload)
 				continue
 			}
-			profiles := workload.Profiles[:0]
+			profiles := make([]string, 0, len(workload.Profiles))
 			for _, profileName := range workload.Profiles {
 				if profileFilter[profileName] {
 					profiles = append(profiles, profileName)
 				}
 			}
+			if len(profiles) == 0 {
+				continue
+			}
 			workload.Profiles = profiles
+			workloads = append(workloads, workload)
 		}
+		spec.Workloads = workloads
 	}
 	if len(concurrencyFilter) > 0 {
-		for i := range spec.Workloads {
-			workload := &spec.Workloads[i]
-			values := workload.MaxConcurrency[:0]
+		workloads := spec.Workloads[:0]
+		for _, workload := range spec.Workloads {
+			values := make([]int, 0, len(workload.MaxConcurrency))
 			for _, concurrency := range workload.MaxConcurrency {
 				if concurrencyFilter[concurrency] {
 					values = append(values, concurrency)
 				}
 			}
+			if len(values) == 0 {
+				continue
+			}
 			workload.MaxConcurrency = values
+			workloads = append(workloads, workload)
 		}
+		spec.Workloads = workloads
 	}
 	if err := ValidateSpec(*spec); err != nil {
 		return fmt.Errorf("filter produced invalid spec: %w", err)

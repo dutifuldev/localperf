@@ -72,6 +72,42 @@ func TestApplyFilter(t *testing.T) {
 	}
 }
 
+func TestApplyFilterDropsWorkloadsWithoutMatchingProfile(t *testing.T) {
+	spec := testSpec()
+	spec.Profiles = append(spec.Profiles, Profile{
+		Name:        "16k",
+		Model:       spec.Model,
+		Host:        "127.0.0.1",
+		Port:        8116,
+		Managed:     true,
+		MaxModelLen: 16384,
+		MaxNumSeqs:  16,
+	})
+	spec.Workloads = append(spec.Workloads, Workload{
+		Name:            "prefill-16k",
+		Profiles:        []string{"16k"},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  14336,
+		RandomOutputLen: 16,
+		NumPrompts:      8,
+		MaxConcurrency:  []int{4},
+	})
+	ApplyDefaults(&spec)
+	if err := ApplyFilter(&spec, Filter{Profiles: []string{"8k"}}); err != nil {
+		t.Fatal(err)
+	}
+	plan := BuildPlan(spec, "runs/example")
+	if len(plan) != 2 {
+		t.Fatalf("plan length = %d, want only the two 8k workload concurrencies", len(plan))
+	}
+	for _, run := range plan {
+		if run.Profile.Name != "8k" || run.Workload.Name != "prefill-8k" {
+			t.Fatalf("unexpected filtered run: %+v", run)
+		}
+	}
+}
+
 func TestParseMeminfo(t *testing.T) {
 	meminfo := strings.NewReader(`MemTotal:       131072000 kB
 MemFree:         1000000 kB
