@@ -537,6 +537,85 @@ func TestExecuteWarmsPrebootedProfileAfterWake(t *testing.T) {
 	}
 }
 
+func TestSleepProfileWaitsForSleepingState(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-delayed-sleep"
+	spec.OutputDir = t.TempDir()
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.PollIntervalMillis = 20
+	spec.Safety.StartupTimeoutSec = 5
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].Env = map[string]string{"FAKE_SLEEP_DELAY_MS": "250"}
+	ApplyDefaults(&spec)
+	runDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(runDir, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	events, err := newEventWriter(filepath.Join(runDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Close()
+	proc, err := prepareProfile(context.Background(), spec, runDir, spec.Profiles[0], events, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopProcess(proc)
+	start := time.Now()
+	if err := sleepProfile(context.Background(), spec, spec.Profiles[0], events); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
+		t.Fatalf("sleepProfile returned before delayed sleep completed: %s", elapsed)
+	}
+}
+
+func TestWakeProfileWaitsForAwakeState(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-delayed-wake"
+	spec.OutputDir = t.TempDir()
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.PollIntervalMillis = 20
+	spec.Safety.StartupTimeoutSec = 5
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].Env = map[string]string{"FAKE_WAKE_DELAY_MS": "250"}
+	ApplyDefaults(&spec)
+	runDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(runDir, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	events, err := newEventWriter(filepath.Join(runDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Close()
+	proc, err := prepareProfile(context.Background(), spec, runDir, spec.Profiles[0], events, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopProcess(proc)
+	if err := sleepProfile(context.Background(), spec, spec.Profiles[0], events); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := wakeProfile(context.Background(), spec, spec.Profiles[0], events); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
+		t.Fatalf("wakeProfile returned before delayed wake completed: %s", elapsed)
+	}
+}
+
 func TestExecuteStopsPrebootedProfileAfterWakeFailure(t *testing.T) {
 	spec := testSpec()
 	spec.Name = "fake-vllm-preboot-wake-failure"
@@ -585,6 +664,71 @@ func TestExecuteStopsPrebootedProfileAfterWakeFailure(t *testing.T) {
 	if err == nil {
 		_ = resp.Body.Close()
 		t.Fatalf("expected prebooted server to be stopped after wake failure, got HTTP %d", resp.StatusCode)
+	}
+}
+
+func TestExecuteStopsManagedProfileOnInterrupt(t *testing.T) {
+	startFile := filepath.Join(t.TempDir(), "bench.started")
+	spec := testSpec()
+	spec.Name = "fake-vllm-interrupt"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Env["FAKE_BENCH_STARTED_FILE"] = startFile
+	spec.Env["FAKE_BENCH_SLEEP_MS"] = "5000"
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{{
+		Name:            "fake-random",
+		Profiles:        []string{spec.Profiles[0].Name},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  128,
+		RandomOutputLen: 16,
+		NumPrompts:      1,
+		MaxConcurrency:  []int{1},
+		RequestRate:     "inf",
+	}}
+	ApplyDefaults(&spec)
+	type result struct {
+		summary RunSummary
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		summary, err := Execute(context.Background(), spec, RunOptions{})
+		done <- result{summary: summary, err: err}
+	}()
+	waitForFile(t, startFile)
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not return after interrupt")
+	}
+	if got.err == nil {
+		t.Fatalf("Execute error = nil, want interrupted run failure; summary = %+v", got.summary)
+	}
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", spec.Profiles[0].Port))
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("expected managed server to be stopped after interrupt, got HTTP %d", resp.StatusCode)
 	}
 }
 
@@ -955,6 +1099,8 @@ func runFakeServe(args []string) {
 	if port == "" {
 		os.Exit(2)
 	}
+	sleepDelay := durationFromEnv("FAKE_SLEEP_DELAY_MS")
+	wakeDelay := durationFromEnv("FAKE_WAKE_DELAY_MS")
 	var sleeping atomic.Bool
 	mux := http.NewServeMux()
 	var server *http.Server
@@ -969,7 +1115,7 @@ func runFakeServe(args []string) {
 			http.Error(w, "sleep failed", http.StatusInternalServerError)
 			return
 		}
-		sleeping.Store(true)
+		setSleepingAfter(&sleeping, true, sleepDelay)
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 	mux.HandleFunc("/wake_up", func(w http.ResponseWriter, _ *http.Request) {
@@ -977,7 +1123,7 @@ func runFakeServe(args []string) {
 			http.Error(w, "wake failed", http.StatusInternalServerError)
 			return
 		}
-		sleeping.Store(false)
+		setSleepingAfter(&sleeping, false, wakeDelay)
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 	mux.HandleFunc("/shutdown", func(w http.ResponseWriter, _ *http.Request) {
@@ -1001,6 +1147,25 @@ func runFakeServe(args []string) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func durationFromEnv(key string) time.Duration {
+	value, _ := strconv.Atoi(os.Getenv(key))
+	if value <= 0 {
+		return 0
+	}
+	return time.Duration(value) * time.Millisecond
+}
+
+func setSleepingAfter(sleeping *atomic.Bool, value bool, delay time.Duration) {
+	if delay <= 0 {
+		sleeping.Store(value)
+		return
+	}
+	go func() {
+		time.Sleep(delay)
+		sleeping.Store(value)
+	}()
 }
 
 func runFakeBench(args []string) {
@@ -1097,6 +1262,18 @@ func waitForPIDFile(t *testing.T, path string) int {
 	}
 	t.Fatalf("pid file %s was not written", path)
 	return 0
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("file %s was not written", path)
 }
 
 func processExists(pid int) bool {

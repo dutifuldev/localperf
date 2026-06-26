@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -71,6 +72,9 @@ type eventWriter struct {
 }
 
 func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error) {
+	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
 	ApplyDefaults(&spec)
 	if err := ValidateSpec(spec); err != nil {
 		return RunSummary{}, err
@@ -126,9 +130,11 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 	}
 
 	processes := map[string]*serverProcess{}
-	if shouldStopManaged(spec) {
-		defer stopAll(processes)
-	}
+	defer func() {
+		if shouldStopManaged(spec) || ctx.Err() != nil {
+			stopAll(processes)
+		}
+	}()
 	if spec.Runner.PrebootProfiles {
 		if err := prebootProfiles(ctx, spec, runDir, plan, events, processes); err != nil {
 			summary.FailedRuns += remainingUnaccountedRuns(summary)
@@ -337,14 +343,14 @@ func prepareProfile(ctx context.Context, spec Spec, runDir string, profile Profi
 	return proc, nil
 }
 
-func startServer(ctx context.Context, spec Spec, runDir string, profile Profile, events *eventWriter) (*serverProcess, error) {
+func startServer(_ context.Context, spec Spec, runDir string, profile Profile, events *eventWriter) (*serverProcess, error) {
 	command := ServeCommand(spec, profile)
 	logPath := filepath.Join(runDir, "logs", Slug(profile.Name)+".server.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, command.Args[0], command.Args[1:]...)
+	cmd := exec.Command(command.Args[0], command.Args[1:]...)
 	cmd.Env = WithProcessEnv(command.Env)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -629,6 +635,10 @@ func sleepProfile(ctx context.Context, spec Spec, profile Profile, events *event
 	start := time.Now()
 	err := postAdmin(ctx, spec, url)
 	event := Event{Timestamp: time.Now().UTC(), Type: "profile_sleep", Profile: profile.Name, DurationSeconds: time.Since(start).Seconds()}
+	if err == nil {
+		err = waitSleepState(ctx, spec, profile, true)
+		event.DurationSeconds = time.Since(start).Seconds()
+	}
 	if err != nil {
 		event.Error = err.Error()
 		events.Write(event)
@@ -657,6 +667,10 @@ func wakeProfile(ctx context.Context, spec Spec, profile Profile, events *eventW
 	start := time.Now()
 	err = postAdmin(ctx, spec, baseURL(profile)+"/wake_up")
 	event := Event{Timestamp: time.Now().UTC(), Type: "profile_wake", Profile: profile.Name, DurationSeconds: time.Since(start).Seconds()}
+	if err == nil {
+		err = waitSleepState(ctx, spec, profile, false)
+		event.DurationSeconds = time.Since(start).Seconds()
+	}
 	if err != nil {
 		event.Error = err.Error()
 		events.Write(event)
@@ -664,6 +678,40 @@ func wakeProfile(ctx context.Context, spec Spec, profile Profile, events *eventW
 	}
 	events.Write(event)
 	return waitReady(ctx, spec, profile, events, nil)
+}
+
+func waitSleepState(ctx context.Context, spec Spec, profile Profile, wantSleeping bool) error {
+	state := "awake"
+	if wantSleeping {
+		state = "sleeping"
+	}
+	start := time.Now()
+	timeout := time.Duration(spec.Safety.StartupTimeoutSec) * time.Second
+	poll := time.Duration(spec.Safety.PollIntervalMillis) * time.Millisecond
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		sleeping, err := isSleeping(ctx, spec, profile)
+		if err == nil && sleeping == wantSleeping {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			if lastErr != nil {
+				return fmt.Errorf("profile %s did not become %s within %s: %w", profile.Name, state, time.Since(start).Round(time.Millisecond), lastErr)
+			}
+			return fmt.Errorf("profile %s did not become %s within %s", profile.Name, state, time.Since(start).Round(time.Millisecond))
+		case <-ticker.C:
+		}
+	}
 }
 
 func isSleeping(ctx context.Context, spec Spec, profile Profile) (bool, error) {
@@ -678,6 +726,9 @@ func isSleeping(ctx context.Context, spec Spec, profile Profile) (bool, error) {
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Errorf("%s/is_sleeping returned HTTP %d: %s", baseURL(profile), resp.StatusCode, strings.TrimSpace(string(data)))
+	}
 	text := strings.TrimSpace(strings.ToLower(string(data)))
 	var object map[string]any
 	if err := json.Unmarshal(data, &object); err == nil {
