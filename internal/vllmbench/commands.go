@@ -71,12 +71,7 @@ func BenchCommand(spec Spec, run PlannedRun) CommandSpec {
 		"--save-result",
 		"--result-filename", run.ResultFile,
 	}
-	if workload.DatasetName == "random" {
-		args = append(args,
-			"--random-input-len", strconv.Itoa(workload.RandomInputLen),
-			"--random-output-len", strconv.Itoa(workload.RandomOutputLen),
-		)
-	}
+	args = appendTrafficArgs(args, workload.BenchmarkTrafficConfig)
 	if strings.TrimSpace(workload.Endpoint) != "" {
 		args = append(args, "--endpoint", workload.Endpoint)
 	}
@@ -86,7 +81,6 @@ func BenchCommand(spec Spec, run PlannedRun) CommandSpec {
 	if workload.Temperature != nil {
 		args = append(args, "--temperature", trimFloat(*workload.Temperature))
 	}
-	args = append(args, workload.ExtraArgs...)
 	return CommandSpec{
 		Env:  cloneMap(spec.Env),
 		Args: args,
@@ -110,20 +104,82 @@ func WarmupCommand(spec Spec, profile Profile, runDir string) CommandSpec {
 		"--save-result",
 		"--result-filename", resultFile,
 	}
-	if warmup.DatasetName == "random" {
-		args = append(args,
-			"--random-input-len", strconv.Itoa(warmup.RandomInputLen),
-			"--random-output-len", strconv.Itoa(warmup.RandomOutputLen),
-		)
-	}
+	args = appendTrafficArgs(args, warmup.BenchmarkTrafficConfig)
 	if strings.TrimSpace(warmup.Endpoint) != "" {
 		args = append(args, "--endpoint", warmup.Endpoint)
 	}
-	args = append(args, warmup.ExtraArgs...)
 	return CommandSpec{
 		Env:  cloneMap(spec.Env),
 		Args: args,
 	}
+}
+
+func appendTrafficArgs(args []string, traffic BenchmarkTrafficConfig) []string {
+	appendStringArg := func(flag, value string) {
+		if strings.TrimSpace(value) != "" {
+			args = append(args, flag, value)
+		}
+	}
+	appendIntArg := func(flag string, value int) {
+		if value > 0 {
+			args = append(args, flag, strconv.Itoa(value))
+		}
+	}
+	appendIntPointerArg := func(flag string, value *int) {
+		if value != nil {
+			args = append(args, flag, strconv.Itoa(*value))
+		}
+	}
+	appendRepeatedArg := func(flag string, values []string) {
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				args = append(args, flag, value)
+			}
+		}
+	}
+
+	appendStringArg("--dataset-path", traffic.DatasetPath)
+	if traffic.Seed != nil {
+		args = append(args, "--seed", strconv.Itoa(*traffic.Seed))
+	}
+	if traffic.DisableShuffle {
+		args = append(args, "--disable-shuffle")
+	}
+	if traffic.NoOversample {
+		args = append(args, "--no-oversample")
+	}
+	if traffic.SkipChatTemplate {
+		args = append(args, "--skip-chat-template")
+	}
+	if traffic.SaveDetailed {
+		args = append(args, "--save-detailed")
+	}
+	if traffic.PlotDatasetStats {
+		args = append(args, "--plot-dataset-stats")
+	}
+	if traffic.DatasetName == "random" {
+		appendIntArg("--random-input-len", traffic.RandomInputLen)
+		appendIntArg("--random-output-len", traffic.RandomOutputLen)
+		appendStringArg("--random-range-ratio", traffic.RandomRangeRatio)
+		appendIntArg("--random-prefix-len", traffic.RandomPrefixLen)
+	}
+	appendIntPointerArg("--custom-output-len", traffic.CustomOutputLen)
+	appendIntPointerArg("--sharegpt-output-len", traffic.ShareGPTOutputLen)
+	appendIntArg("--sonnet-input-len", traffic.SonnetInputLen)
+	appendIntArg("--sonnet-output-len", traffic.SonnetOutputLen)
+	appendIntArg("--sonnet-prefix-len", traffic.SonnetPrefixLen)
+	appendIntArg("--prefix-repetition-prefix-len", traffic.PrefixRepetitionPrefixLen)
+	appendIntArg("--prefix-repetition-suffix-len", traffic.PrefixRepetitionSuffixLen)
+	appendIntArg("--prefix-repetition-num-prefixes", traffic.PrefixRepetitionNumPrefixes)
+	appendIntArg("--prefix-repetition-output-len", traffic.PrefixRepetitionOutputLen)
+	appendStringArg("--speed-bench-dataset-subset", traffic.SpeedBenchDatasetSubset)
+	appendIntArg("--speed-bench-output-len", traffic.SpeedBenchOutputLen)
+	appendStringArg("--speed-bench-category", traffic.SpeedBenchCategory)
+	appendStringArg("--extra-body", traffic.ExtraBody)
+	appendRepeatedArg("--metadata", traffic.Metadata)
+	appendRepeatedArg("--goodput", traffic.Goodput)
+	args = append(args, traffic.ExtraArgs...)
+	return args
 }
 
 func ShellQuote(args []string) string {

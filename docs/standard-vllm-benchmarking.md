@@ -73,6 +73,43 @@ token-count synthetic inputs are better than prose because they make token count
 and concurrency exact. For product-like behavior, use a separate realistic chat
 set and do not mix those numbers with raw throughput claims.
 
+LocalPerf exposes the main `vllm bench serve` dataset controls directly in the
+spec so standard workloads do not depend on opaque `extra_args`. The supported
+first-class fields include:
+
+- deterministic synthetic traffic: `seed`, `random_input_len`,
+  `random_output_len`, `random_range_ratio`, and `random_prefix_len`;
+- realistic or checked-in prompt sets: `dataset_path`, `custom_output_len`,
+  `sharegpt_output_len`, `disable_shuffle`, `skip_chat_template`, and
+  `no_oversample`;
+- long-text and prefix-cache shapes: `sonnet_input_len`, `sonnet_output_len`,
+  `sonnet_prefix_len`, `prefix_repetition_prefix_len`,
+  `prefix_repetition_suffix_len`, `prefix_repetition_num_prefixes`, and
+  `prefix_repetition_output_len`;
+- reporting/debug controls: `save_detailed`, `plot_dataset_stats`, `metadata`,
+  `goodput`, and `extra_body`.
+
+Those names map directly to vLLM benchmark CLI flags. The official vLLM
+benchmark docs list the same dataset families, including `random`, `sharegpt`,
+`sonnet`, `custom`, `prefix_repetition`, and `speed_bench`:
+<https://docs.vllm.ai/en/v0.20.2/cli/bench/serve.html>.
+
+Recommended baseline:
+
+```json
+{
+  "dataset_name": "random",
+  "seed": 0,
+  "random_input_len": 8192,
+  "random_output_len": 16,
+  "random_range_ratio": "0",
+  "request_rate": "inf"
+}
+```
+
+Use `random_range_ratio: "0"` when the goal is exact token-count prefill.
+Use ShareGPT/custom/sonnet only as separate realistic-behavior benchmarks.
+
 ## Sleep-Mode Profile Pools
 
 The runner supports vLLM sleep mode through profile settings:

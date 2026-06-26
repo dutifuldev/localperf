@@ -45,16 +45,10 @@ type SafetyConfig struct {
 }
 
 type WarmupConfig struct {
-	Enabled         bool     `json:"enabled"`
-	DatasetName     string   `json:"dataset_name,omitempty"`
-	Backend         string   `json:"backend,omitempty"`
-	Endpoint        string   `json:"endpoint,omitempty"`
-	RandomInputLen  int      `json:"random_input_len,omitempty"`
-	RandomOutputLen int      `json:"random_output_len,omitempty"`
-	NumPrompts      int      `json:"num_prompts,omitempty"`
-	MaxConcurrency  int      `json:"max_concurrency,omitempty"`
-	RequestRate     string   `json:"request_rate,omitempty"`
-	ExtraArgs       []string `json:"extra_args,omitempty"`
+	BenchmarkTrafficConfig
+	Enabled        bool `json:"enabled"`
+	NumPrompts     int  `json:"num_prompts,omitempty"`
+	MaxConcurrency int  `json:"max_concurrency,omitempty"`
 }
 
 type Profile struct {
@@ -78,19 +72,47 @@ type Profile struct {
 }
 
 type Workload struct {
-	Name            string   `json:"name"`
-	Profiles        []string `json:"profiles,omitempty"`
-	Backend         string   `json:"backend,omitempty"`
-	Endpoint        string   `json:"endpoint,omitempty"`
-	DatasetName     string   `json:"dataset_name"`
-	RandomInputLen  int      `json:"random_input_len,omitempty"`
-	RandomOutputLen int      `json:"random_output_len,omitempty"`
-	NumPrompts      int      `json:"num_prompts"`
-	MaxConcurrency  []int    `json:"max_concurrency"`
-	RequestRate     string   `json:"request_rate,omitempty"`
-	IgnoreEOS       bool     `json:"ignore_eos,omitempty"`
-	Temperature     *float64 `json:"temperature,omitempty"`
-	ExtraArgs       []string `json:"extra_args,omitempty"`
+	BenchmarkTrafficConfig
+	Name           string   `json:"name"`
+	Profiles       []string `json:"profiles,omitempty"`
+	NumPrompts     int      `json:"num_prompts"`
+	MaxConcurrency []int    `json:"max_concurrency"`
+	IgnoreEOS      bool     `json:"ignore_eos,omitempty"`
+	Temperature    *float64 `json:"temperature,omitempty"`
+}
+
+type BenchmarkTrafficConfig struct {
+	Backend                     string   `json:"backend,omitempty"`
+	Endpoint                    string   `json:"endpoint,omitempty"`
+	DatasetName                 string   `json:"dataset_name,omitempty"`
+	DatasetPath                 string   `json:"dataset_path,omitempty"`
+	RequestRate                 string   `json:"request_rate,omitempty"`
+	Seed                        *int     `json:"seed,omitempty"`
+	RandomInputLen              int      `json:"random_input_len,omitempty"`
+	RandomOutputLen             int      `json:"random_output_len,omitempty"`
+	RandomRangeRatio            string   `json:"random_range_ratio,omitempty"`
+	RandomPrefixLen             int      `json:"random_prefix_len,omitempty"`
+	CustomOutputLen             *int     `json:"custom_output_len,omitempty"`
+	ShareGPTOutputLen           *int     `json:"sharegpt_output_len,omitempty"`
+	SonnetInputLen              int      `json:"sonnet_input_len,omitempty"`
+	SonnetOutputLen             int      `json:"sonnet_output_len,omitempty"`
+	SonnetPrefixLen             int      `json:"sonnet_prefix_len,omitempty"`
+	PrefixRepetitionPrefixLen   int      `json:"prefix_repetition_prefix_len,omitempty"`
+	PrefixRepetitionSuffixLen   int      `json:"prefix_repetition_suffix_len,omitempty"`
+	PrefixRepetitionNumPrefixes int      `json:"prefix_repetition_num_prefixes,omitempty"`
+	PrefixRepetitionOutputLen   int      `json:"prefix_repetition_output_len,omitempty"`
+	SpeedBenchDatasetSubset     string   `json:"speed_bench_dataset_subset,omitempty"`
+	SpeedBenchOutputLen         int      `json:"speed_bench_output_len,omitempty"`
+	SpeedBenchCategory          string   `json:"speed_bench_category,omitempty"`
+	DisableShuffle              bool     `json:"disable_shuffle,omitempty"`
+	NoOversample                bool     `json:"no_oversample,omitempty"`
+	SkipChatTemplate            bool     `json:"skip_chat_template,omitempty"`
+	SaveDetailed                bool     `json:"save_detailed,omitempty"`
+	PlotDatasetStats            bool     `json:"plot_dataset_stats,omitempty"`
+	ExtraBody                   string   `json:"extra_body,omitempty"`
+	Metadata                    []string `json:"metadata,omitempty"`
+	Goodput                     []string `json:"goodput,omitempty"`
+	ExtraArgs                   []string `json:"extra_args,omitempty"`
 }
 
 type PlannedRun struct {
@@ -163,15 +185,7 @@ func ApplyDefaults(spec *Spec) {
 		}
 	}
 	if spec.Warmup.Enabled {
-		if strings.TrimSpace(spec.Warmup.DatasetName) == "" {
-			spec.Warmup.DatasetName = "random"
-		}
-		if strings.TrimSpace(spec.Warmup.Backend) == "" {
-			spec.Warmup.Backend = "openai-chat"
-		}
-		if strings.TrimSpace(spec.Warmup.Endpoint) == "" {
-			spec.Warmup.Endpoint = defaultEndpoint(spec.Warmup.Backend)
-		}
+		applyTrafficDefaults(&spec.Warmup.BenchmarkTrafficConfig, "random")
 		if spec.Warmup.RandomInputLen <= 0 {
 			spec.Warmup.RandomInputLen = 256
 		}
@@ -184,21 +198,24 @@ func ApplyDefaults(spec *Spec) {
 		if spec.Warmup.MaxConcurrency <= 0 {
 			spec.Warmup.MaxConcurrency = 1
 		}
-		if strings.TrimSpace(spec.Warmup.RequestRate) == "" {
-			spec.Warmup.RequestRate = "inf"
-		}
 	}
 	for i := range spec.Workloads {
-		workload := &spec.Workloads[i]
-		if strings.TrimSpace(workload.Backend) == "" {
-			workload.Backend = "openai-chat"
-		}
-		if strings.TrimSpace(workload.Endpoint) == "" {
-			workload.Endpoint = defaultEndpoint(workload.Backend)
-		}
-		if strings.TrimSpace(workload.RequestRate) == "" {
-			workload.RequestRate = "inf"
-		}
+		applyTrafficDefaults(&spec.Workloads[i].BenchmarkTrafficConfig, "")
+	}
+}
+
+func applyTrafficDefaults(traffic *BenchmarkTrafficConfig, defaultDataset string) {
+	if strings.TrimSpace(traffic.DatasetName) == "" {
+		traffic.DatasetName = defaultDataset
+	}
+	if strings.TrimSpace(traffic.Backend) == "" {
+		traffic.Backend = "openai-chat"
+	}
+	if strings.TrimSpace(traffic.Endpoint) == "" {
+		traffic.Endpoint = defaultEndpoint(traffic.Backend)
+	}
+	if strings.TrimSpace(traffic.RequestRate) == "" {
+		traffic.RequestRate = "inf"
 	}
 }
 
@@ -281,6 +298,18 @@ func ValidateSpec(spec Spec) error {
 			issues = append(issues, prefix+": sleep_level must be 0, 1, or 2")
 		}
 	}
+	if spec.Warmup.Enabled {
+		if spec.Warmup.NumPrompts <= 0 {
+			issues = append(issues, "warmup: num_prompts must be positive")
+		}
+		if spec.Warmup.MaxConcurrency <= 0 {
+			issues = append(issues, "warmup: max_concurrency must be positive")
+		}
+		if strings.TrimSpace(spec.Warmup.DatasetName) == "" {
+			issues = append(issues, "warmup: dataset_name is required")
+		}
+		issues = append(issues, validateTrafficConfig("warmup", spec.Warmup.BenchmarkTrafficConfig)...)
+	}
 	if len(spec.Workloads) == 0 {
 		issues = append(issues, "at least one workload is required")
 	}
@@ -337,19 +366,59 @@ func ValidateSpec(spec Spec) error {
 				issues = append(issues, prefix+": unknown profile "+profileName)
 			}
 		}
-		if workload.DatasetName == "random" {
-			if workload.RandomInputLen <= 0 {
-				issues = append(issues, prefix+": random_input_len must be positive for random dataset")
-			}
-			if workload.RandomOutputLen <= 0 {
-				issues = append(issues, prefix+": random_output_len must be positive for random dataset")
-			}
-		}
+		issues = append(issues, validateTrafficConfig(prefix, workload.BenchmarkTrafficConfig)...)
 	}
 	if len(issues) > 0 {
 		return errors.New(strings.Join(issues, "\n"))
 	}
 	return nil
+}
+
+func validateTrafficConfig(prefix string, traffic BenchmarkTrafficConfig) []string {
+	var issues []string
+	if traffic.DatasetName == "random" {
+		if traffic.RandomInputLen <= 0 {
+			issues = append(issues, prefix+": random_input_len must be positive for random dataset")
+		}
+		if traffic.RandomOutputLen <= 0 {
+			issues = append(issues, prefix+": random_output_len must be positive for random dataset")
+		}
+	}
+	if traffic.Seed != nil && *traffic.Seed < 0 {
+		issues = append(issues, prefix+": seed must be non-negative")
+	}
+	for field, value := range map[string]int{
+		"random_prefix_len":              traffic.RandomPrefixLen,
+		"sonnet_input_len":               traffic.SonnetInputLen,
+		"sonnet_output_len":              traffic.SonnetOutputLen,
+		"sonnet_prefix_len":              traffic.SonnetPrefixLen,
+		"prefix_repetition_prefix_len":   traffic.PrefixRepetitionPrefixLen,
+		"prefix_repetition_suffix_len":   traffic.PrefixRepetitionSuffixLen,
+		"prefix_repetition_num_prefixes": traffic.PrefixRepetitionNumPrefixes,
+		"prefix_repetition_output_len":   traffic.PrefixRepetitionOutputLen,
+		"speed_bench_output_len":         traffic.SpeedBenchOutputLen,
+	} {
+		if value < 0 {
+			issues = append(issues, prefix+": "+field+" must not be negative")
+		}
+	}
+	if traffic.CustomOutputLen != nil && *traffic.CustomOutputLen < -1 {
+		issues = append(issues, prefix+": custom_output_len must be -1 or greater")
+	}
+	if traffic.ShareGPTOutputLen != nil && *traffic.ShareGPTOutputLen <= 0 {
+		issues = append(issues, prefix+": sharegpt_output_len must be positive")
+	}
+	for _, metadata := range traffic.Metadata {
+		if strings.TrimSpace(metadata) == "" {
+			issues = append(issues, prefix+": metadata values must not be empty")
+		}
+	}
+	for _, goodput := range traffic.Goodput {
+		if strings.TrimSpace(goodput) == "" {
+			issues = append(issues, prefix+": goodput values must not be empty")
+		}
+	}
+	return issues
 }
 
 func BuildPlan(spec Spec, runDir string) []PlannedRun {

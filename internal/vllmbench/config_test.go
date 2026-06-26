@@ -46,6 +46,81 @@ func TestBuildPlanAndBenchCommand(t *testing.T) {
 	}
 }
 
+func TestBenchCommandSupportsStandardDatasetKnobs(t *testing.T) {
+	spec := testSpec()
+	seed := 7
+	customOutputLen := -1
+	shareGPTOutputLen := 256
+	spec.Workloads = []Workload{{
+		Name:     "standard-knobs",
+		Profiles: []string{"8k"},
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:                     "openai-chat",
+			DatasetName:                 "sonnet",
+			DatasetPath:                 "examples/prompts/sonnet.txt",
+			SonnetInputLen:              4096,
+			SonnetOutputLen:             64,
+			SonnetPrefixLen:             128,
+			PrefixRepetitionPrefixLen:   256,
+			PrefixRepetitionSuffixLen:   512,
+			PrefixRepetitionNumPrefixes: 4,
+			PrefixRepetitionOutputLen:   32,
+			CustomOutputLen:             &customOutputLen,
+			ShareGPTOutputLen:           &shareGPTOutputLen,
+			SpeedBenchDatasetSubset:     "reasoning",
+			SpeedBenchOutputLen:         128,
+			SpeedBenchCategory:          "math",
+			Seed:                        &seed,
+			DisableShuffle:              true,
+			NoOversample:                true,
+			SkipChatTemplate:            true,
+			SaveDetailed:                true,
+			PlotDatasetStats:            true,
+			ExtraBody:                   `{"guided_decoding_backend":"outlines"}`,
+			Metadata:                    []string{"suite=standard", "shape=sonnet"},
+			Goodput:                     []string{"ttft:5000"},
+			RequestRate:                 "inf",
+			ExtraArgs:                   []string{"--request-id-prefix", "standard"},
+		},
+		NumPrompts:     2,
+		MaxConcurrency: []int{1},
+	}}
+	ApplyDefaults(&spec)
+	command := BenchCommand(spec, BuildPlan(spec, "runs/example")[0])
+	got := ShellQuote(command.Args)
+	for _, want := range []string{
+		"--dataset-name sonnet",
+		"--dataset-path examples/prompts/sonnet.txt",
+		"--seed 7",
+		"--disable-shuffle",
+		"--no-oversample",
+		"--skip-chat-template",
+		"--save-detailed",
+		"--plot-dataset-stats",
+		"--custom-output-len -1",
+		"--sharegpt-output-len 256",
+		"--sonnet-input-len 4096",
+		"--sonnet-output-len 64",
+		"--sonnet-prefix-len 128",
+		"--prefix-repetition-prefix-len 256",
+		"--prefix-repetition-suffix-len 512",
+		"--prefix-repetition-num-prefixes 4",
+		"--prefix-repetition-output-len 32",
+		"--speed-bench-dataset-subset reasoning",
+		"--speed-bench-output-len 128",
+		"--speed-bench-category math",
+		"--extra-body '{\"guided_decoding_backend\":\"outlines\"}'",
+		"--metadata suite=standard",
+		"--metadata shape=sonnet",
+		"--goodput ttft:5000",
+		"--request-id-prefix standard",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("command %q missing %q", got, want)
+		}
+	}
+}
+
 func TestCommandSummaryRedactsSensitiveEnv(t *testing.T) {
 	summary := CommandSummary(CommandSpec{
 		Env: map[string]string{
@@ -64,6 +139,16 @@ func TestCommandSummaryRedactsSensitiveEnv(t *testing.T) {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("summary %q missing %q", summary, want)
 		}
+	}
+}
+
+func TestValidateSpecRejectsInvalidWarmupTraffic(t *testing.T) {
+	spec := testSpec()
+	spec.Warmup.Enabled = true
+	spec.Warmup.DatasetName = "random"
+	spec.Warmup.RandomInputLen = -1
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "warmup: random_input_len") {
+		t.Fatalf("ValidateSpec error = %v, want warmup random input issue", err)
 	}
 }
 
@@ -175,14 +260,16 @@ func TestApplyFilterDropsWorkloadsWithoutMatchingProfile(t *testing.T) {
 		MaxNumSeqs:  16,
 	})
 	spec.Workloads = append(spec.Workloads, Workload{
-		Name:            "prefill-16k",
-		Profiles:        []string{"16k"},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  14336,
-		RandomOutputLen: 16,
-		NumPrompts:      8,
-		MaxConcurrency:  []int{4},
+		Name:     "prefill-16k",
+		Profiles: []string{"16k"},
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "random",
+			RandomInputLen:  14336,
+			RandomOutputLen: 16,
+		},
+		NumPrompts:     8,
+		MaxConcurrency: []int{4},
 	})
 	ApplyDefaults(&spec)
 	if err := ApplyFilter(&spec, Filter{Profiles: []string{"8k"}}); err != nil {
@@ -202,14 +289,16 @@ func TestApplyFilterDropsWorkloadsWithoutMatchingProfile(t *testing.T) {
 func TestApplyFilterDropsWorkloadsWithoutMatchingConcurrency(t *testing.T) {
 	spec := testSpec()
 	spec.Workloads = append(spec.Workloads, Workload{
-		Name:            "claim-repro",
-		Profiles:        []string{"8k"},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  1000,
-		RandomOutputLen: 1024,
-		NumPrompts:      20,
-		MaxConcurrency:  []int{20},
+		Name:     "claim-repro",
+		Profiles: []string{"8k"},
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "random",
+			RandomInputLen:  1000,
+			RandomOutputLen: 1024,
+		},
+		NumPrompts:     20,
+		MaxConcurrency: []int{20},
 	})
 	ApplyDefaults(&spec)
 	if err := ApplyFilter(&spec, Filter{Concurrencies: []int{20}}); err != nil {
@@ -274,7 +363,7 @@ func TestParseCustomJSONLResult(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
 	row := rows[0]
-	if row.Context != 8192 || row.Concurrency != 8 || row.RandomOutputLen != 512 {
+	if row.Context != 8192 || row.Concurrency != 8 || row.DisplayOutputLen() != 512 {
 		t.Fatalf("unexpected row: %+v", row)
 	}
 	if row.PerUserOutputTokSec < 13.4 || row.PerUserOutputTokSec > 13.5 {
@@ -352,17 +441,7 @@ func TestExecuteWithFakeVLLMEndToEnd(t *testing.T) {
 	spec.Warmup.Enabled = true
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      2,
-		MaxConcurrency:  []int{2},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 2, []int{2})}
 	ApplyDefaults(&spec)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err != nil {
@@ -400,17 +479,7 @@ func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].EnableSleepMode = false
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      2,
-		MaxConcurrency:  []int{2},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 2, []int{2})}
 	ApplyDefaults(&spec)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
@@ -452,17 +521,7 @@ func TestExecuteDerivesPerUserAfterPlannedRunEnrichment(t *testing.T) {
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].EnableSleepMode = false
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      2,
-		MaxConcurrency:  []int{2},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 2, []int{2})}
 	ApplyDefaults(&spec)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err != nil {
@@ -509,17 +568,7 @@ func TestExecuteStopsManagedProfileAfterWorkloadMemoryFloorAbort(t *testing.T) {
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].EnableSleepMode = false
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      1,
-		MaxConcurrency:  []int{1, 2},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1, 2})}
 	ApplyDefaults(&spec)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
@@ -560,17 +609,7 @@ func TestExecuteFailsWhenWarmupReportsRequestFailures(t *testing.T) {
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].EnableSleepMode = false
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      1,
-		MaxConcurrency:  []int{1},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
 	ApplyDefaults(&spec)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
@@ -604,17 +643,7 @@ func TestExecuteWarmsPrebootedProfileAfterWake(t *testing.T) {
 	spec.Warmup.Enabled = true
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      1,
-		MaxConcurrency:  []int{1},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
 	ApplyDefaults(&spec)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err != nil {
@@ -728,17 +757,7 @@ func TestExecuteStopsPrebootedProfileAfterWakeFailure(t *testing.T) {
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].Env = map[string]string{"FAKE_WAKE_FAIL": "1"}
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      1,
-		MaxConcurrency:  []int{1},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
 	ApplyDefaults(&spec)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
@@ -781,17 +800,7 @@ func TestExecuteStopsManagedProfileOnInterrupt(t *testing.T) {
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].EnableSleepMode = false
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      1,
-		MaxConcurrency:  []int{1},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
 	ApplyDefaults(&spec)
 	type result struct {
 		summary RunSummary
@@ -884,17 +893,7 @@ func TestExecuteHonorsStopManagedOnExitFalse(t *testing.T) {
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].EnableSleepMode = false
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      1,
-		MaxConcurrency:  []int{1},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
 	ApplyDefaults(&spec)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	defer shutdownFakeServer(spec.Profiles[0].Port)
@@ -930,17 +929,7 @@ func TestExecuteFailsWhenSleepFails(t *testing.T) {
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].Env = map[string]string{"FAKE_SLEEP_FAIL": "1"}
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      1,
-		MaxConcurrency:  []int{1},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
 	ApplyDefaults(&spec)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err == nil || !strings.Contains(err.Error(), "sleep failed") {
@@ -968,17 +957,7 @@ func TestExecuteFinalizesArtifactsWhenPrebootFails(t *testing.T) {
 	spec.Profiles = spec.Profiles[:1]
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].Env = map[string]string{"FAKE_SLEEP_FAIL": "1"}
-	spec.Workloads = []Workload{{
-		Name:            "fake-random",
-		Profiles:        []string{spec.Profiles[0].Name},
-		Backend:         "openai-chat",
-		DatasetName:     "random",
-		RandomInputLen:  128,
-		RandomOutputLen: 16,
-		NumPrompts:      1,
-		MaxConcurrency:  []int{1},
-		RequestRate:     "inf",
-	}}
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
 	ApplyDefaults(&spec)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err == nil || !strings.Contains(err.Error(), "preboot profiles failed") {
@@ -1030,6 +1009,42 @@ func TestBuildReportEnrichesFromSpec(t *testing.T) {
 	row := report.Rows[0]
 	if row.Context != 8192 || row.RandomInputLen != 8192 || row.RandomOutputLen != 16 || row.DatasetName != "random" {
 		t.Fatalf("row was not enriched from spec: %+v", row)
+	}
+}
+
+func TestBuildReportEnrichesGenericLengthsFromSpec(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{{
+		Name:     "sonnet-prefill",
+		Profiles: []string{"8k"},
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "sonnet",
+			SonnetInputLen:  4096,
+			SonnetOutputLen: 32,
+			RequestRate:     "inf",
+		},
+		NumPrompts:     4,
+		MaxConcurrency: []int{2},
+	}}
+	ApplyDefaults(&spec)
+	runDir := t.TempDir()
+	if err := writeJSONFile(filepath.Join(runDir, "spec.normalized.json"), spec); err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(runDir, "results", "8k__sonnet-prefill__c2.json")
+	writeFile(t, resultPath, `{"completed":4,"failed":0,"output_throughput":80}`)
+	writeFile(t, filepath.Join(runDir, "events.jsonl"), `{"timestamp":"2026-06-26T00:00:00Z","type":"workload_finish","profile":"8k","workload":"sonnet-prefill","concurrency":2,"result_file":"results/8k__sonnet-prefill__c2.json"}`+"\n")
+	report, err := BuildReport(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(report.Rows))
+	}
+	row := report.Rows[0]
+	if row.InputLen != 4096 || row.OutputLen != 32 || row.DisplayInputLen() != 4096 || row.DisplayOutputLen() != 32 {
+		t.Fatalf("row was not enriched with generic lengths: %+v", row)
 	}
 }
 
@@ -1141,21 +1156,39 @@ func testSpec() Spec {
 		},
 		Workloads: []Workload{
 			{
-				Name:            "prefill-8k",
-				Profiles:        []string{"8k"},
-				Backend:         "openai-chat",
-				DatasetName:     "random",
-				RandomInputLen:  8192,
-				RandomOutputLen: 16,
-				NumPrompts:      8,
-				MaxConcurrency:  []int{4, 8},
-				RequestRate:     "inf",
-				Temperature:     &temp,
+				Name:     "prefill-8k",
+				Profiles: []string{"8k"},
+				BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+					Backend:         "openai-chat",
+					DatasetName:     "random",
+					RandomInputLen:  8192,
+					RandomOutputLen: 16,
+					RequestRate:     "inf",
+				},
+				NumPrompts:     8,
+				MaxConcurrency: []int{4, 8},
+				Temperature:    &temp,
 			},
 		},
 	}
 	ApplyDefaults(&spec)
 	return spec
+}
+
+func testRandomWorkload(name string, profiles []string, inputLen, outputLen, numPrompts int, concurrencies []int) Workload {
+	return Workload{
+		Name:     name,
+		Profiles: profiles,
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "random",
+			RandomInputLen:  inputLen,
+			RandomOutputLen: outputLen,
+			RequestRate:     "inf",
+		},
+		NumPrompts:     numPrompts,
+		MaxConcurrency: concurrencies,
+	}
 }
 
 func writeFile(t *testing.T, path, content string) {

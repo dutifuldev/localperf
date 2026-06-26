@@ -33,6 +33,8 @@ type ReportRow struct {
 	Context             int     `json:"context,omitempty"`
 	ServerMaxNumSeqs    int     `json:"server_max_num_seqs,omitempty"`
 	Concurrency         int     `json:"concurrency,omitempty"`
+	InputLen            int     `json:"input_len,omitempty"`
+	OutputLen           int     `json:"output_len,omitempty"`
 	RandomInputLen      int     `json:"random_input_len,omitempty"`
 	RandomOutputLen     int     `json:"random_output_len,omitempty"`
 	Completed           int     `json:"completed,omitempty"`
@@ -180,11 +182,19 @@ func enrichRowFromEvent(row *ReportRow, event Event, spec *Spec) {
 		if row.DatasetName == "" {
 			row.DatasetName = workload.DatasetName
 		}
-		if row.RandomInputLen == 0 {
-			row.RandomInputLen = workload.RandomInputLen
+		if workload.DatasetName == "random" {
+			if row.RandomInputLen == 0 {
+				row.RandomInputLen = workload.RandomInputLen
+			}
+			if row.RandomOutputLen == 0 {
+				row.RandomOutputLen = workload.RandomOutputLen
+			}
 		}
-		if row.RandomOutputLen == 0 {
-			row.RandomOutputLen = workload.RandomOutputLen
+		if row.InputLen == 0 {
+			row.InputLen = trafficInputLen(workload.BenchmarkTrafficConfig)
+		}
+		if row.OutputLen == 0 {
+			row.OutputLen = trafficOutputLen(workload.BenchmarkTrafficConfig)
 		}
 		break
 	}
@@ -219,8 +229,8 @@ func RenderMarkdown(report Report) string {
 			cell(row.DatasetName),
 			intCell(row.Context),
 			intCell(row.Concurrency),
-			intCell(row.RandomInputLen),
-			intCell(row.RandomOutputLen),
+			intCell(row.DisplayInputLen()),
+			intCell(row.DisplayOutputLen()),
 			row.Completed,
 			row.Failed,
 			floatCell(row.OutputTokensPerSec),
@@ -257,6 +267,8 @@ func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 			Context:            intValue(raw, "max_model_len"),
 			ServerMaxNumSeqs:   intValue(raw, "server_max_num_seqs"),
 			Concurrency:        intValue(raw, "max_concurrency"),
+			InputLen:           firstInt(raw, "input_len", "prompt_len", "random_input_len"),
+			OutputLen:          firstInt(raw, "output_len", "max_tokens", "random_output_len"),
 			RandomInputLen:     intValue(raw, "random_input_len"),
 			RandomOutputLen:    intValue(raw, "random_output_len"),
 			Completed:          firstInt(raw, "completed", "ok", "successes"),
@@ -275,12 +287,6 @@ func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 		if row.Concurrency == 0 {
 			row.Concurrency = intValue(raw, "concurrency")
 		}
-		if row.RandomInputLen == 0 {
-			row.RandomInputLen = intValue(raw, "prompt_len")
-		}
-		if row.RandomOutputLen == 0 {
-			row.RandomOutputLen = intValue(raw, "max_tokens")
-		}
 		if row.DatasetName == "" {
 			row.DatasetName = stringValue(raw, "dataset")
 		}
@@ -291,9 +297,64 @@ func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 }
 
 func deriveReportRowFields(row *ReportRow) {
+	if row.InputLen == 0 {
+		row.InputLen = row.RandomInputLen
+	}
+	if row.OutputLen == 0 {
+		row.OutputLen = row.RandomOutputLen
+	}
 	if row.Concurrency > 0 && row.OutputTokensPerSec > 0 {
 		row.PerUserOutputTokSec = row.OutputTokensPerSec / float64(row.Concurrency)
 	}
+}
+
+func (row ReportRow) DisplayInputLen() int {
+	if row.InputLen != 0 {
+		return row.InputLen
+	}
+	return row.RandomInputLen
+}
+
+func (row ReportRow) DisplayOutputLen() int {
+	if row.OutputLen != 0 {
+		return row.OutputLen
+	}
+	return row.RandomOutputLen
+}
+
+func trafficInputLen(traffic BenchmarkTrafficConfig) int {
+	switch traffic.DatasetName {
+	case "random":
+		return traffic.RandomInputLen
+	case "sonnet":
+		return traffic.SonnetInputLen
+	case "prefix_repetition":
+		return traffic.PrefixRepetitionPrefixLen + traffic.PrefixRepetitionSuffixLen
+	default:
+		return 0
+	}
+}
+
+func trafficOutputLen(traffic BenchmarkTrafficConfig) int {
+	switch traffic.DatasetName {
+	case "random":
+		return traffic.RandomOutputLen
+	case "custom":
+		if traffic.CustomOutputLen != nil && *traffic.CustomOutputLen > 0 {
+			return *traffic.CustomOutputLen
+		}
+	case "sharegpt":
+		if traffic.ShareGPTOutputLen != nil {
+			return *traffic.ShareGPTOutputLen
+		}
+	case "sonnet":
+		return traffic.SonnetOutputLen
+	case "prefix_repetition":
+		return traffic.PrefixRepetitionOutputLen
+	case "speed_bench":
+		return traffic.SpeedBenchOutputLen
+	}
+	return 0
 }
 
 func parseResultDirectory(dir string) ([]ReportRow, error) {
