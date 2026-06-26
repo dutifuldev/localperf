@@ -260,6 +260,106 @@ func TestExecuteWithFakeVLLMEndToEnd(t *testing.T) {
 	}
 }
 
+func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-request-failure"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Env["FAKE_BENCH_FAILED"] = "1"
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{{
+		Name:            "fake-random",
+		Profiles:        []string{spec.Profiles[0].Name},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  128,
+		RandomOutputLen: 16,
+		NumPrompts:      2,
+		MaxConcurrency:  []int{2},
+		RequestRate:     "inf",
+	}}
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
+		t.Fatalf("Execute error = %v, want failed benchmark run", err)
+	}
+	if summary.CompletedRuns != 0 || summary.FailedRuns != 1 {
+		t.Fatalf("summary = %+v, want failed workload", summary)
+	}
+	events, err := os.ReadFile(filepath.Join(summary.RunDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(events), "failed request") {
+		t.Fatalf("events did not record failed request:\n%s", events)
+	}
+	report, err := BuildReport(summary.RunDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].Failed != 1 {
+		t.Fatalf("report rows = %+v, want failed request row", report.Rows)
+	}
+}
+
+func TestExecuteHonorsStopManagedOnExitFalse(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-keepalive"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	stopManaged := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.StopManagedOnExit = &stopManaged
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{{
+		Name:            "fake-random",
+		Profiles:        []string{spec.Profiles[0].Name},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  128,
+		RandomOutputLen: 16,
+		NumPrompts:      1,
+		MaxConcurrency:  []int{1},
+		RequestRate:     "inf",
+	}}
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	defer shutdownFakeServer(spec.Profiles[0].Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.CompletedRuns != 1 || summary.FailedRuns != 0 {
+		t.Fatalf("summary = %+v, want one completed run", summary)
+	}
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", spec.Profiles[0].Port))
+	if err != nil {
+		t.Fatalf("expected managed server to remain alive: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestExecuteFailsWhenSleepFails(t *testing.T) {
 	spec := testSpec()
 	spec.Name = "fake-vllm-sleep-failure"
@@ -514,6 +614,7 @@ func runFakeServe(args []string) {
 	}
 	var sleeping atomic.Bool
 	mux := http.NewServeMux()
+	var server *http.Server
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
 	})
@@ -532,7 +633,15 @@ func runFakeServe(args []string) {
 		sleeping.Store(false)
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
-	server := &http.Server{Addr: "127.0.0.1:" + port, Handler: mux}
+	mux.HandleFunc("/shutdown", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = server.Shutdown(ctx)
+		}()
+	})
+	server = &http.Server{Addr: "127.0.0.1:" + port, Handler: mux}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
@@ -563,13 +672,20 @@ func runFakeBench(args []string) {
 	if numPrompts <= 0 {
 		numPrompts = concurrency
 	}
+	failed, _ := strconv.Atoi(os.Getenv("FAKE_BENCH_FAILED"))
+	if failed < 0 {
+		failed = 0
+	}
+	if failed > numPrompts {
+		failed = numPrompts
+	}
 	if err := os.MkdirAll(filepath.Dir(resultPath), 0o755); err != nil {
 		os.Exit(1)
 	}
 	row := map[string]any{
 		"max_concurrency":        concurrency,
-		"completed":              numPrompts,
-		"failed":                 0,
+		"completed":              numPrompts - failed,
+		"failed":                 failed,
 		"duration":               1.0,
 		"output_throughput":      float64(concurrency * 10),
 		"total_token_throughput": float64(concurrency * 12),
@@ -588,6 +704,25 @@ func flagValue(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func shutdownFakeServer(port int) {
+	client := &http.Client{Timeout: time.Second}
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/shutdown", port), nil)
+	if err == nil {
+		if resp, err := client.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", port))
+		if err != nil {
+			return
+		}
+		_ = resp.Body.Close()
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func freeTestPort() int {

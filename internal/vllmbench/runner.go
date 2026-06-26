@@ -125,7 +125,9 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 	}
 
 	processes := map[string]*serverProcess{}
-	defer stopAll(processes)
+	if shouldStopManaged(spec) {
+		defer stopAll(processes)
+	}
 	if spec.Runner.PrebootProfiles {
 		if err := prebootProfiles(ctx, spec, runDir, plan, events, processes); err != nil {
 			summary.FailedRuns += remainingUnaccountedRuns(summary)
@@ -465,6 +467,9 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	row.RandomOutputLen = planned.Workload.RandomOutputLen
 	row.DatasetName = planned.Workload.DatasetName
 	row.ResultFile = planned.ResultFile
+	if row.Failed > 0 {
+		return &row, fmt.Errorf("benchmark result reported %d failed request(s)", row.Failed)
+	}
 	return &row, nil
 }
 
