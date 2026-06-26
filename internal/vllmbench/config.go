@@ -1,0 +1,380 @@
+package vllmbench
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+const DefaultHealthPath = "/v1/models"
+
+type Spec struct {
+	Version     string            `json:"version"`
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Model       string            `json:"model"`
+	OutputDir   string            `json:"output_dir,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	Runner      RunnerConfig      `json:"runner"`
+	Safety      SafetyConfig      `json:"safety"`
+	Warmup      WarmupConfig      `json:"warmup,omitempty"`
+	Profiles    []Profile         `json:"profiles"`
+	Workloads   []Workload        `json:"workloads"`
+}
+
+type RunnerConfig struct {
+	VLLMCommand          string `json:"vllm_command,omitempty"`
+	VLLMBenchCommand     string `json:"vllm_bench_command,omitempty"`
+	OneAwakeProfile      *bool  `json:"one_awake_profile,omitempty"`
+	PrebootProfiles      bool   `json:"preboot_profiles,omitempty"`
+	StopManagedOnExit    *bool  `json:"stop_managed_on_exit,omitempty"`
+	AppendTimestampToRun *bool  `json:"append_timestamp_to_run,omitempty"`
+}
+
+type SafetyConfig struct {
+	MinMemAvailableGiB float64 `json:"min_mem_available_gib"`
+	PollIntervalMillis int     `json:"poll_interval_millis,omitempty"`
+	StartupTimeoutSec  int     `json:"startup_timeout_sec,omitempty"`
+	WorkloadTimeoutSec int     `json:"workload_timeout_sec,omitempty"`
+	HTTPTimeoutSec     int     `json:"http_timeout_sec,omitempty"`
+}
+
+type WarmupConfig struct {
+	Enabled         bool     `json:"enabled"`
+	DatasetName     string   `json:"dataset_name,omitempty"`
+	Backend         string   `json:"backend,omitempty"`
+	Endpoint        string   `json:"endpoint,omitempty"`
+	RandomInputLen  int      `json:"random_input_len,omitempty"`
+	RandomOutputLen int      `json:"random_output_len,omitempty"`
+	NumPrompts      int      `json:"num_prompts,omitempty"`
+	MaxConcurrency  int      `json:"max_concurrency,omitempty"`
+	RequestRate     string   `json:"request_rate,omitempty"`
+	ExtraArgs       []string `json:"extra_args,omitempty"`
+}
+
+type Profile struct {
+	Name                 string            `json:"name"`
+	Model                string            `json:"model,omitempty"`
+	Host                 string            `json:"host,omitempty"`
+	Port                 int               `json:"port"`
+	Managed              bool              `json:"managed"`
+	EnableSleepMode      bool              `json:"enable_sleep_mode,omitempty"`
+	SleepLevel           int               `json:"sleep_level,omitempty"`
+	HealthPath           string            `json:"health_path,omitempty"`
+	MaxModelLen          int               `json:"max_model_len,omitempty"`
+	MaxNumSeqs           int               `json:"max_num_seqs,omitempty"`
+	MaxNumBatchedTokens  int               `json:"max_num_batched_tokens,omitempty"`
+	GPUMemoryUtilization float64           `json:"gpu_memory_utilization,omitempty"`
+	KVCacheDType         string            `json:"kv_cache_dtype,omitempty"`
+	AttentionBackend     string            `json:"attention_backend,omitempty"`
+	MoEBackend           string            `json:"moe_backend,omitempty"`
+	Env                  map[string]string `json:"env,omitempty"`
+	Args                 []string          `json:"args,omitempty"`
+}
+
+type Workload struct {
+	Name            string   `json:"name"`
+	Profiles        []string `json:"profiles,omitempty"`
+	Backend         string   `json:"backend,omitempty"`
+	Endpoint        string   `json:"endpoint,omitempty"`
+	DatasetName     string   `json:"dataset_name"`
+	RandomInputLen  int      `json:"random_input_len,omitempty"`
+	RandomOutputLen int      `json:"random_output_len,omitempty"`
+	NumPrompts      int      `json:"num_prompts"`
+	MaxConcurrency  []int    `json:"max_concurrency"`
+	RequestRate     string   `json:"request_rate,omitempty"`
+	IgnoreEOS       bool     `json:"ignore_eos,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
+	ExtraArgs       []string `json:"extra_args,omitempty"`
+}
+
+type PlannedRun struct {
+	Profile     Profile  `json:"profile"`
+	Workload    Workload `json:"workload"`
+	Concurrency int      `json:"concurrency"`
+	ResultFile  string   `json:"result_file"`
+}
+
+func LoadSpec(path string) (Spec, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Spec{}, err
+	}
+	var spec Spec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return Spec{}, err
+	}
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		return Spec{}, err
+	}
+	return spec, nil
+}
+
+func ApplyDefaults(spec *Spec) {
+	if strings.TrimSpace(spec.Runner.VLLMCommand) == "" {
+		spec.Runner.VLLMCommand = "vllm"
+	}
+	if strings.TrimSpace(spec.Runner.VLLMBenchCommand) == "" {
+		spec.Runner.VLLMBenchCommand = "vllm"
+	}
+	if spec.Runner.OneAwakeProfile == nil {
+		yes := true
+		spec.Runner.OneAwakeProfile = &yes
+	}
+	if spec.Runner.StopManagedOnExit == nil {
+		yes := true
+		spec.Runner.StopManagedOnExit = &yes
+	}
+	if spec.Runner.AppendTimestampToRun == nil {
+		yes := true
+		spec.Runner.AppendTimestampToRun = &yes
+	}
+	if spec.Safety.PollIntervalMillis <= 0 {
+		spec.Safety.PollIntervalMillis = 1000
+	}
+	if spec.Safety.StartupTimeoutSec <= 0 {
+		spec.Safety.StartupTimeoutSec = 900
+	}
+	if spec.Safety.WorkloadTimeoutSec <= 0 {
+		spec.Safety.WorkloadTimeoutSec = 1800
+	}
+	if spec.Safety.HTTPTimeoutSec <= 0 {
+		spec.Safety.HTTPTimeoutSec = 15
+	}
+	for i := range spec.Profiles {
+		profile := &spec.Profiles[i]
+		if strings.TrimSpace(profile.Model) == "" {
+			profile.Model = spec.Model
+		}
+		if strings.TrimSpace(profile.Host) == "" {
+			profile.Host = "127.0.0.1"
+		}
+		if strings.TrimSpace(profile.HealthPath) == "" {
+			profile.HealthPath = DefaultHealthPath
+		}
+		if profile.SleepLevel == 0 {
+			profile.SleepLevel = 2
+		}
+	}
+	if spec.Warmup.Enabled {
+		if strings.TrimSpace(spec.Warmup.DatasetName) == "" {
+			spec.Warmup.DatasetName = "random"
+		}
+		if strings.TrimSpace(spec.Warmup.Backend) == "" {
+			spec.Warmup.Backend = "openai-chat"
+		}
+		if strings.TrimSpace(spec.Warmup.Endpoint) == "" {
+			spec.Warmup.Endpoint = defaultEndpoint(spec.Warmup.Backend)
+		}
+		if spec.Warmup.RandomInputLen <= 0 {
+			spec.Warmup.RandomInputLen = 256
+		}
+		if spec.Warmup.RandomOutputLen <= 0 {
+			spec.Warmup.RandomOutputLen = 16
+		}
+		if spec.Warmup.NumPrompts <= 0 {
+			spec.Warmup.NumPrompts = 4
+		}
+		if spec.Warmup.MaxConcurrency <= 0 {
+			spec.Warmup.MaxConcurrency = 1
+		}
+		if strings.TrimSpace(spec.Warmup.RequestRate) == "" {
+			spec.Warmup.RequestRate = "inf"
+		}
+	}
+	for i := range spec.Workloads {
+		workload := &spec.Workloads[i]
+		if strings.TrimSpace(workload.Backend) == "" {
+			workload.Backend = "openai-chat"
+		}
+		if strings.TrimSpace(workload.Endpoint) == "" {
+			workload.Endpoint = defaultEndpoint(workload.Backend)
+		}
+		if strings.TrimSpace(workload.RequestRate) == "" {
+			workload.RequestRate = "inf"
+		}
+	}
+}
+
+func defaultEndpoint(backend string) string {
+	switch backend {
+	case "openai-chat":
+		return "/v1/chat/completions"
+	case "openai":
+		return "/v1/completions"
+	default:
+		return ""
+	}
+}
+
+func ValidateSpec(spec Spec) error {
+	var issues []string
+	if strings.TrimSpace(spec.Name) == "" {
+		issues = append(issues, "name is required")
+	}
+	if strings.TrimSpace(spec.Model) == "" {
+		issues = append(issues, "model is required")
+	}
+	if spec.Safety.MinMemAvailableGiB <= 0 {
+		issues = append(issues, "safety.min_mem_available_gib must be positive")
+	}
+	profileNames := map[string]bool{}
+	if len(spec.Profiles) == 0 {
+		issues = append(issues, "at least one profile is required")
+	}
+	for i, profile := range spec.Profiles {
+		prefix := fmt.Sprintf("profiles[%d]", i)
+		if strings.TrimSpace(profile.Name) == "" {
+			issues = append(issues, prefix+": name is required")
+		}
+		if profileNames[profile.Name] {
+			issues = append(issues, prefix+": duplicate profile name "+profile.Name)
+		}
+		profileNames[profile.Name] = true
+		if profile.Port <= 0 {
+			issues = append(issues, prefix+": port must be positive")
+		}
+		if strings.TrimSpace(profile.Model) == "" {
+			issues = append(issues, prefix+": model is required")
+		}
+		if profile.Managed {
+			if profile.MaxModelLen <= 0 {
+				issues = append(issues, prefix+": max_model_len must be positive for managed profiles")
+			}
+			if profile.MaxNumSeqs <= 0 {
+				issues = append(issues, prefix+": max_num_seqs must be positive for managed profiles")
+			}
+		}
+		if profile.SleepLevel < 0 || profile.SleepLevel > 2 {
+			issues = append(issues, prefix+": sleep_level must be 0, 1, or 2")
+		}
+	}
+	if len(spec.Workloads) == 0 {
+		issues = append(issues, "at least one workload is required")
+	}
+	workloadNames := map[string]bool{}
+	for i, workload := range spec.Workloads {
+		prefix := fmt.Sprintf("workloads[%d]", i)
+		if strings.TrimSpace(workload.Name) == "" {
+			issues = append(issues, prefix+": name is required")
+		}
+		if workloadNames[workload.Name] {
+			issues = append(issues, prefix+": duplicate workload name "+workload.Name)
+		}
+		workloadNames[workload.Name] = true
+		if strings.TrimSpace(workload.DatasetName) == "" {
+			issues = append(issues, prefix+": dataset_name is required")
+		}
+		if workload.NumPrompts <= 0 {
+			issues = append(issues, prefix+": num_prompts must be positive")
+		}
+		if len(workload.MaxConcurrency) == 0 {
+			issues = append(issues, prefix+": max_concurrency must not be empty")
+		}
+		for _, concurrency := range workload.MaxConcurrency {
+			if concurrency <= 0 {
+				issues = append(issues, prefix+": max_concurrency values must be positive")
+			}
+		}
+		for _, profileName := range workload.Profiles {
+			if !profileNames[profileName] {
+				issues = append(issues, prefix+": unknown profile "+profileName)
+			}
+		}
+		if workload.DatasetName == "random" {
+			if workload.RandomInputLen <= 0 {
+				issues = append(issues, prefix+": random_input_len must be positive for random dataset")
+			}
+			if workload.RandomOutputLen <= 0 {
+				issues = append(issues, prefix+": random_output_len must be positive for random dataset")
+			}
+		}
+	}
+	if len(issues) > 0 {
+		return errors.New(strings.Join(issues, "\n"))
+	}
+	return nil
+}
+
+func BuildPlan(spec Spec, runDir string) []PlannedRun {
+	profiles := map[string]Profile{}
+	for _, profile := range spec.Profiles {
+		profiles[profile.Name] = profile
+	}
+	var runs []PlannedRun
+	for _, workload := range spec.Workloads {
+		names := workload.Profiles
+		if len(names) == 0 {
+			names = sortedProfileNames(profiles)
+		}
+		for _, profileName := range names {
+			profile := profiles[profileName]
+			for _, concurrency := range workload.MaxConcurrency {
+				runs = append(runs, PlannedRun{
+					Profile:     profile,
+					Workload:    workload,
+					Concurrency: concurrency,
+					ResultFile:  ResultPath(runDir, profile.Name, workload.Name, concurrency),
+				})
+			}
+		}
+	}
+	return runs
+}
+
+func RunDir(base string, spec Spec, now time.Time) string {
+	if strings.TrimSpace(base) != "" {
+		return base
+	}
+	parent := strings.TrimSpace(spec.OutputDir)
+	if parent == "" {
+		parent = "runs"
+	}
+	name := Slug(spec.Name)
+	if name == "" {
+		name = "vllm-bench"
+	}
+	if spec.Runner.AppendTimestampToRun == nil || *spec.Runner.AppendTimestampToRun {
+		name += "-" + now.UTC().Format("20060102T150405Z")
+	}
+	return filepath.Join(parent, name)
+}
+
+func ResultPath(runDir, profileName, workloadName string, concurrency int) string {
+	name := fmt.Sprintf("%s__%s__c%d.json", Slug(profileName), Slug(workloadName), concurrency)
+	return filepath.Join(runDir, "results", name)
+}
+
+func sortedProfileNames(profiles map[string]Profile) []string {
+	names := make([]string, 0, len(profiles))
+	for name := range profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func Slug(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	var out strings.Builder
+	lastDash := false
+	for _, r := range text {
+		isAlnum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if isAlnum {
+			out.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			out.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(out.String(), "-")
+}

@@ -1,0 +1,6 @@
+{"timestamp":"2026-06-26T18:49:12Z","type":"workload_finish","profile":"4k-reference","workload":"claim-repro-1k-out1024","concurrency":1,"result_file":"results/4k-reference__claim-repro-1k-out1024__c1.json"}
+{"timestamp":"2026-06-26T18:51:24Z","type":"workload_finish","profile":"4k-reference","workload":"claim-repro-1k-out1024","concurrency":4,"result_file":"results/4k-reference__claim-repro-1k-out1024__c4.json"}
+{"timestamp":"2026-06-26T19:06:50Z","type":"workload_finish","profile":"4k-reference","workload":"claim-repro-1k-out1024","concurrency":20,"result_file":"results/4k-reference__claim-repro-1k-out1024__c20.json"}
+{"timestamp":"2026-06-26T20:00:00Z","type":"workload_finish","profile":"8k","workload":"decode-short-eos","concurrency":4,"result_file":"results/8k__decode-short-eos__c4.json"}
+{"timestamp":"2026-06-26T20:01:00Z","type":"workload_finish","profile":"8k","workload":"decode-short-eos","concurrency":8,"result_file":"results/8k__decode-short-eos__c8.json"}
+{"timestamp":"2026-06-26T20:02:00Z","type":"workload_finish","profile":"8k","workload":"decode-short-eos","concurrency":16,"result_file":"results/8k__decode-short-eos__c16.json"}

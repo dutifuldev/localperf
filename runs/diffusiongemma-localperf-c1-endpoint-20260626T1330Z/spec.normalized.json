@@ -1,0 +1,54 @@
+{
+  "version": "1",
+  "name": "diffusiongemma-localperf-c1-endpoint-20260626T1330Z",
+  "model": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
+  "runner": {
+    "vllm_command": "vllm",
+    "vllm_bench_command": "vllm",
+    "one_awake_profile": true,
+    "preboot_profiles": false,
+    "stop_managed_on_exit": true,
+    "append_timestamp_to_run": false
+  },
+  "safety": {
+    "min_mem_available_gib": 40,
+    "poll_interval_millis": 1000,
+    "startup_timeout_sec": 900,
+    "workload_timeout_sec": 2400,
+    "http_timeout_sec": 15
+  },
+  "profiles": [
+    {
+      "name": "4k-reference",
+      "model": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
+      "host": "127.0.0.1",
+      "port": 8104,
+      "managed": true,
+      "enable_sleep_mode": true,
+      "sleep_level": 2,
+      "health_path": "/v1/models",
+      "max_model_len": 4096,
+      "max_num_seqs": 20,
+      "max_num_batched_tokens": 8192,
+      "gpu_memory_utilization": 0.3,
+      "attention_backend": "TRITON_ATTN",
+      "moe_backend": "cutlass"
+    }
+  ],
+  "workloads": [
+    {
+      "name": "claim-repro-1k-out1024",
+      "profiles": ["4k-reference"],
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "random_input_len": 1000,
+      "random_output_len": 1024,
+      "num_prompts": 20,
+      "max_concurrency": [1],
+      "request_rate": "inf",
+      "ignore_eos": true,
+      "temperature": 0
+    }
+  ]
+}
