@@ -97,6 +97,14 @@ func TestValidateSpecRejectsDuplicateConcurrencyValues(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsDuplicateWorkloadProfileReferences(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads[0].Profiles = []string{"8k", "8k"}
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "duplicate profile reference") {
+		t.Fatalf("ValidateSpec error = %v, want duplicate profile reference issue", err)
+	}
+}
+
 func TestApplyDefaultsHonorsSleepLevelZero(t *testing.T) {
 	spec := testSpec()
 	spec.Profiles[0].SleepLevel = 0
@@ -520,6 +528,57 @@ func TestExecuteWarmsPrebootedProfileAfterWake(t *testing.T) {
 	}
 }
 
+func TestExecuteStopsPrebootedProfileAfterWakeFailure(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-preboot-wake-failure"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.PrebootProfiles = true
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].Env = map[string]string{"FAKE_WAKE_FAIL": "1"}
+	spec.Workloads = []Workload{{
+		Name:            "fake-random",
+		Profiles:        []string{spec.Profiles[0].Name},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  128,
+		RandomOutputLen: 16,
+		NumPrompts:      1,
+		MaxConcurrency:  []int{1},
+		RequestRate:     "inf",
+	}}
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
+		t.Fatalf("Execute error = %v, want failed benchmark run", err)
+	}
+	if summary.CompletedRuns != 0 || summary.FailedRuns != 1 {
+		t.Fatalf("summary = %+v, want failed profile run", summary)
+	}
+	events, err := os.ReadFile(filepath.Join(summary.RunDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(events), `"type":"profile_failed"`) || !strings.Contains(string(events), "wake failed") {
+		t.Fatalf("events did not record wake failure:\n%s", events)
+	}
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", spec.Profiles[0].Port))
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("expected prebooted server to be stopped after wake failure, got HTTP %d", resp.StatusCode)
+	}
+}
+
 func TestStopProcessUsesSavedProcessGroupAfterParentExit(t *testing.T) {
 	childFile := filepath.Join(t.TempDir(), "child.pid")
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 60 & echo $! > %s", shellSingleQuote(childFile)))
@@ -901,6 +960,10 @@ func runFakeServe(args []string) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 	mux.HandleFunc("/wake_up", func(w http.ResponseWriter, _ *http.Request) {
+		if os.Getenv("FAKE_WAKE_FAIL") == "1" {
+			http.Error(w, "wake failed", http.StatusInternalServerError)
+			return
+		}
 		sleeping.Store(false)
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})

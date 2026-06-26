@@ -314,7 +314,12 @@ func ValidateSpec(spec Spec) error {
 			}
 			seenConcurrency[concurrency] = true
 		}
+		seenProfileRefs := map[string]bool{}
 		for _, profileName := range workload.Profiles {
+			if seenProfileRefs[profileName] {
+				issues = append(issues, prefix+": duplicate profile reference "+profileName)
+			}
+			seenProfileRefs[profileName] = true
 			if !profileNames[profileName] {
 				issues = append(issues, prefix+": unknown profile "+profileName)
 			}

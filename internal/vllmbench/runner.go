@@ -161,6 +161,10 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 			if err := wakeProfile(ctx, spec, profile, events); err != nil {
 				summary.FailedRuns += len(runs)
 				events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
+				if proc != nil {
+					stopProcess(proc)
+					delete(processes, profile.Name)
+				}
 				continue
 			}
 			if spec.Warmup.Enabled {
