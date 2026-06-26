@@ -180,22 +180,40 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 				}
 			}
 		}
-		for _, planned := range runs {
+		profileAborted := false
+		for i, planned := range runs {
 			if err := checkMemoryEvent(spec, events, "before_workload", planned.Profile.Name); err != nil {
 				summary.FailedRuns++
 				events.Write(Event{Timestamp: time.Now().UTC(), Type: "workload_skipped", Profile: planned.Profile.Name, Workload: planned.Workload.Name, Concurrency: planned.Concurrency, Error: err.Error()})
+				if IsMemoryFloorError(err) {
+					remaining := len(runs) - i - 1
+					summary.FailedRuns += remaining
+					stopProfileAfterMemoryFloor(events, profile, proc, processes, remaining)
+					profileAborted = true
+					break
+				}
 				continue
 			}
 			result, err := executeBench(ctx, spec, planned, runDir, events)
 			if err != nil {
 				summary.FailedRuns++
 				events.Write(Event{Timestamp: time.Now().UTC(), Type: "workload_failed", Profile: planned.Profile.Name, Workload: planned.Workload.Name, Concurrency: planned.Concurrency, Error: err.Error()})
+				if IsMemoryFloorError(err) {
+					remaining := len(runs) - i - 1
+					summary.FailedRuns += remaining
+					stopProfileAfterMemoryFloor(events, profile, proc, processes, remaining)
+					profileAborted = true
+					break
+				}
 				continue
 			}
 			summary.CompletedRuns++
 			if result != nil {
 				summary.Rows = append(summary.Rows, *result)
 			}
+		}
+		if profileAborted {
+			continue
 		}
 		if profile.EnableSleepMode {
 			if err := sleepProfile(ctx, spec, profile, events); err != nil {
@@ -381,7 +399,7 @@ func waitReady(ctx context.Context, spec Spec, profile Profile, events *eventWri
 			default:
 			}
 		}
-		if snapshot, err := CheckMemoryFloor(spec.Safety.MinMemAvailableGiB); err != nil {
+		if snapshot, err := checkMemoryFloor(spec.Safety.MinMemAvailableGiB); err != nil {
 			events.Write(Event{
 				Timestamp:       time.Now().UTC(),
 				Type:            "startup_memory_floor",
@@ -585,7 +603,7 @@ func monitorMemoryFloor(ctx context.Context, cancel context.CancelFunc, minGiB f
 				done <- nil
 				return
 			case <-ticker.C:
-				if _, err := CheckMemoryFloor(minGiB); err != nil {
+				if _, err := checkMemoryFloor(minGiB); err != nil {
 					cancel()
 					done <- err
 					return
@@ -687,7 +705,7 @@ func postAdmin(ctx context.Context, spec Spec, url string) error {
 }
 
 func checkMemoryEvent(spec Spec, events *eventWriter, eventType, profile string) error {
-	snapshot, err := CheckMemoryFloor(spec.Safety.MinMemAvailableGiB)
+	snapshot, err := checkMemoryFloor(spec.Safety.MinMemAvailableGiB)
 	event := Event{Timestamp: time.Now().UTC(), Type: eventType, Profile: profile, MemAvailableGiB: snapshot.MemAvailableGiB}
 	if err != nil {
 		event.Error = err.Error()
@@ -795,6 +813,14 @@ func remainingRunsAfterProfile(profiles []Profile, plan []PlannedRun, profileNam
 
 func shouldStopManaged(spec Spec) bool {
 	return spec.Runner.StopManagedOnExit == nil || *spec.Runner.StopManagedOnExit
+}
+
+func stopProfileAfterMemoryFloor(events *eventWriter, profile Profile, proc *serverProcess, processes map[string]*serverProcess, remaining int) {
+	if proc != nil {
+		stopProcess(proc)
+		delete(processes, profile.Name)
+	}
+	events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_memory_floor_abort", Profile: profile.Name, Error: fmt.Sprintf("memory floor guard tripped; skipped %d remaining profile run(s)", remaining)})
 }
 
 func stopAll(processes map[string]*serverProcess) {

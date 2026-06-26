@@ -222,19 +222,31 @@ func ValidateSpec(spec Spec) error {
 		issues = append(issues, "safety.min_mem_available_gib must be positive")
 	}
 	profileNames := map[string]bool{}
+	profileSlugs := map[string]string{}
 	if len(spec.Profiles) == 0 {
 		issues = append(issues, "at least one profile is required")
 	}
 	oneAwakeProfile := spec.Runner.OneAwakeProfile == nil || *spec.Runner.OneAwakeProfile
 	for i, profile := range spec.Profiles {
 		prefix := fmt.Sprintf("profiles[%d]", i)
-		if strings.TrimSpace(profile.Name) == "" {
+		profileName := strings.TrimSpace(profile.Name)
+		if profileName == "" {
 			issues = append(issues, prefix+": name is required")
 		}
 		if profileNames[profile.Name] {
 			issues = append(issues, prefix+": duplicate profile name "+profile.Name)
 		}
 		profileNames[profile.Name] = true
+		if profileName != "" {
+			profileSlug := Slug(profileName)
+			if profileSlug == "" {
+				issues = append(issues, prefix+": name must contain at least one ASCII letter or digit")
+			} else if previous, ok := profileSlugs[profileSlug]; ok {
+				issues = append(issues, prefix+": profile name "+profile.Name+" collides with "+previous+" after slug normalization")
+			} else {
+				profileSlugs[profileSlug] = profile.Name
+			}
+		}
 		if profile.Port <= 0 {
 			issues = append(issues, prefix+": port must be positive")
 		}
@@ -260,15 +272,29 @@ func ValidateSpec(spec Spec) error {
 		issues = append(issues, "at least one workload is required")
 	}
 	workloadNames := map[string]bool{}
+	workloadSlugs := map[string]string{}
 	for i, workload := range spec.Workloads {
 		prefix := fmt.Sprintf("workloads[%d]", i)
-		if strings.TrimSpace(workload.Name) == "" {
+		workloadName := strings.TrimSpace(workload.Name)
+		if workloadName == "" {
 			issues = append(issues, prefix+": name is required")
 		}
 		if workloadNames[workload.Name] {
 			issues = append(issues, prefix+": duplicate workload name "+workload.Name)
 		}
 		workloadNames[workload.Name] = true
+		if workloadName != "" {
+			workloadSlug := Slug(workloadName)
+			if workloadSlug == "" {
+				issues = append(issues, prefix+": name must contain at least one ASCII letter or digit")
+			} else if workloadSlug == "warmup" {
+				issues = append(issues, prefix+": workload name warmup is reserved for warmup artifacts")
+			} else if previous, ok := workloadSlugs[workloadSlug]; ok {
+				issues = append(issues, prefix+": workload name "+workload.Name+" collides with "+previous+" after slug normalization")
+			} else {
+				workloadSlugs[workloadSlug] = workload.Name
+			}
+		}
 		if strings.TrimSpace(workload.DatasetName) == "" {
 			issues = append(issues, prefix+": dataset_name is required")
 		}
@@ -278,10 +304,15 @@ func ValidateSpec(spec Spec) error {
 		if len(workload.MaxConcurrency) == 0 {
 			issues = append(issues, prefix+": max_concurrency must not be empty")
 		}
+		seenConcurrency := map[int]bool{}
 		for _, concurrency := range workload.MaxConcurrency {
 			if concurrency <= 0 {
 				issues = append(issues, prefix+": max_concurrency values must be positive")
 			}
+			if seenConcurrency[concurrency] {
+				issues = append(issues, prefix+": duplicate max_concurrency value "+fmt.Sprint(concurrency))
+			}
+			seenConcurrency[concurrency] = true
 		}
 		for _, profileName := range workload.Profiles {
 			if !profileNames[profileName] {

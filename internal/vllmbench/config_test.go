@@ -68,6 +68,35 @@ func TestValidatePrebootOneAwakeRequiresSleepMode(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsProfileSlugCollisions(t *testing.T) {
+	spec := testSpec()
+	colliding := spec.Profiles[0]
+	colliding.Name = "8K"
+	colliding.Port = 8109
+	spec.Profiles = append(spec.Profiles, colliding)
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "collides") {
+		t.Fatalf("ValidateSpec error = %v, want slug collision issue", err)
+	}
+}
+
+func TestValidateSpecRejectsWorkloadSlugCollisions(t *testing.T) {
+	spec := testSpec()
+	colliding := spec.Workloads[0]
+	colliding.Name = "prefill/8k"
+	spec.Workloads = append(spec.Workloads, colliding)
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "collides") {
+		t.Fatalf("ValidateSpec error = %v, want slug collision issue", err)
+	}
+}
+
+func TestValidateSpecRejectsDuplicateConcurrencyValues(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads[0].MaxConcurrency = []int{4, 4}
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "duplicate max_concurrency") {
+		t.Fatalf("ValidateSpec error = %v, want duplicate concurrency issue", err)
+	}
+}
+
 func TestApplyDefaultsHonorsSleepLevelZero(t *testing.T) {
 	spec := testSpec()
 	spec.Profiles[0].SleepLevel = 0
@@ -333,6 +362,72 @@ func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
 	}
 	if len(report.Rows) != 1 || report.Rows[0].Failed != 1 {
 		t.Fatalf("report rows = %+v, want failed request row", report.Rows)
+	}
+}
+
+func TestExecuteStopsManagedProfileAfterWorkloadMemoryFloorAbort(t *testing.T) {
+	startFile := filepath.Join(t.TempDir(), "bench.started")
+	oldCheckMemoryFloor := checkMemoryFloor
+	checkMemoryFloor = func(minGiB float64) (MemorySnapshot, error) {
+		snapshot := MemorySnapshot{MemTotalGiB: 128, MemAvailableGiB: minGiB + 1}
+		if _, err := os.Stat(startFile); err == nil {
+			snapshot.MemAvailableGiB = minGiB - 1
+			return snapshot, &MemoryFloorError{Snapshot: snapshot, MinGiB: minGiB}
+		}
+		return snapshot, nil
+	}
+	defer func() {
+		checkMemoryFloor = oldCheckMemoryFloor
+	}()
+
+	spec := testSpec()
+	spec.Name = "fake-vllm-memory-floor-abort"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Env["FAKE_BENCH_STARTED_FILE"] = startFile
+	spec.Env["FAKE_BENCH_SLEEP_MS"] = "3000"
+	spec.Safety.MinMemAvailableGiB = 40
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{{
+		Name:            "fake-random",
+		Profiles:        []string{spec.Profiles[0].Name},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  128,
+		RandomOutputLen: 16,
+		NumPrompts:      1,
+		MaxConcurrency:  []int{1, 2},
+		RequestRate:     "inf",
+	}}
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
+		t.Fatalf("Execute error = %v, want failed benchmark run", err)
+	}
+	if summary.CompletedRuns != 0 || summary.FailedRuns != 2 {
+		t.Fatalf("summary = %+v, want current and remaining profile runs failed", summary)
+	}
+	events, err := os.ReadFile(filepath.Join(summary.RunDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(events), `"type":"profile_memory_floor_abort"`) {
+		t.Fatalf("events did not record profile memory-floor abort:\n%s", events)
+	}
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", spec.Profiles[0].Port))
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("expected managed server to be stopped after memory-floor abort, got HTTP %d", resp.StatusCode)
 	}
 }
 
@@ -653,6 +748,30 @@ func TestBuildReportResolvesCWDRelativeResultPathsWithAbsoluteRunDir(t *testing.
 	}
 }
 
+func TestBuildReportPrefersRunRelativeResultPaths(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	runDir := filepath.Join("runs", "foo")
+	resultPath := filepath.Join(runDir, "results", "p__w__c1.json")
+	cwdResultPath := filepath.Join("results", "p__w__c1.json")
+	writeFile(t, resultPath, `{"max_concurrency":1,"completed":1,"output_throughput":10}`)
+	writeFile(t, cwdResultPath, `{"max_concurrency":1,"completed":1,"output_throughput":999}`)
+	writeFile(t, filepath.Join(runDir, "events.jsonl"), `{"timestamp":"2026-06-26T00:00:00Z","type":"workload_finish","profile":"p","workload":"w","concurrency":1,"result_file":"results/p__w__c1.json"}`+"\n")
+	report, err := BuildReport(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(report.Rows))
+	}
+	if report.Rows[0].OutputTokensPerSec != 10 {
+		t.Fatalf("output throughput = %v, want run-relative result", report.Rows[0].OutputTokensPerSec)
+	}
+	if report.Rows[0].ResultFile != resultPath {
+		t.Fatalf("result path = %q, want %q", report.Rows[0].ResultFile, resultPath)
+	}
+}
+
 func testSpec() Spec {
 	temp := 0.0
 	oneAwake := true
@@ -815,6 +934,16 @@ func runFakeBench(args []string) {
 	resultPath := flagValue(args, "--result-filename")
 	if resultPath == "" {
 		os.Exit(2)
+	}
+	if startFile := os.Getenv("FAKE_BENCH_STARTED_FILE"); startFile != "" {
+		_ = os.MkdirAll(filepath.Dir(startFile), 0o755)
+		_ = os.WriteFile(startFile, []byte("1\n"), 0o644)
+	}
+	if rawSleepMillis := os.Getenv("FAKE_BENCH_SLEEP_MS"); rawSleepMillis != "" {
+		sleepMillis, _ := strconv.Atoi(rawSleepMillis)
+		if sleepMillis > 0 {
+			time.Sleep(time.Duration(sleepMillis) * time.Millisecond)
+		}
 	}
 	concurrency, _ := strconv.Atoi(flagValue(args, "--max-concurrency"))
 	numPrompts, _ := strconv.Atoi(flagValue(args, "--num-prompts"))

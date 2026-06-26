@@ -473,10 +473,21 @@ func resolveResultPath(runDir, path string) string {
 	cleanPath := filepath.Clean(path)
 	cleanRunDir := filepath.Clean(runDir)
 	if !filepath.IsAbs(cleanRunDir) {
+		candidate := filepath.Join(cleanRunDir, cleanPath)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		if stripped, ok := stripRunDirPrefix(cleanRunDir, cleanPath); ok {
+			strippedCandidate := filepath.Join(cleanRunDir, stripped)
+			if _, err := os.Stat(strippedCandidate); err == nil {
+				return strippedCandidate
+			}
+			return strippedCandidate
+		}
 		if _, err := os.Stat(cleanPath); err == nil {
 			return cleanPath
 		}
-		return filepath.Join(cleanRunDir, cleanPath)
+		return candidate
 	}
 	candidate := filepath.Join(cleanRunDir, cleanPath)
 	if _, err := os.Stat(candidate); err == nil {

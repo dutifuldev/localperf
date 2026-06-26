@@ -2,6 +2,7 @@ package vllmbench
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,22 @@ type MemorySnapshot struct {
 	MemAvailableGiB float64 `json:"mem_available_gib"`
 	SwapFreeGiB     float64 `json:"swap_free_gib"`
 }
+
+type MemoryFloorError struct {
+	Snapshot MemorySnapshot
+	MinGiB   float64
+}
+
+func (err *MemoryFloorError) Error() string {
+	return fmt.Sprintf("MemAvailable %.1f GiB is below floor %.1f GiB", err.Snapshot.MemAvailableGiB, err.MinGiB)
+}
+
+func IsMemoryFloorError(err error) bool {
+	var floorErr *MemoryFloorError
+	return errors.As(err, &floorErr)
+}
+
+var checkMemoryFloor = CheckMemoryFloor
 
 func ReadMemorySnapshot() (MemorySnapshot, error) {
 	file, err := os.Open("/proc/meminfo")
@@ -59,7 +76,7 @@ func CheckMemoryFloor(minGiB float64) (MemorySnapshot, error) {
 		return snapshot, err
 	}
 	if snapshot.MemAvailableGiB < minGiB {
-		return snapshot, fmt.Errorf("MemAvailable %.1f GiB is below floor %.1f GiB", snapshot.MemAvailableGiB, minGiB)
+		return snapshot, &MemoryFloorError{Snapshot: snapshot, MinGiB: minGiB}
 	}
 	return snapshot, nil
 }
