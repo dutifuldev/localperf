@@ -260,6 +260,43 @@ func TestExecuteWithFakeVLLMEndToEnd(t *testing.T) {
 	}
 }
 
+func TestExecuteFailsWhenSleepFails(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-sleep-failure"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].Env = map[string]string{"FAKE_SLEEP_FAIL": "1"}
+	spec.Workloads = []Workload{{
+		Name:            "fake-random",
+		Profiles:        []string{spec.Profiles[0].Name},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  128,
+		RandomOutputLen: 16,
+		NumPrompts:      1,
+		MaxConcurrency:  []int{1},
+		RequestRate:     "inf",
+	}}
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "sleep failed") {
+		t.Fatalf("Execute error = %v, want sleep failure", err)
+	}
+	if summary.CompletedRuns != 1 {
+		t.Fatalf("completed runs = %d, want measured workload to complete before sleep failure", summary.CompletedRuns)
+	}
+}
+
 func TestBuildReportEnrichesFromSpec(t *testing.T) {
 	spec := testSpec()
 	runDir := t.TempDir()
@@ -407,6 +444,10 @@ func runFakeServe(args []string) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"is_sleeping": sleeping.Load()})
 	})
 	mux.HandleFunc("/sleep", func(w http.ResponseWriter, _ *http.Request) {
+		if os.Getenv("FAKE_SLEEP_FAIL") == "1" {
+			http.Error(w, "sleep failed", http.StatusInternalServerError)
+			return
+		}
 		sleeping.Store(true)
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})

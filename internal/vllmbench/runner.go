@@ -174,7 +174,30 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 			}
 		}
 		if profile.EnableSleepMode {
-			_ = sleepProfile(ctx, spec, profile, events)
+			if err := sleepProfile(ctx, spec, profile, events); err != nil {
+				events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_sleep_failed", Profile: profile.Name, Error: err.Error()})
+				if proc != nil {
+					stopProcess(proc)
+					delete(processes, profile.Name)
+				}
+				summary.FailedRuns += remainingRunsAfterProfile(spec.Profiles, plan, profile.Name)
+				summary.FinishedAt = time.Now().UTC()
+				events.Write(Event{Timestamp: summary.FinishedAt, Type: "run_finish", Error: err.Error(), Details: mustJSON(map[string]any{
+					"completed_runs": summary.CompletedRuns,
+					"failed_runs":    summary.FailedRuns,
+				})})
+				report, reportErr := BuildReport(runDir)
+				if reportErr == nil {
+					reportPath := filepath.Join(runDir, "report.md")
+					if writeErr := os.WriteFile(reportPath, []byte(RenderMarkdown(report)), 0o644); writeErr == nil {
+						summary.ReportPath = reportPath
+					}
+				}
+				if writeErr := writeJSONFile(filepath.Join(runDir, "summary.json"), summary); writeErr != nil {
+					return summary, writeErr
+				}
+				return summary, fmt.Errorf("profile %s sleep failed: %w", profile.Name, err)
+			}
 		}
 		if proc != nil && shouldStopManaged(spec) && !spec.Runner.PrebootProfiles {
 			stopProcess(proc)
@@ -690,6 +713,21 @@ func runsForProfile(plan []PlannedRun, profileName string) []PlannedRun {
 		}
 	}
 	return out
+}
+
+func remainingRunsAfterProfile(profiles []Profile, plan []PlannedRun, profileName string) int {
+	seenProfile := false
+	remaining := 0
+	for _, profile := range profilesInPlanOrder(profiles, plan) {
+		if profile.Name == profileName {
+			seenProfile = true
+			continue
+		}
+		if seenProfile {
+			remaining += len(runsForProfile(plan, profile.Name))
+		}
+	}
+	return remaining
 }
 
 func shouldStopManaged(spec Spec) bool {
