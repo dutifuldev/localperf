@@ -153,6 +153,7 @@ func loadNormalizedSpec(path string) (*Spec, error) {
 }
 
 func enrichRowFromEvent(row *ReportRow, event Event, spec *Spec) {
+	defer deriveReportRowFields(row)
 	row.Profile = event.Profile
 	row.Workload = event.Workload
 	row.Concurrency = event.Concurrency
@@ -233,6 +234,9 @@ func RenderMarkdown(report Report) string {
 }
 
 func WriteReportFiles(report Report, outputPath string) error {
+	if strings.EqualFold(filepath.Ext(outputPath), ".json") {
+		return fmt.Errorf("markdown report output path must not end in .json: %s", outputPath)
+	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
 	}
@@ -280,12 +284,16 @@ func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 		if row.DatasetName == "" {
 			row.DatasetName = stringValue(raw, "dataset")
 		}
-		if row.Concurrency > 0 && row.OutputTokensPerSec > 0 {
-			row.PerUserOutputTokSec = row.OutputTokensPerSec / float64(row.Concurrency)
-		}
+		deriveReportRowFields(&row)
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+func deriveReportRowFields(row *ReportRow) {
+	if row.Concurrency > 0 && row.OutputTokensPerSec > 0 {
+		row.PerUserOutputTokSec = row.OutputTokensPerSec / float64(row.Concurrency)
+	}
 }
 
 func parseResultDirectory(dir string) ([]ReportRow, error) {

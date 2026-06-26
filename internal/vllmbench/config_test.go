@@ -382,6 +382,47 @@ func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
 	}
 }
 
+func TestExecuteDerivesPerUserAfterPlannedRunEnrichment(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-derived-per-user"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Env["FAKE_BENCH_OMIT_CONCURRENCY"] = "1"
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{{
+		Name:            "fake-random",
+		Profiles:        []string{spec.Profiles[0].Name},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  128,
+		RandomOutputLen: 16,
+		NumPrompts:      2,
+		MaxConcurrency:  []int{2},
+		RequestRate:     "inf",
+	}}
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Rows) != 1 {
+		t.Fatalf("summary rows = %d, want 1", len(summary.Rows))
+	}
+	if got := summary.Rows[0].PerUserOutputTokSec; got != 10 {
+		t.Fatalf("per-user throughput = %v, want 10", got)
+	}
+}
+
 func TestExecuteStopsManagedProfileAfterWorkloadMemoryFloorAbort(t *testing.T) {
 	startFile := filepath.Join(t.TempDir(), "bench.started")
 	oldCheckMemoryFloor := checkMemoryFloor
@@ -938,6 +979,30 @@ func TestBuildReportEnrichesFromSpec(t *testing.T) {
 	}
 }
 
+func TestBuildReportDerivesPerUserAfterEventEnrichment(t *testing.T) {
+	runDir := t.TempDir()
+	resultPath := filepath.Join(runDir, "results", "p__w__c4.json")
+	writeFile(t, resultPath, `{"completed":4,"failed":0,"output_throughput":100}`)
+	writeFile(t, filepath.Join(runDir, "events.jsonl"), `{"timestamp":"2026-06-26T00:00:00Z","type":"workload_finish","profile":"p","workload":"w","concurrency":4,"result_file":"results/p__w__c4.json"}`+"\n")
+	report, err := BuildReport(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(report.Rows))
+	}
+	if got := report.Rows[0].PerUserOutputTokSec; got != 25 {
+		t.Fatalf("per-user throughput = %v, want 25", got)
+	}
+}
+
+func TestWriteReportFilesRejectsJSONOutputPath(t *testing.T) {
+	err := WriteReportFiles(Report{RunDir: t.TempDir(), Generated: time.Now()}, filepath.Join(t.TempDir(), "report.json"))
+	if err == nil || !strings.Contains(err.Error(), "must not end in .json") {
+		t.Fatalf("WriteReportFiles error = %v, want .json rejection", err)
+	}
+}
+
 func TestBuildReportResolvesCWDRelativeResultPathsWithAbsoluteRunDir(t *testing.T) {
 	root := t.TempDir()
 	runDir := filepath.Join(root, "runs", "foo")
@@ -1205,12 +1270,14 @@ func runFakeBench(args []string) {
 		os.Exit(1)
 	}
 	row := map[string]any{
-		"max_concurrency":        concurrency,
 		"completed":              numPrompts - failed,
 		"failed":                 failed,
 		"duration":               1.0,
 		"output_throughput":      float64(concurrency * 10),
 		"total_token_throughput": float64(concurrency * 12),
+	}
+	if os.Getenv("FAKE_BENCH_OMIT_CONCURRENCY") != "1" {
+		row["max_concurrency"] = concurrency
 	}
 	data, _ := json.Marshal(row)
 	if err := os.WriteFile(resultPath, append(data, '\n'), 0o644); err != nil {

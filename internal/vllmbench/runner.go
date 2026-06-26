@@ -531,6 +531,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	row.RandomOutputLen = planned.Workload.RandomOutputLen
 	row.DatasetName = planned.Workload.DatasetName
 	row.ResultFile = planned.ResultFile
+	deriveReportRowFields(&row)
 	if failed := failedRequestCount(rows); failed > 0 {
 		return &row, fmt.Errorf("benchmark result reported %d failed request(s)", failed)
 	}
