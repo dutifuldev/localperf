@@ -108,6 +108,31 @@ func TestApplyFilterDropsWorkloadsWithoutMatchingProfile(t *testing.T) {
 	}
 }
 
+func TestApplyFilterDropsWorkloadsWithoutMatchingConcurrency(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = append(spec.Workloads, Workload{
+		Name:            "claim-repro",
+		Profiles:        []string{"8k"},
+		Backend:         "openai-chat",
+		DatasetName:     "random",
+		RandomInputLen:  1000,
+		RandomOutputLen: 1024,
+		NumPrompts:      20,
+		MaxConcurrency:  []int{20},
+	})
+	ApplyDefaults(&spec)
+	if err := ApplyFilter(&spec, Filter{Concurrencies: []int{20}}); err != nil {
+		t.Fatal(err)
+	}
+	plan := BuildPlan(spec, "runs/example")
+	if len(plan) != 1 {
+		t.Fatalf("plan length = %d, want only the c20 workload", len(plan))
+	}
+	if plan[0].Workload.Name != "claim-repro" || plan[0].Concurrency != 20 {
+		t.Fatalf("unexpected filtered run: %+v", plan[0])
+	}
+}
+
 func TestParseMeminfo(t *testing.T) {
 	meminfo := strings.NewReader(`MemTotal:       131072000 kB
 MemFree:         1000000 kB
