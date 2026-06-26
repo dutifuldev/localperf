@@ -625,7 +625,7 @@ func sleepProfile(ctx context.Context, spec Spec, profile Profile, events *event
 	if err := checkMemoryEvent(spec, events, "before_sleep", profile.Name); err != nil {
 		return err
 	}
-	url := fmt.Sprintf("%s/sleep?level=%d", baseURL(profile), profile.SleepLevel)
+	url := fmt.Sprintf("%s/sleep?level=%d", baseURL(profile), SleepLevelValue(profile))
 	start := time.Now()
 	err := postAdmin(ctx, spec, url)
 	event := Event{Timestamp: time.Now().UTC(), Type: "profile_sleep", Profile: profile.Name, DurationSeconds: time.Since(start).Seconds()}

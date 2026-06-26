@@ -107,10 +107,19 @@ func TestValidateSpecRejectsDuplicateWorkloadProfileReferences(t *testing.T) {
 
 func TestApplyDefaultsHonorsSleepLevelZero(t *testing.T) {
 	spec := testSpec()
-	spec.Profiles[0].SleepLevel = 0
+	spec.Profiles[0].SleepLevel = testIntPointer(0)
 	ApplyDefaults(&spec)
-	if spec.Profiles[0].SleepLevel != 0 {
-		t.Fatalf("sleep level = %d, want explicit zero", spec.Profiles[0].SleepLevel)
+	if got := SleepLevelValue(spec.Profiles[0]); got != 0 {
+		t.Fatalf("sleep level = %d, want explicit zero", got)
+	}
+}
+
+func TestApplyDefaultsSetsOmittedSleepLevelToTwo(t *testing.T) {
+	spec := testSpec()
+	spec.Profiles[0].SleepLevel = nil
+	ApplyDefaults(&spec)
+	if got := SleepLevelValue(spec.Profiles[0]); got != 2 {
+		t.Fatalf("sleep level = %d, want default level 2", got)
 	}
 }
 
@@ -858,7 +867,7 @@ func testSpec() Spec {
 				Port:                 8108,
 				Managed:              true,
 				EnableSleepMode:      true,
-				SleepLevel:           2,
+				SleepLevel:           testIntPointer(2),
 				MaxModelLen:          8192,
 				MaxNumSeqs:           16,
 				MaxNumBatchedTokens:  8192,
@@ -894,6 +903,10 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func testIntPointer(value int) *int {
+	return &value
 }
 
 func fakeVLLMScript(t *testing.T) string {

@@ -64,7 +64,7 @@ type Profile struct {
 	Port                 int               `json:"port"`
 	Managed              bool              `json:"managed"`
 	EnableSleepMode      bool              `json:"enable_sleep_mode,omitempty"`
-	SleepLevel           int               `json:"sleep_level,omitempty"`
+	SleepLevel           *int              `json:"sleep_level,omitempty"`
 	HealthPath           string            `json:"health_path,omitempty"`
 	MaxModelLen          int               `json:"max_model_len,omitempty"`
 	MaxNumSeqs           int               `json:"max_num_seqs,omitempty"`
@@ -157,6 +157,9 @@ func ApplyDefaults(spec *Spec) {
 		}
 		if strings.TrimSpace(profile.HealthPath) == "" {
 			profile.HealthPath = DefaultHealthPath
+		}
+		if profile.EnableSleepMode && profile.SleepLevel == nil {
+			profile.SleepLevel = intPointer(2)
 		}
 	}
 	if spec.Warmup.Enabled {
@@ -264,7 +267,7 @@ func ValidateSpec(spec Spec) error {
 				issues = append(issues, prefix+": enable_sleep_mode is required when runner.preboot_profiles and runner.one_awake_profile are true")
 			}
 		}
-		if profile.SleepLevel < 0 || profile.SleepLevel > 2 {
+		if profile.SleepLevel != nil && (*profile.SleepLevel < 0 || *profile.SleepLevel > 2) {
 			issues = append(issues, prefix+": sleep_level must be 0, 1, or 2")
 		}
 	}
@@ -386,6 +389,17 @@ func RunDir(base string, spec Spec, now time.Time) string {
 func ResultPath(runDir, profileName, workloadName string, concurrency int) string {
 	name := fmt.Sprintf("%s__%s__c%d.json", Slug(profileName), Slug(workloadName), concurrency)
 	return filepath.Join(runDir, "results", name)
+}
+
+func SleepLevelValue(profile Profile) int {
+	if profile.SleepLevel == nil {
+		return 2
+	}
+	return *profile.SleepLevel
+}
+
+func intPointer(value int) *int {
+	return &value
 }
 
 func sortedProfileNames(profiles map[string]Profile) []string {
