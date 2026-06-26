@@ -2,6 +2,8 @@ package vllmbench
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -244,8 +247,8 @@ func RenderMarkdown(report Report) string {
 }
 
 func WriteReportFiles(report Report, outputPath string) error {
-	if strings.EqualFold(filepath.Ext(outputPath), ".json") {
-		return fmt.Errorf("markdown report output path must not end in .json: %s", outputPath)
+	if ext := filepath.Ext(outputPath); strings.EqualFold(ext, ".json") || strings.EqualFold(ext, ".csv") {
+		return fmt.Errorf("markdown report output path must not end in .json or .csv: %s", outputPath)
 	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
@@ -254,7 +257,64 @@ func WriteReportFiles(report Report, outputPath string) error {
 		return err
 	}
 	jsonPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".json"
-	return writeJSONFile(jsonPath, report)
+	if err := writeJSONFile(jsonPath, report); err != nil {
+		return err
+	}
+	csvPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".csv"
+	return os.WriteFile(csvPath, []byte(RenderCSV(report)), 0o644)
+}
+
+func RenderCSV(report Report) string {
+	var buffer bytes.Buffer
+	writer := csv.NewWriter(&buffer)
+	_ = writer.Write([]string{
+		"profile",
+		"workload",
+		"dataset_name",
+		"context",
+		"server_max_num_seqs",
+		"concurrency",
+		"input_len",
+		"output_len",
+		"random_input_len",
+		"random_output_len",
+		"completed",
+		"failed",
+		"duration_seconds",
+		"output_tokens_per_second",
+		"total_tokens_per_second",
+		"per_user_output_tokens_per_second",
+		"mean_ttft_ms",
+		"p99_ttft_ms",
+		"mean_tpot_ms",
+		"result_file",
+	})
+	for _, row := range report.Rows {
+		_ = writer.Write([]string{
+			row.Profile,
+			row.Workload,
+			row.DatasetName,
+			intCSV(row.Context),
+			intCSV(row.ServerMaxNumSeqs),
+			intCSV(row.Concurrency),
+			intCSV(row.DisplayInputLen()),
+			intCSV(row.DisplayOutputLen()),
+			intCSV(row.RandomInputLen),
+			intCSV(row.RandomOutputLen),
+			fmt.Sprint(row.Completed),
+			fmt.Sprint(row.Failed),
+			floatCSV(row.DurationSeconds),
+			floatCSV(row.OutputTokensPerSec),
+			floatCSV(row.TotalTokensPerSec),
+			floatCSV(row.PerUserOutputTokSec),
+			floatCSV(row.MeanTTFTMillis),
+			floatCSV(row.P99TTFTMillis),
+			floatCSV(row.MeanTPOTMillis),
+			fileCell(report.RunDir, row.ResultFile),
+		})
+	}
+	writer.Flush()
+	return buffer.String()
 }
 
 func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
@@ -518,11 +578,25 @@ func intCell(value int) string {
 	return fmt.Sprint(value)
 }
 
+func intCSV(value int) string {
+	if value == 0 {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
 func floatCell(value float64) string {
 	if value == 0 || math.IsNaN(value) || math.IsInf(value, 0) {
 		return "-"
 	}
 	return fmt.Sprintf("%.1f", value)
+}
+
+func floatCSV(value float64) string {
+	if value == 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return ""
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
 func fileCell(runDir, path string) string {

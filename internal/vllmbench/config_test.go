@@ -1065,10 +1065,61 @@ func TestBuildReportDerivesPerUserAfterEventEnrichment(t *testing.T) {
 	}
 }
 
-func TestWriteReportFilesRejectsJSONOutputPath(t *testing.T) {
-	err := WriteReportFiles(Report{RunDir: t.TempDir(), Generated: time.Now()}, filepath.Join(t.TempDir(), "report.json"))
-	if err == nil || !strings.Contains(err.Error(), "must not end in .json") {
-		t.Fatalf("WriteReportFiles error = %v, want .json rejection", err)
+func TestWriteReportFilesRejectsSidecarOutputPaths(t *testing.T) {
+	for _, name := range []string{"report.json", "report.csv"} {
+		err := WriteReportFiles(Report{RunDir: t.TempDir(), Generated: time.Now()}, filepath.Join(t.TempDir(), name))
+		if err == nil || !strings.Contains(err.Error(), "must not end in .json or .csv") {
+			t.Fatalf("WriteReportFiles(%s) error = %v, want sidecar extension rejection", name, err)
+		}
+	}
+}
+
+func TestWriteReportFilesWritesCSV(t *testing.T) {
+	runDir := t.TempDir()
+	outputPath := filepath.Join(runDir, "report.md")
+	report := Report{
+		RunDir:    runDir,
+		Generated: time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC),
+		Rows: []ReportRow{{
+			Profile:             "8k",
+			Workload:            "prefill",
+			DatasetName:         "random",
+			Context:             8192,
+			ServerMaxNumSeqs:    16,
+			Concurrency:         4,
+			RandomInputLen:      7168,
+			RandomOutputLen:     16,
+			Completed:           8,
+			Failed:              0,
+			DurationSeconds:     10.5,
+			OutputTokensPerSec:  200,
+			TotalTokensPerSec:   250,
+			PerUserOutputTokSec: 50,
+			MeanTTFTMillis:      1234.5,
+			ResultFile:          filepath.Join(runDir, "results", "8k__prefill__c4.json"),
+		}},
+	}
+	if err := WriteReportFiles(report, outputPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{outputPath, filepath.Join(runDir, "report.json"), filepath.Join(runDir, "report.csv")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected report artifact %s: %v", path, err)
+		}
+	}
+	csvData, err := os.ReadFile(filepath.Join(runDir, "report.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(csvData)
+	for _, want := range []string{
+		"profile,workload,dataset_name,context",
+		"8k,prefill,random,8192,16,4,7168,16,7168,16,8,0,10.5,200,250,50,1234.5",
+		"results/8k__prefill__c4.json",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("CSV %q missing %q", text, want)
+		}
 	}
 }
 

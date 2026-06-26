@@ -79,7 +79,7 @@ The goal is a reusable local model performance characterization harness:
 ## Standard vLLM Benchmarks
 
 Use the reusable vLLM runner for repeatable benchmark specs, warmups, memory
-guardrails, raw result capture, and Markdown reports:
+guardrails, raw result capture, and Markdown/JSON/CSV reports:
 
 ```sh
 go run ./cmd/localperf-vllm-bench plan \
@@ -93,6 +93,9 @@ go run ./cmd/localperf-vllm-bench report \
   --run-dir runs/<run-id>
 ```
 
+The report command writes `report.md`, `report.json`, and `report.csv` by
+default. Use the CSV for plotting and cross-run comparisons.
+
 The DiffusionGemma NVFP4 example and known-results report live under
 `examples/diffusiongemma-vllm-standard/`. The benchmark policy is documented in
-[Standard vLLM Benchmarking](docs/standard-vllm-benchmarking.md).
+[Standard vLLM Benchmarking](docs/2026-06-26-standard-vllm-benchmarking.md).

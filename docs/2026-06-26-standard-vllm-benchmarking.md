@@ -51,8 +51,8 @@ The spec file defines:
 - benchmark workloads and concurrency ladders,
 - warmup traffic,
 - the minimum allowed `/proc/meminfo` `MemAvailable` floor,
-- output paths for JSONL events, raw vLLM result JSON, summary JSON, logs, and
-  the Markdown report.
+- output paths for JSONL events, raw vLLM result JSON, summary JSON, logs,
+  Markdown, JSON, and CSV reports.
 
 This replaces one-off terminal sessions with a repeatable run directory.
 
@@ -215,6 +215,18 @@ The generated report separates:
 - per-user output token/s,
 - total token/s,
 - TTFT when vLLM reports it.
+
+Every `run` finalization and every `report` command writes three report
+artifacts together:
+
+```text
+report.md
+report.json
+report.csv
+```
+
+Use `report.md` for a quick human read, `report.json` for exact nested data, and
+`report.csv` for notebooks, plotting, and comparing multiple run directories.
 
 Aggregate output token/s answers "how much throughput did the server produce?"
 Per-user output token/s answers "what did each concurrent user experience?"

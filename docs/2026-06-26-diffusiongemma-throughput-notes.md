@@ -1,3 +1,9 @@
+---
+title: DiffusionGemma Throughput Notes
+author: Bob <dutifulbob@gmail.com>
+date: 2026-06-26
+---
+
 # DiffusionGemma Throughput Notes - 2026-06-26
 
 Model: `nvidia/diffusiongemma-26B-A4B-it-NVFP4`

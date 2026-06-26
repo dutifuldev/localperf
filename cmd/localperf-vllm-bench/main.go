@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -131,6 +132,9 @@ func runReport(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("report: %s\n", outPath)
+	sidecarBase := strings.TrimSuffix(outPath, filepath.Ext(outPath))
+	fmt.Printf("json: %s\n", sidecarBase+".json")
+	fmt.Printf("csv: %s\n", sidecarBase+".csv")
 }
 
 func mustLoadSpec(path string, filter vllmbench.Filter) vllmbench.Spec {
