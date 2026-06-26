@@ -58,6 +58,7 @@ type Event struct {
 type serverProcess struct {
 	profile Profile
 	cmd     *exec.Cmd
+	pgid    int
 	logFile *os.File
 	logPath string
 	done    chan error
@@ -330,9 +331,11 @@ func startServer(ctx context.Context, spec Spec, runDir string, profile Profile,
 		_ = logFile.Close()
 		return nil, err
 	}
+	pgid, _ := syscall.Getpgid(cmd.Process.Pid)
 	proc := &serverProcess{
 		profile: profile,
 		cmd:     cmd,
+		pgid:    pgid,
 		logFile: logFile,
 		logPath: logPath,
 		done:    make(chan error, 1),
@@ -805,8 +808,13 @@ func stopProcess(proc *serverProcess) {
 	if proc == nil || proc.cmd == nil || proc.cmd.Process == nil {
 		return
 	}
-	pgid, err := syscall.Getpgid(proc.cmd.Process.Pid)
-	if err == nil {
+	pgid := proc.pgid
+	if pgid <= 0 {
+		if value, err := syscall.Getpgid(proc.cmd.Process.Pid); err == nil {
+			pgid = value
+		}
+	}
+	if pgid > 0 {
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 	} else {
 		_ = proc.cmd.Process.Signal(syscall.SIGTERM)
@@ -814,7 +822,7 @@ func stopProcess(proc *serverProcess) {
 	select {
 	case <-proc.done:
 	case <-time.After(20 * time.Second):
-		if err == nil {
+		if pgid > 0 {
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		} else {
 			_ = proc.cmd.Process.Kill()

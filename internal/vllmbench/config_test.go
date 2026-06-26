@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -424,6 +425,45 @@ func TestExecuteWarmsPrebootedProfileAfterWake(t *testing.T) {
 	}
 }
 
+func TestStopProcessUsesSavedProcessGroupAfterParentExit(t *testing.T) {
+	childFile := filepath.Join(t.TempDir(), "child.pid")
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 60 & echo $! > %s", shellSingleQuote(childFile)))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc := &serverProcess{cmd: cmd, pgid: pgid, done: make(chan error, 1)}
+	go func() {
+		proc.done <- cmd.Wait()
+	}()
+	childPID := waitForPIDFile(t, childFile)
+	defer func() {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	}()
+	select {
+	case err := <-proc.done:
+		proc.done <- err
+	case <-time.After(2 * time.Second):
+		t.Fatal("launcher did not exit")
+	}
+	if !processExists(childPID) {
+		t.Fatalf("child process %d exited before cleanup", childPID)
+	}
+	stopProcess(proc)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processExists(childPID) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("child process %d survived process-group cleanup", childPID)
+}
+
 func TestExecuteHonorsStopManagedOnExitFalse(t *testing.T) {
 	spec := testSpec()
 	spec.Name = "fake-vllm-keepalive"
@@ -835,6 +875,28 @@ func shutdownFakeServer(port int) {
 		_ = resp.Body.Close()
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+func waitForPIDFile(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("pid file %s was not written", path)
+	return 0
+}
+
+func processExists(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
 }
 
 func freeTestPort() int {
