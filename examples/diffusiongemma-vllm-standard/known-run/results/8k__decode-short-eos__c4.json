@@ -1,1 +1,0 @@
-{"profile":"grid-l8192-s16-gpu035","max_model_len":8192,"server_max_num_seqs":16,"concurrency":4,"requests":4,"max_tokens":512,"wall_seconds":20.407,"ok":4,"failed":0,"completion_tokens":2048,"total_tokens":2200,"aggregate_completion_tokens_per_second":100.358,"aggregate_total_tokens_per_second":107.806}

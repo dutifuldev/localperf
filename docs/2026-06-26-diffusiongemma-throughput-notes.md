@@ -165,3 +165,67 @@ Saved result:
 - The `300 tok/s` repro is a benchmark-only setup because `ignore_eos=true` forces output even after the model wants to stop.
 - The 8k grid is not a full 8k-prompt prefill benchmark. It measures decode throughput with an 8k context window configured.
 - The interrupted 16k run did not produce valid 16k throughput numbers.
+
+## Standard LocalPerf Run - 2026-06-29
+
+The current checked-in fixture is:
+
+```text
+examples/diffusiongemma-vllm-standard/known-run/report.md
+```
+
+It was produced by:
+
+```sh
+go run ./cmd/localperf-vllm-bench run \
+  --spec examples/diffusiongemma-vllm-standard/spec.json \
+  --vllm-command /path/to/vllm \
+  --run-dir runs/diffusiongemma-vllm-standard-20260629T003546SGT \
+  --timeout 8h
+```
+
+Run outcome: `36` planned workloads, `36` completed, `0` failed. The run used
+the 40 GiB `MemAvailable` guard and did not OOM.
+
+### Claim Repro Shape
+
+This is the intentionally synthetic `4k` context, 1k input, 1024 output,
+`ignore_eos=true` workload.
+
+| Workers | Aggregate output tok/s | Per-user output tok/s | Total tok/s |
+| ---: | ---: | ---: | ---: |
+| 1 | 333.4 | 333.4 | 663.3 |
+| 4 | 423.1 | 105.8 | 841.8 |
+| 20 | 549.9 | 27.5 | 1094.1 |
+
+The 20-user claim was still not reproduced. The observed aggregate was
+`549.9 tok/s`, far below the claimed roughly `3,300 aggregate tok/s`.
+
+### Practical Decode Shape
+
+This is 1k input, 512 output, fixed random tokens, `ignore_eos=true`.
+
+| Context | Workers 4 | Workers 8 | Workers 16 |
+| ---: | ---: | ---: | ---: |
+| 8k | 271.4 | 321.0 | 334.6 |
+| 16k | 266.1 | 320.3 | 329.2 |
+| 32k | 261.2 | 295.6 | 308.1 |
+
+Values are aggregate output tok/s.
+
+### Long-Prefill Shape
+
+These are fixed-token random prompts with 16 output tokens. For prefill-heavy
+workloads, total tok/s is the more useful throughput number than output tok/s.
+
+| Server context | Prompt tokens | Workers 1 | Workers 4 | Workers 8 | Workers 16 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8k | 7168 | 1625.1 | 1834.3 | 1881.4 | 2009.8 |
+| 16k | 7168 | 1559.6 | 1818.6 | 1899.2 | 1755.8 |
+| 32k | 7168 | 1565.7 | 1807.8 | 1628.8 | 1213.4 |
+| 16k | 14336 | 1693.5 | 1873.7 | 1833.0 | 1560.7 |
+| 32k | 14336 | 1690.4 | 1711.8 | 1525.0 | 1373.6 |
+| 32k | 28672 | 1378.4 | 1320.1 | 1276.4 | 1259.3 |
+
+Values are aggregate total tok/s. The 32k prompt shape is usable for measuring
+prefill capacity, but latency is very high at concurrency 8 and 16.

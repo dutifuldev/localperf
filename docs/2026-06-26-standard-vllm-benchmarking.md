@@ -37,7 +37,7 @@ go run ./cmd/localperf-vllm-bench run \
   --profile 8k \
   --workload prefill-8k-out16-fixed \
   --concurrency 4 \
-  --vllm-command /home/bob/scratch/vllm-latest-dgxspark-20260626/.venv/bin/vllm \
+  --vllm-command /path/to/vllm \
   --timeout 1h
 ```
 
@@ -198,9 +198,12 @@ The checked-in known-results fixture is:
 examples/diffusiongemma-vllm-standard/known-run/report.md
 ```
 
-It records the reproduced 311 tok/s single-worker reference point, the 557 tok/s
-20-worker claim attempt, and the 8k 4/8/16 worker decode grid measured on
-2026-06-26. See also
+It records the completed 2026-06-29 standard run: 36 planned workloads, 36
+completed, 0 failed. That run covers the 4k claim-reproduction shape plus 8k,
+16k, and 32k decode/prefill grids at concurrency 1, 4, 8, and 16 where
+applicable. Older 2026-06-26 notes for the first 311 tok/s single-worker repro,
+the 557 tok/s 20-worker claim attempt, and the short-prompt 8k decode grid are
+kept in
 `docs/2026-06-26-diffusiongemma-throughput-notes.md`.
 
 ## Report Interpretation

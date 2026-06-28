@@ -96,6 +96,7 @@ go run ./cmd/localperf-vllm-bench report \
 The report command writes `report.md`, `report.json`, and `report.csv` by
 default. Use the CSV for plotting and cross-run comparisons.
 
-The DiffusionGemma NVFP4 example and known-results report live under
-`examples/diffusiongemma-vllm-standard/`. The benchmark policy is documented in
+The DiffusionGemma NVFP4 example and completed 36-case known-results fixture
+live under `examples/diffusiongemma-vllm-standard/`. The benchmark policy is
+documented in
 [Standard vLLM Benchmarking](docs/2026-06-26-standard-vllm-benchmarking.md).
