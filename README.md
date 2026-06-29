@@ -1,111 +1,129 @@
 # LocalPerf
 
-LocalPerf is a local inference performance benchmarking and profiling workspace.
+LocalPerf benchmarks local LLM inference servers and keeps the evidence in one
+portable run artifact.
 
-The current repo starts from the Gemma 4 vLLM resource sweep we ran on the local
-GB10 machine. It records vLLM startup settings, context windows, concurrency,
-throughput, latency, capacity, and memory-pressure signals.
+It is currently focused on vLLM-managed runs, with an engine-neutral benchmark
+spec and CLI shape:
 
-## Current Snapshot
-
-The first copied experiment is here:
-
-```text
-examples/gemma4-vllm-resource-sweep-20260620/
+```sh
+go run ./cmd/localperf bench plan --spec examples/diffusiongemma-vllm-standard/spec.json
+go run ./cmd/localperf bench run  --spec examples/diffusiongemma-vllm-standard/spec.json
+go run ./cmd/localperf artifact check runs/<run-id>.sqlite
 ```
 
-It includes:
+The legacy command still works:
 
-- the sweep harness,
-- candidate definitions,
-- generated CSV tables,
-- generated SVG plots,
-- an interactive HTML report,
-- implementation notes.
+```sh
+go run ./cmd/localperf-vllm-bench ...
+```
 
-Raw per-run JSONL, event streams, env profiles, and vLLM logs are not committed
-because they can contain local machine paths and verbose service details.
+## Requirements
 
-Open the report locally with:
+- Go 1.26 or newer.
+- `sqlite3` if you want to inspect artifacts from the shell.
+- vLLM installed and available as `vllm` for real managed benchmark runs.
+- Enough available system memory for the model profile you run.
+
+The included DiffusionGemma example targets
+`nvidia/diffusiongemma-26B-A4B-it-NVFP4` on a GB10/DGX Spark-class local
+machine. Edit the spec before using it on a different machine or model.
+
+## Quick Start
+
+Preview the planned runs without starting a model:
+
+```sh
+go run ./cmd/localperf bench plan \
+  --spec examples/diffusiongemma-vllm-standard/spec.json
+```
+
+Run one dry benchmark case and write the reports/artifact:
+
+```sh
+go run ./cmd/localperf bench run \
+  --dry-run \
+  --spec examples/diffusiongemma-vllm-standard/spec.json \
+  --profile 4k-reference \
+  --workload claim-repro-1k-out1024 \
+  --concurrency 1 \
+  --run-dir /tmp/localperf-onecase-dry
+
+go run ./cmd/localperf artifact check /tmp/localperf-onecase-dry.sqlite
+```
+
+Run the full spec only when the machine is ready for it:
+
+```sh
+go run ./cmd/localperf bench run \
+  --spec examples/diffusiongemma-vllm-standard/spec.json \
+  --timeout 4h
+```
+
+Generate reports again from an existing run directory:
+
+```sh
+go run ./cmd/localperf bench report --run-dir runs/<run-id>
+```
+
+## Outputs
+
+Each run writes:
+
+- `runs/<run-id>.sqlite`: canonical run artifact.
+- `runs/<run-id>/events.jsonl`: lifecycle and diagnostic events.
+- `runs/<run-id>/results/*.json`: raw benchmark results.
+- `runs/<run-id>/logs/*.log`: server and benchmark logs.
+- `runs/<run-id>/report.md`, `report.json`, `report.csv`: report exports.
+
+Use the SQLite artifact as the source of truth. It stores the original and
+normalized specs, engine/profile/workload definitions, measurements, metric
+stats, events, commands, raw result artifacts, logs, and rendered reports.
+
+Example inspection:
+
+```sh
+sqlite3 runs/<run-id>.sqlite \
+  "select profile_id, workload_id, concurrency, status, aggregate_output_tok_s from measurements"
+```
+
+## Memory Safety
+
+Specs include a `safety.min_mem_available_gib` floor. LocalPerf checks
+`/proc/meminfo` before major steps and while subprocesses run. If available
+memory drops below the floor, the current step is stopped and skipped/failed
+rows are recorded.
+
+On unified-memory systems, do not treat process/cgroup memory as total model
+memory. For capacity planning, compare multiple signals:
+
+- whole-machine `MemAvailable` drop,
+- process/cgroup memory,
+- vLLM KV-cache capacity lines,
+- GPU or platform telemetry when available.
+
+See [Measurement Methods](docs/2026-06-23-measurement-methods.md) for the
+memory reporting policy.
+
+## Example Data
+
+The repo includes two useful examples:
+
+- `examples/diffusiongemma-vllm-standard/`: a reusable vLLM benchmark spec plus
+  a completed known-run fixture.
+- `examples/gemma4-vllm-resource-sweep-20260620/`: an earlier Gemma 4 resource
+  sweep with generated tables, plots, and an HTML report.
+
+Open the Gemma 4 report locally:
 
 ```sh
 python3 -m http.server 8766 --directory examples/gemma4-vllm-resource-sweep-20260620/reports
 ```
 
-Then visit:
+Then visit `http://127.0.0.1:8766/`.
 
-```text
-http://127.0.0.1:8766/
-```
+## Documentation
 
-## Measurement Caveat
-
-On the GB10 unified-memory setup, one memory number is not enough.
-
-The copied sweep currently records:
-
-- Linux cgroup memory from `systemctl show ... MemoryCurrent MemoryPeak`,
-- system memory from `/proc/meminfo`,
-- vLLM-reported KV cache and max concurrency from vLLM logs,
-- throughput and latency from OpenAI-compatible requests.
-
-The cgroup memory columns in the generated report are process/cgroup memory,
-not total model memory. For total machine pressure on unified memory, use:
-
-```text
-MemAvailable before startup - lowest MemAvailable during startup/load
-```
-
-Future LocalPerf runs should record and report these as separate signals:
-
-- process/cgroup memory,
-- whole-machine `MemAvailable` drop,
-- vLLM KV cache capacity,
-- GPU telemetry from `nvtop`, NVML, DCGM, or the best available GB10 source.
-
-See [Measurement Methods](docs/2026-06-23-measurement-methods.md) for the full
-recording and reporting policy.
-
-## Direction
-
-The goal is a reusable local model performance characterization harness:
-
-- run parameter sweeps over context, concurrency, batching, and backend flags,
-- avoid OOM by using guardrails and staged sampling,
-- capture machine-readable telemetry,
-- generate human-readable reports,
-- compare local serving configurations scientifically.
-
-## Standard Benchmarks
-
-Use the reusable benchmark runner for repeatable specs, warmups, memory
-guardrails, raw result capture, SQLite artifacts, and Markdown/JSON/CSV
-reports:
-
-```sh
-go run ./cmd/localperf bench plan \
-  --spec examples/diffusiongemma-vllm-standard/spec.json
-
-go run ./cmd/localperf bench run \
-  --spec examples/diffusiongemma-vllm-standard/spec.json \
-  --timeout 4h
-
-go run ./cmd/localperf bench report \
-  --run-dir runs/<run-id>
-
-go run ./cmd/localperf artifact check \
-  runs/<run-id>.sqlite
-```
-
-The run command writes a canonical `runs/<run-id>.sqlite` artifact and keeps
-the run directory for raw local files. The report command writes `report.md`,
-`report.json`, and `report.csv` exports by default. Use the SQLite artifact as
-the source of truth and the CSV for plotting or spreadsheet workflows.
-
-The legacy `go run ./cmd/localperf-vllm-bench ...` command still works as a
-compatibility wrapper around the same implementation.
-
-The DiffusionGemma NVFP4 example and completed 36-case known-results fixture
-live under `examples/diffusiongemma-vllm-standard/`. The benchmark policy is
-documented in
-[Standard vLLM Benchmarking](docs/2026-06-26-standard-vllm-benchmarking.md).
+- [Standard vLLM Benchmarking](docs/2026-06-26-standard-vllm-benchmarking.md)
+- [SQLite Run Artifact Format](docs/2026-06-29-sqlite-run-artifact-format.md)
+- [Inference Engine Architecture Plan](docs/2026-06-29-inference-engine-architecture-plan.md)
