@@ -66,8 +66,11 @@ exports.
 | `engines` | Engine adapter definitions and detected versions. |
 | `profiles` | Serve-time engine profiles. |
 | `workloads` | Workload definitions. |
+| `phases` | Startup, warmup, measurement, sleep, shutdown, and report phases. |
 | `measurements` | One row per profile/workload/concurrency/repeat result. |
+| `metric_stats` | Queryable distributions for latency, TTFT, TPOT, ITL, and memory metrics. |
 | `requests` | Per-request timing, token, and error rows. |
+| `request_stream_events` | Optional streaming chunks or token timing events per request. |
 | `telemetry_series` | Definitions for sampled telemetry metrics. |
 | `telemetry_samples` | Memory, GPU, process, and system telemetry samples. |
 | `events` | Append-only lifecycle and diagnostic events. |
@@ -173,11 +176,11 @@ CREATE TABLE workloads (
   name TEXT NOT NULL,
   traffic_json TEXT NOT NULL CHECK (json_valid(traffic_json)),
   concurrency_json TEXT NOT NULL CHECK (json_valid(concurrency_json)),
-  samples INTEGER NOT NULL,
-  repeats INTEGER NOT NULL DEFAULT 1,
+  samples INTEGER NOT NULL CHECK (samples > 0),
+  repeats INTEGER NOT NULL DEFAULT 1 CHECK (repeats > 0),
   save_detailed INTEGER NOT NULL DEFAULT 1 CHECK (save_detailed IN (0, 1)),
-  capture_prompt_text INTEGER NOT NULL DEFAULT 0 CHECK (
-    capture_prompt_text IN (0, 1)
+  capture_payload_artifacts INTEGER NOT NULL DEFAULT 0 CHECK (
+    capture_payload_artifacts IN (0, 1)
   ),
   metadata_json TEXT CHECK (
     metadata_json IS NULL OR json_valid(metadata_json)
@@ -185,43 +188,49 @@ CREATE TABLE workloads (
   UNIQUE (run_id, name)
 );
 
+CREATE TABLE phases (
+  id INTEGER PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+  profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
+  workload_id TEXT REFERENCES workloads(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN (
+    'startup', 'health_check', 'warmup', 'measurement',
+    'sleep', 'wake', 'shutdown', 'report', 'other'
+  )),
+  status TEXT NOT NULL CHECK (status IN (
+    'planned', 'running', 'completed', 'failed', 'skipped', 'canceled'
+  )),
+  started_at TEXT,
+  completed_at TEXT,
+  metadata_json TEXT CHECK (
+    metadata_json IS NULL OR json_valid(metadata_json)
+  )
+);
+
 CREATE TABLE measurements (
   id INTEGER PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
   profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
   workload_id TEXT NOT NULL REFERENCES workloads(id) ON DELETE CASCADE,
+  phase_id INTEGER REFERENCES phases(id) ON DELETE SET NULL,
   repeat_index INTEGER NOT NULL DEFAULT 0,
-  concurrency INTEGER NOT NULL,
-  samples_requested INTEGER NOT NULL,
+  concurrency INTEGER NOT NULL CHECK (concurrency > 0),
+  samples_requested INTEGER NOT NULL CHECK (samples_requested > 0),
   status TEXT NOT NULL CHECK (status IN (
     'planned', 'running', 'completed', 'failed', 'skipped', 'canceled'
   )),
   started_at TEXT,
   completed_at TEXT,
   wall_time_ms REAL,
-  completed_requests INTEGER NOT NULL DEFAULT 0,
-  failed_requests INTEGER NOT NULL DEFAULT 0,
-  prompt_tokens INTEGER,
-  completion_tokens INTEGER,
-  total_tokens INTEGER,
+  completed_requests INTEGER NOT NULL DEFAULT 0 CHECK (completed_requests >= 0),
+  failed_requests INTEGER NOT NULL DEFAULT 0 CHECK (failed_requests >= 0),
+  prompt_tokens INTEGER CHECK (prompt_tokens >= 0),
+  completion_tokens INTEGER CHECK (completion_tokens >= 0),
+  total_tokens INTEGER CHECK (total_tokens >= 0),
   aggregate_output_tok_s REAL,
   per_user_output_tok_s REAL,
   aggregate_total_tok_s REAL,
-  latency_stats_json TEXT CHECK (
-    latency_stats_json IS NULL OR json_valid(latency_stats_json)
-  ),
-  ttft_stats_json TEXT CHECK (
-    ttft_stats_json IS NULL OR json_valid(ttft_stats_json)
-  ),
-  tpot_stats_json TEXT CHECK (
-    tpot_stats_json IS NULL OR json_valid(tpot_stats_json)
-  ),
-  itl_stats_json TEXT CHECK (
-    itl_stats_json IS NULL OR json_valid(itl_stats_json)
-  ),
-  memory_stats_json TEXT CHECK (
-    memory_stats_json IS NULL OR json_valid(memory_stats_json)
-  ),
   raw_result_artifact_id INTEGER REFERENCES artifacts(id),
   error_type TEXT,
   error_message TEXT,
@@ -237,12 +246,34 @@ CREATE TABLE measurements (
   )
 );
 
+CREATE TABLE metric_stats (
+  id INTEGER PRIMARY KEY,
+  measurement_id INTEGER NOT NULL REFERENCES measurements(id) ON DELETE CASCADE,
+  metric TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  mean REAL,
+  stddev REAL,
+  min REAL,
+  p50 REAL,
+  p90 REAL,
+  p95 REAL,
+  p99 REAL,
+  max REAL,
+  count INTEGER NOT NULL CHECK (count >= 0),
+  metadata_json TEXT CHECK (
+    metadata_json IS NULL OR json_valid(metadata_json)
+  ),
+  UNIQUE (measurement_id, metric, unit)
+);
+
 CREATE TABLE requests (
   id INTEGER PRIMARY KEY,
   measurement_id INTEGER NOT NULL REFERENCES measurements(id) ON DELETE CASCADE,
   request_index INTEGER NOT NULL,
   request_id TEXT,
   status TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'canceled')),
+  streamed INTEGER NOT NULL DEFAULT 0 CHECK (streamed IN (0, 1)),
+  http_status_code INTEGER,
   started_at TEXT NOT NULL,
   first_token_at TEXT,
   completed_at TEXT,
@@ -250,14 +281,13 @@ CREATE TABLE requests (
   ttft_ms REAL,
   tpot_ms REAL,
   itl_mean_ms REAL,
-  prompt_tokens INTEGER,
-  completion_tokens INTEGER,
-  total_tokens INTEGER,
-  output_tok_s REAL,
+  prompt_tokens INTEGER CHECK (prompt_tokens >= 0),
+  completion_tokens INTEGER CHECK (completion_tokens >= 0),
+  total_tokens INTEGER CHECK (total_tokens >= 0),
   prompt_sha256 TEXT,
-  prompt_text TEXT,
   response_sha256 TEXT,
-  response_text TEXT,
+  prompt_artifact_id INTEGER REFERENCES artifacts(id),
+  response_artifact_id INTEGER REFERENCES artifacts(id),
   error_type TEXT,
   error_code TEXT,
   error_message TEXT,
@@ -267,24 +297,43 @@ CREATE TABLE requests (
   UNIQUE (measurement_id, request_index)
 );
 
+CREATE TABLE request_stream_events (
+  id INTEGER PRIMARY KEY,
+  request_row_id INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+  event_index INTEGER NOT NULL,
+  timestamp TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN (
+    'queued', 'sent', 'first_token', 'chunk', 'token', 'completed', 'error'
+  )),
+  token_count_delta INTEGER CHECK (
+    token_count_delta IS NULL OR token_count_delta >= 0
+  ),
+  text_byte_count_delta INTEGER CHECK (
+    text_byte_count_delta IS NULL OR text_byte_count_delta >= 0
+  ),
+  metadata_json TEXT CHECK (
+    metadata_json IS NULL OR json_valid(metadata_json)
+  ),
+  UNIQUE (request_row_id, event_index)
+);
+
 CREATE TABLE telemetry_series (
   id INTEGER PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
   source TEXT NOT NULL,
-  name TEXT NOT NULL,
+  metric TEXT NOT NULL,
   unit TEXT,
-  scope TEXT,
-  tags_json TEXT CHECK (tags_json IS NULL OR json_valid(tags_json)),
-  UNIQUE (run_id, source, name, scope, tags_json)
+  target TEXT NOT NULL DEFAULT 'run',
+  tags_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(tags_json)),
+  UNIQUE (run_id, source, metric, target, tags_json)
 );
 
 CREATE TABLE telemetry_samples (
   id INTEGER PRIMARY KEY,
   series_id INTEGER NOT NULL REFERENCES telemetry_series(id) ON DELETE CASCADE,
   timestamp TEXT NOT NULL,
-  value_real REAL,
-  value_integer INTEGER,
-  value_text TEXT,
+  value REAL NOT NULL,
+  phase_id INTEGER REFERENCES phases(id) ON DELETE SET NULL,
   measurement_id INTEGER REFERENCES measurements(id) ON DELETE SET NULL
 );
 
@@ -296,6 +345,7 @@ CREATE TABLE events (
     'debug', 'info', 'warn', 'error'
   )),
   type TEXT NOT NULL,
+  phase_id INTEGER REFERENCES phases(id) ON DELETE SET NULL,
   profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
   workload_id TEXT REFERENCES workloads(id) ON DELETE SET NULL,
   measurement_id INTEGER REFERENCES measurements(id) ON DELETE SET NULL,
@@ -306,6 +356,7 @@ CREATE TABLE events (
 CREATE TABLE commands (
   id INTEGER PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+  phase_id INTEGER REFERENCES phases(id) ON DELETE SET NULL,
   measurement_id INTEGER REFERENCES measurements(id) ON DELETE SET NULL,
   profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
   phase TEXT NOT NULL,
@@ -364,11 +415,23 @@ Recommended indexes:
 CREATE INDEX idx_measurements_lookup
   ON measurements (run_id, profile_id, workload_id, concurrency);
 
+CREATE INDEX idx_metric_stats_metric
+  ON metric_stats (metric, unit, measurement_id);
+
 CREATE INDEX idx_requests_measurement
   ON requests (measurement_id, status);
 
+CREATE INDEX idx_request_stream_events_request
+  ON request_stream_events (request_row_id, event_index);
+
 CREATE INDEX idx_telemetry_samples_series_time
   ON telemetry_samples (series_id, timestamp);
+
+CREATE INDEX idx_telemetry_samples_phase_time
+  ON telemetry_samples (phase_id, timestamp);
+
+CREATE INDEX idx_phases_run_time
+  ON phases (run_id, started_at);
 
 CREATE INDEX idx_events_run_time
   ON events (run_id, timestamp);
@@ -390,26 +453,39 @@ rerunning the benchmark:
 - What raw engine output supports the normalized row?
 - What errors occurred, and at which phase?
 
-`measurements` stores aggregate values. `requests` stores per-request rows.
+`measurements` stores aggregate throughput and token counts.
+`metric_stats` stores queryable distributions. `requests` stores per-request
+rows. `request_stream_events` stores optional stream timing detail.
 `telemetry_samples` stores time series. `artifacts` stores raw engine output.
 
-## Statistics JSON
+## Metric Statistics
 
-Statistics JSON fields should use the same shape everywhere:
+Use `metric_stats` for distributions that need comparison across profiles,
+engines, or runs.
 
-```json
-{
-  "mean": 22800.4,
-  "stddev": 4900.1,
-  "min": 18000.0,
-  "p50": 22100.0,
-  "p90": 28900.0,
-  "p95": 31000.0,
-  "p99": 33000.0,
-  "max": 34500.0,
-  "unit": "ms",
-  "count": 32
-}
+Recommended metric names:
+
+| Metric | Unit | Meaning |
+| --- | --- | --- |
+| `latency` | `ms` | End-to-end request latency. |
+| `ttft` | `ms` | Time to first token. |
+| `tpot` | `ms` | Time per output token. |
+| `itl` | `ms` | Inter-token latency. |
+| `output_throughput` | `tok/s` | Per-request output throughput distribution. |
+| `total_throughput` | `tok/s` | Per-request total-token throughput distribution. |
+| `mem_available` | `bytes` | Distribution of observed system available memory. |
+| `gpu_utilization` | `percent` | Distribution of observed GPU utilization when available. |
+
+Example:
+
+```sql
+INSERT INTO metric_stats (
+  measurement_id, metric, unit, mean, stddev, min,
+  p50, p90, p95, p99, max, count
+) VALUES (
+  42, 'ttft', 'ms', 1200.4, 300.1, 900.0,
+  1100.0, 1700.0, 1800.0, 2100.0, 2400.0, 32
+);
 ```
 
 For token throughput variance, store one `measurements` row per repeat and
@@ -468,8 +544,9 @@ Prompt and response text can leak data. Default behavior:
 - redact environment variables that look like tokens, keys, passwords, or
   credentials.
 
-`workloads.capture_prompt_text=1` is required before LocalPerf stores
-`requests.prompt_text` or `requests.response_text`.
+`workloads.capture_payload_artifacts=1` is required before LocalPerf stores
+prompt or response payloads in `artifacts`. Request rows may link to those
+payloads through `prompt_artifact_id` and `response_artifact_id`.
 
 ## Lifecycle
 
@@ -478,12 +555,15 @@ The runner writes the SQLite file incrementally:
 1. Create the artifact and schema.
 2. Insert `metadata`, `run`, `specs`, `engines`, `profiles`, and `workloads`.
 3. Mark the run `running`.
-4. Insert events and command rows as phases start.
-5. Insert one `measurements` row for each planned point.
-6. Append request rows, telemetry samples, raw artifacts, and events.
+4. Insert `phases`, events, and command rows as lifecycle phases start.
+5. Insert one `measurements` row for each planned measurement point.
+6. Append request rows, request stream events, telemetry samples, raw artifacts,
+   and events while the measurement runs.
 7. Update each measurement with final aggregate metrics.
-8. Generate report artifacts.
-9. Mark the run `completed`, `failed`, or `canceled`.
+8. Insert `metric_stats` rows for latency, TTFT, TPOT, ITL, throughput, and
+   memory distributions.
+9. Generate report artifacts.
+10. Mark the run `completed`, `failed`, or `canceled`.
 
 Each measurement should be finalized in a transaction so partial runs are still
 queryable.
@@ -506,9 +586,13 @@ The validator must check:
 - JSON columns contain valid JSON.
 - foreign keys are valid.
 - completed measurements have throughput, token, and request counts.
+- completed measurements have `metric_stats` rows for the metrics they
+  report.
 - completed measurements with `save_detailed=1` have request rows.
+- streamed request rows have request stream events or a raw stream artifact.
+- telemetry samples use numeric `value` rows with a declared series unit.
 - referenced artifact hashes match stored content.
-- prompt and response text are absent unless capture was enabled.
+- prompt and response payload artifacts are absent unless capture was enabled.
 - final run status is one of the allowed values.
 
 ## Compatibility
