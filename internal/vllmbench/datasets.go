@@ -143,12 +143,22 @@ func materializeWorkloadDataset(ctx context.Context, runDir string, workload *Wo
 	if err != nil {
 		return err
 	}
+	if err := validateVLLMBenchRendererSupport(*workload); err != nil {
+		return err
+	}
 	canonicalPath, vllmPath, sha, err := persistWorkloadDataset(runDir, workload.Name, requests)
 	if err != nil {
 		return err
 	}
 	updateMaterializedWorkload(workload, requests, canonicalPath, vllmPath, sha)
 	return nil
+}
+
+func validateVLLMBenchRendererSupport(workload Workload) error {
+	if normalizeDatasetType(workload.Dataset.Type) != "raw-payload" {
+		return nil
+	}
+	return fmt.Errorf("dataset.type raw_payload cannot be rendered by vLLM bench without altering raw request bodies")
 }
 
 func loadWorkloadDatasetRequests(ctx context.Context, workload *Workload) ([]CanonicalRequest, error) {

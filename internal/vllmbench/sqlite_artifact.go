@@ -1090,7 +1090,7 @@ func checkMetadata(db *sql.DB) error {
 }
 
 func checkRequiredTables(db *sql.DB) error {
-	required := []string{"metadata", "run", "specs", "engines", "profiles", "workloads", "datasets", "source_records", "canonical_requests", "phases", "measurements", "metric_stats", "requests", "request_stream_events", "telemetry_series", "telemetry_samples", "events", "commands", "artifacts", "reports"}
+	required := []string{"metadata", "run", "specs", "engines", "profiles", "workloads", "phases", "measurements", "metric_stats", "requests", "request_stream_events", "telemetry_series", "telemetry_samples", "events", "commands", "artifacts", "reports"}
 	present := map[string]bool{}
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type = 'table'")
 	if err != nil {

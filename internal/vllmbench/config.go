@@ -292,10 +292,10 @@ func applyWorkloadDefault(workload *Workload) {
 	if !trafficConfigEmpty(workload.Traffic) {
 		workload.BenchmarkTrafficConfig = overlayTrafficConfig(workload.BenchmarkTrafficConfig, workload.Traffic)
 	}
-	applyStructuredWorkloadDefaults(workload)
 	if workload.NumPrompts <= 0 && workload.Samples > 0 {
 		workload.NumPrompts = workload.Samples
 	}
+	applyStructuredWorkloadDefaults(workload)
 	if len(workload.MaxConcurrency) == 0 && len(workload.Concurrency) > 0 {
 		workload.MaxConcurrency = append([]int(nil), workload.Concurrency...)
 	}
@@ -766,13 +766,22 @@ func validateStructuredDatasetTokenCounts(prefix string, workload Workload) []st
 
 func validateStructuredDatasetRequest(prefix string, workload Workload) []string {
 	var issues []string
-	if workload.Request.MaxOutputTokens <= 0 && workload.Dataset.OutputTokens <= 0 {
+	if structuredDatasetNeedsDefaultOutput(workload.Dataset.Type) && workload.Request.MaxOutputTokens <= 0 && workload.Dataset.OutputTokens <= 0 {
 		issues = append(issues, prefix+": request.max_output_tokens or dataset.output_tokens must be positive")
 	}
 	if strings.TrimSpace(workload.Request.Mode) == "" {
 		issues = append(issues, prefix+": request.mode is required")
 	}
 	return issues
+}
+
+func structuredDatasetNeedsDefaultOutput(datasetType string) bool {
+	switch normalizeDatasetType(datasetType) {
+	case "custom-jsonl", "raw-payload":
+		return false
+	default:
+		return true
+	}
 }
 
 func validateStructuredDatasetLocation(prefix string, workload Workload) []string {

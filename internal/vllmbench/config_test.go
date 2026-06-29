@@ -248,6 +248,22 @@ func TestApplyDefaultsNormalizesWorkloadPhase(t *testing.T) {
 	}
 }
 
+func TestApplyDefaultsCopiesSamplesToStructuredDatasetSampleCount(t *testing.T) {
+	spec := testSpec()
+	workload := testShareGPTWorkload("sharegpt.json", []string{"8k"})
+	workload.Samples = 1
+	workload.NumPrompts = 0
+	workload.Dataset.SampleCount = 0
+	spec.Workloads = []Workload{workload}
+
+	ApplyDefaults(&spec)
+
+	got := spec.Workloads[0]
+	if got.NumPrompts != 1 || got.Dataset.SampleCount != 1 {
+		t.Fatalf("structured samples defaults = num_prompts %d sample_count %d, want 1 and 1", got.NumPrompts, got.Dataset.SampleCount)
+	}
+}
+
 func TestApplyDefaultsDoesNotDuplicateEngineArgs(t *testing.T) {
 	spec := testSpec()
 	spec.Profiles[0].Args = []string{"--served-model-name", "alias"}
@@ -867,6 +883,50 @@ func TestPrepareDatasetsMaterializesShareGPTWorkload(t *testing.T) {
 	}
 	if !strings.Contains(string(vllmData), `"prompt":"Explain TTFT in one sentence."`) || !strings.Contains(string(vllmData), `"output_tokens":512`) {
 		t.Fatalf("vLLM custom dataset was not rendered correctly:\n%s", vllmData)
+	}
+}
+
+func TestPrepareDatasetsAllowsPerRowCustomOutputTokens(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := filepath.Join(dir, "custom.jsonl")
+	writeFile(t, datasetPath, `{"id":"one","prompt":"hello","max_output_tokens":3}
+`)
+	spec := testSpec()
+	spec.Workloads = []Workload{testCustomJSONLWorkload("row-output", datasetPath, []string{"8k"})}
+	spec.Workloads[0].Request.MaxOutputTokens = 0
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(spec.Workloads[0].Dataset.Prepared.VLLMCustomPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"output_tokens":3`) {
+		t.Fatalf("vLLM custom dataset did not preserve row output length:\n%s", data)
+	}
+}
+
+func TestPrepareDatasetsRejectsRawPayloadVLLMBenchRenderer(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := filepath.Join(dir, "raw.jsonl")
+	writeFile(t, datasetPath, `{"messages":[{"role":"user","content":"hello"}],"max_tokens":3,"response_format":{"type":"json_object"}}
+`)
+	spec := testSpec()
+	spec.Workloads = []Workload{testRawPayloadWorkload("raw", datasetPath, []string{"8k"})}
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	err := PrepareDatasets(context.Background(), &spec, filepath.Join(dir, "run"))
+	if err == nil || !strings.Contains(err.Error(), "raw_payload cannot be rendered") {
+		t.Fatalf("raw payload renderer error = %v", err)
 	}
 }
 
@@ -1917,6 +1977,27 @@ func testCustomJSONLWorkload(name, path string, profiles []string) Workload {
 		Request: RequestSpec{
 			Mode:            "chat",
 			MaxOutputTokens: 1,
+		},
+		Load: LoadConfig{
+			MaxConcurrency: []int{1},
+			RequestRate:    "inf",
+		},
+	}
+}
+
+func testRawPayloadWorkload(name, path string, profiles []string) Workload {
+	return Workload{
+		Name:     name,
+		Phase:    "decode",
+		Profiles: profiles,
+		Dataset: DatasetSpec{
+			Type:        "raw_payload",
+			Path:        path,
+			SampleCount: 1,
+			Selection:   "first_n",
+		},
+		Request: RequestSpec{
+			Mode: "raw_payload",
 		},
 		Load: LoadConfig{
 			MaxConcurrency: []int{1},
