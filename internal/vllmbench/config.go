@@ -76,6 +76,7 @@ type Profile struct {
 	Model                string            `json:"model,omitempty"`
 	Host                 string            `json:"host,omitempty"`
 	Port                 int               `json:"port"`
+	EndpointBaseURL      string            `json:"endpoint_base_url,omitempty"`
 	Managed              bool              `json:"managed"`
 	EnableSleepMode      bool              `json:"enable_sleep_mode,omitempty"`
 	SleepLevel           *int              `json:"sleep_level,omitempty"`

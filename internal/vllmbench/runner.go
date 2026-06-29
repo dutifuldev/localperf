@@ -1125,6 +1125,9 @@ func (writer *eventWriter) Close() error {
 }
 
 func baseURL(profile Profile) string {
+	if endpoint := strings.TrimRight(strings.TrimSpace(profile.EndpointBaseURL), "/"); endpoint != "" {
+		return endpoint
+	}
 	return fmt.Sprintf("http://%s:%d", profile.Host, profile.Port)
 }
 

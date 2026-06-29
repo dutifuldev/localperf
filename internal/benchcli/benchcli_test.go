@@ -3,7 +3,27 @@ package benchcli
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestProfileFromBaseURLPreservesPathPrefix(t *testing.T) {
+	profile, err := profileFromBaseURL("http://127.0.0.1:8000/proxy/", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.EndpointBaseURL != "http://127.0.0.1:8000/proxy" {
+		t.Fatalf("endpoint base URL = %q, want path prefix preserved", profile.EndpointBaseURL)
+	}
+}
+
+func TestTimeoutSecondsRoundsUp(t *testing.T) {
+	if got := timeoutSeconds(500 * time.Millisecond); got != 1 {
+		t.Fatalf("timeoutSeconds(500ms) = %d, want 1", got)
+	}
+	if got := timeoutSeconds(1500 * time.Millisecond); got != 2 {
+		t.Fatalf("timeoutSeconds(1500ms) = %d, want 2", got)
+	}
+}
 
 func TestHTTPLoadWorkloadCarriesConcurrency(t *testing.T) {
 	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "", "", "0", true, 3, 4, 128, 16)

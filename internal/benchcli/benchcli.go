@@ -169,7 +169,7 @@ func runHTTPLoad(args []string) {
 	spec := vllmbench.Spec{Model: *model, Safety: vllmbench.SafetyConfig{MinMemAvailableGiB: *minMemAvailableGiB}}
 	vllmbench.ApplyDefaults(&spec)
 	if *timeout > 0 {
-		spec.Safety.WorkloadTimeoutSec = int(timeout.Seconds())
+		spec.Safety.WorkloadTimeoutSec = timeoutSeconds(*timeout)
 	}
 	planned := vllmbench.PlannedRun{Profile: profile, Workload: workload, Concurrency: *maxConcurrency, ResultFile: *resultFilename}
 	if strings.TrimSpace(*logPath) == "" {
@@ -270,6 +270,9 @@ func profileFromBaseURL(rawURL, model string) (vllmbench.Profile, error) {
 	if parsed.Scheme != "http" {
 		return vllmbench.Profile{}, fmt.Errorf("only http base URLs are supported")
 	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return vllmbench.Profile{}, fmt.Errorf("base URL must not include query or fragment")
+	}
 	host, portString, err := net.SplitHostPort(parsed.Host)
 	if err != nil {
 		return vllmbench.Profile{}, fmt.Errorf("base URL must include host and port: %w", err)
@@ -278,7 +281,23 @@ func profileFromBaseURL(rawURL, model string) (vllmbench.Profile, error) {
 	if err != nil {
 		return vllmbench.Profile{}, err
 	}
-	return vllmbench.Profile{Name: "http-load", Host: host, Port: port, Model: model}, nil
+	return vllmbench.Profile{Name: "http-load", Host: host, Port: port, Model: model, EndpointBaseURL: normalizedBaseURL(parsed)}, nil
+}
+
+func normalizedBaseURL(parsed *url.URL) string {
+	base := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
+	return strings.TrimRight(base, "/")
+}
+
+func timeoutSeconds(timeout time.Duration) int {
+	seconds := int(timeout / time.Second)
+	if timeout%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
 }
 
 func httpLoadWorkload(backend, datasetName, requestRate, endpoint, datasetPath, extraBody, temperature string, ignoreEOS bool, numPrompts, maxConcurrency, randomInputLen, randomOutputLen int) (vllmbench.Workload, error) {
