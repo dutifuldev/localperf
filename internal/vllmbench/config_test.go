@@ -919,6 +919,27 @@ func TestPrepareDatasetsAllowsPerRowCustomOutputTokens(t *testing.T) {
 	}
 }
 
+func TestPrepareDatasetsKeepsExplicitTrafficRequestRate(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	spec.Workloads[0].BenchmarkTrafficConfig.RequestRate = "5"
+	spec.Workloads[0].Load.RequestRate = "inf"
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+	if got := spec.Workloads[0].RequestRate; got != "5" {
+		t.Fatalf("request rate = %q, want explicit traffic value 5", got)
+	}
+}
+
 func TestSQLiteArtifactIgnoresStaleDatasetFiles(t *testing.T) {
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
@@ -1781,6 +1802,44 @@ func TestBuildReportEnrichesGenericLengthsFromSpec(t *testing.T) {
 	row := report.Rows[0]
 	if row.InputLen != 4096 || row.OutputLen != 32 || row.DisplayInputLen() != 4096 || row.DisplayOutputLen() != 32 || row.Phase != "prefill" {
 		t.Fatalf("row was not enriched with generic lengths: %+v", row)
+	}
+}
+
+func TestBuildReportEnrichesStructuredOutputLenFromSpec(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{{
+		Name:     "sharegpt-structured",
+		Phase:    "decode",
+		Profiles: []string{"8k"},
+		Dataset:  DatasetSpec{Type: "sharegpt", SampleCount: 1},
+		Request:  RequestSpec{Mode: "chat", MaxOutputTokens: 512},
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "custom",
+			CustomOutputLen: intPointer(-1),
+			RequestRate:     "inf",
+		},
+		NumPrompts:     1,
+		MaxConcurrency: []int{1},
+	}}
+	ApplyDefaults(&spec)
+	runDir := t.TempDir()
+	if err := writeJSONFile(filepath.Join(runDir, "spec.normalized.json"), spec); err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(runDir, "results", "8k__sharegpt-structured__c1.json")
+	writeFile(t, resultPath, `{"completed":1,"failed":0,"output_throughput":10}`)
+	writeFile(t, filepath.Join(runDir, "events.jsonl"), `{"timestamp":"2026-06-26T00:00:00Z","type":"workload_finish","profile":"8k","workload":"sharegpt-structured","concurrency":1,"result_file":"results/8k__sharegpt-structured__c1.json"}`+"\n")
+	report, err := BuildReport(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(report.Rows))
+	}
+	row := report.Rows[0]
+	if row.OutputLen != 512 || row.DisplayOutputLen() != 512 {
+		t.Fatalf("row output length was not enriched from structured request: %+v", row)
 	}
 }
 
