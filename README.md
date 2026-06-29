@@ -121,9 +121,3 @@ python3 -m http.server 8766 --directory examples/gemma4-vllm-resource-sweep-2026
 ```
 
 Then visit `http://127.0.0.1:8766/`.
-
-## Documentation
-
-- [Standard vLLM Benchmarking](docs/2026-06-26-standard-vllm-benchmarking.md)
-- [SQLite Run Artifact Format](docs/2026-06-29-sqlite-run-artifact-format.md)
-- [Inference Engine Architecture Plan](docs/2026-06-29-inference-engine-architecture-plan.md)
