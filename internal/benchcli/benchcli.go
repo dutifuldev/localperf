@@ -154,7 +154,7 @@ func runHTTPLoad(args []string) {
 	_ = flags.Parse(args)
 	profile, err := profileFromBaseURL(*baseURL, *model)
 	exitOnError(err)
-	workload, err := httpLoadWorkload(*backend, *datasetName, *requestRate, *endpoint, *temperature, *ignoreEOS, *numPrompts, *randomInputLen, *randomOutputLen)
+	workload, err := httpLoadWorkload(*backend, *datasetName, *requestRate, *endpoint, *temperature, *ignoreEOS, *numPrompts, *maxConcurrency, *randomInputLen, *randomOutputLen)
 	exitOnError(err)
 	if strings.TrimSpace(*resultFilename) == "" {
 		exitOnError(fmt.Errorf("missing --result-filename"))
@@ -274,9 +274,12 @@ func profileFromBaseURL(rawURL, model string) (vllmbench.Profile, error) {
 	return vllmbench.Profile{Name: "http-load", Host: host, Port: port, Model: model}, nil
 }
 
-func httpLoadWorkload(backend, datasetName, requestRate, endpoint, temperature string, ignoreEOS bool, numPrompts, randomInputLen, randomOutputLen int) (vllmbench.Workload, error) {
+func httpLoadWorkload(backend, datasetName, requestRate, endpoint, temperature string, ignoreEOS bool, numPrompts, maxConcurrency, randomInputLen, randomOutputLen int) (vllmbench.Workload, error) {
 	if numPrompts <= 0 {
 		return vllmbench.Workload{}, fmt.Errorf("--num-prompts must be positive")
+	}
+	if maxConcurrency <= 0 {
+		return vllmbench.Workload{}, fmt.Errorf("--max-concurrency must be positive")
 	}
 	var temp *float64
 	if strings.TrimSpace(temperature) != "" {
@@ -298,9 +301,10 @@ func httpLoadWorkload(backend, datasetName, requestRate, endpoint, temperature s
 			RandomInputLen:  randomInputLen,
 			RandomOutputLen: randomOutputLen,
 		},
-		NumPrompts:  numPrompts,
-		Temperature: temp,
-		IgnoreEOS:   ignoreEOS,
+		NumPrompts:     numPrompts,
+		MaxConcurrency: []int{maxConcurrency},
+		Temperature:    temp,
+		IgnoreEOS:      ignoreEOS,
 	}
 	spec := vllmbench.Spec{
 		Name:     "http-load",

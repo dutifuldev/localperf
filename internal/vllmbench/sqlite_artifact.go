@@ -917,13 +917,19 @@ func requestSamplesForResult(runDir, resultFile string) ([]RequestSample, error)
 	if len(data) == 0 || data[0] != '{' {
 		return nil, nil
 	}
-	var payload struct {
-		RequestSamples []RequestSample `json:"request_samples"`
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, nil
 	}
-	if err := json.Unmarshal(data, &payload); err != nil {
+	samplesRaw, ok := raw["request_samples"]
+	if !ok {
+		return nil, nil
+	}
+	var samples []RequestSample
+	if err := json.Unmarshal(samplesRaw, &samples); err != nil {
 		return nil, err
 	}
-	return payload.RequestSamples, nil
+	return samples, nil
 }
 
 func insertRequestSamples(tx *sql.Tx, measurementID int64, samples []RequestSample) error {

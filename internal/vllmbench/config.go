@@ -483,8 +483,10 @@ func applyLoadGeneratorDefault(workload *Workload) {
 func normalizeLoadGenerator(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
 	switch value {
-	case "", LoadGeneratorVLLMBench, "vllm-bench", "vllmbench":
-		return value
+	case "":
+		return ""
+	case LoadGeneratorVLLMBench, "vllm-bench", "vllmbench":
+		return LoadGeneratorVLLMBench
 	case LoadGeneratorLocalPerfHTTP, "localperf-http", "http", "openai-http":
 		return LoadGeneratorLocalPerfHTTP
 	default:

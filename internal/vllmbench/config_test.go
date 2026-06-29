@@ -50,6 +50,20 @@ func TestBuildPlanAndBenchCommand(t *testing.T) {
 	}
 }
 
+func TestLoadGeneratorAliasesNormalize(t *testing.T) {
+	for _, alias := range []string{"vllm-bench", "vllmbench", "vllm_bench"} {
+		spec := testSpec()
+		spec.Workloads[0].LoadGenerator = alias
+		ApplyDefaults(&spec)
+		if got := spec.Workloads[0].LoadGenerator; got != LoadGeneratorVLLMBench {
+			t.Fatalf("load_generator alias %q normalized to %q, want %q", alias, got, LoadGeneratorVLLMBench)
+		}
+		if err := ValidateSpec(spec); err != nil {
+			t.Fatalf("ValidateSpec with alias %q: %v", alias, err)
+		}
+	}
+}
+
 func TestBenchCommandSupportsStandardDatasetKnobs(t *testing.T) {
 	spec := testSpec()
 	seed := 7
@@ -576,6 +590,19 @@ func TestParseCustomJSONLResult(t *testing.T) {
 	}
 	if row.PerUserOutputTokSec < 13.4 || row.PerUserOutputTokSec > 13.5 {
 		t.Fatalf("per-user throughput = %v, want about 13.4", row.PerUserOutputTokSec)
+	}
+}
+
+func TestRequestSamplesForResultSkipsJSONL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "result.jsonl")
+	writeFile(t, path, "{\"completed\":1}\n{\"completed\":2}\n")
+	samples, err := requestSamplesForResult(dir, "result.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 0 {
+		t.Fatalf("samples = %d, want 0", len(samples))
 	}
 }
 
