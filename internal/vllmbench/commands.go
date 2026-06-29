@@ -51,7 +51,7 @@ func ServeCommand(spec Spec, profile Profile) CommandSpec {
 	}
 	args = append(args, profileExtraArgs(profile)...)
 	return CommandSpec{
-		Env:  mergeEnv(spec.Env, profile.Env, profile.EnableSleepMode),
+		Env:  mergeEnv(spec.Env, engine.Env, profile.Env, profile.EnableSleepMode),
 		Args: args,
 	}
 }
@@ -86,7 +86,7 @@ func BenchCommand(spec Spec, run PlannedRun) CommandSpec {
 		args = append(args, "--temperature", trimFloat(*workload.Temperature))
 	}
 	return CommandSpec{
-		Env:  cloneMap(spec.Env),
+		Env:  mergeEnv(spec.Env, engine.Env, nil, false),
 		Args: args,
 	}
 }
@@ -115,7 +115,7 @@ func WarmupCommand(spec Spec, profile Profile, runDir string) CommandSpec {
 		args = append(args, "--endpoint", warmup.Endpoint)
 	}
 	return CommandSpec{
-		Env:  cloneMap(spec.Env),
+		Env:  mergeEnv(spec.Env, engine.Env, nil, false),
 		Args: args,
 	}
 }
@@ -243,8 +243,11 @@ func WithProcessEnv(env map[string]string) []string {
 	return out
 }
 
-func mergeEnv(specEnv, profileEnv map[string]string, devMode bool) map[string]string {
+func mergeEnv(specEnv, engineEnv, profileEnv map[string]string, devMode bool) map[string]string {
 	out := cloneMap(specEnv)
+	for key, value := range engineEnv {
+		out[key] = value
+	}
 	for key, value := range profileEnv {
 		out[key] = value
 	}

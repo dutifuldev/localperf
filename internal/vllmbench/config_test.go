@@ -204,6 +204,36 @@ func TestApplyDefaultsDoesNotDuplicateEngineArgs(t *testing.T) {
 	}
 }
 
+func TestCommandsIncludeEngineEnv(t *testing.T) {
+	spec := testSpec()
+	spec.Env["SPEC_ENV"] = "spec"
+	spec.Engines[0].Env = map[string]string{"ENGINE_ENV": "engine"}
+	spec.Profiles[0].Env = map[string]string{"PROFILE_ENV": "profile"}
+	spec.Warmup.Enabled = true
+	serve := ServeCommand(spec, spec.Profiles[0])
+	for key, want := range map[string]string{
+		"SPEC_ENV":             "spec",
+		"ENGINE_ENV":           "engine",
+		"PROFILE_ENV":          "profile",
+		"VLLM_SERVER_DEV_MODE": "1",
+	} {
+		if serve.Env[key] != want {
+			t.Fatalf("serve env %s = %q, want %q; env=%v", key, serve.Env[key], want, serve.Env)
+		}
+	}
+	planned := BuildPlan(spec, "runs/example")[0]
+	bench := BenchCommand(spec, planned)
+	warmup := WarmupCommand(spec, spec.Profiles[0], "runs/example")
+	for name, command := range map[string]CommandSpec{"bench": bench, "warmup": warmup} {
+		if command.Env["SPEC_ENV"] != "spec" || command.Env["ENGINE_ENV"] != "engine" {
+			t.Fatalf("%s env did not include spec and engine env: %v", name, command.Env)
+		}
+		if _, ok := command.Env["PROFILE_ENV"]; ok {
+			t.Fatalf("%s env unexpectedly included profile env: %v", name, command.Env)
+		}
+	}
+}
+
 func TestCommandSummaryRedactsSensitiveEnv(t *testing.T) {
 	summary := CommandSummary(CommandSpec{
 		Env: map[string]string{
@@ -484,13 +514,14 @@ func TestExecuteDryRunStoresOriginalSpecAndPlannedCommandStatus(t *testing.T) {
   "version": "localperf.bench/v1",
   "name": "original-spec-artifact",
   "model": "example/model",
+  "env": {"HF_TOKEN": "hf_secret", "CUTE_DSL_ARCH": "sm_121a"},
   "safety": {"min_mem_available_gib": 1},
   "profiles": [
     {
       "name": "4k",
       "managed": true,
       "port": 8104,
-      "serve": {"max_model_len": 4096, "max_num_seqs": 4}
+      "serve": {"max_model_len": 4096, "max_num_seqs": 4, "max_num_batched_tokens": 4096}
     }
   ],
   "workloads": [
@@ -549,6 +580,15 @@ func TestExecuteDryRunStoresOriginalSpecAndPlannedCommandStatus(t *testing.T) {
 	if !strings.Contains(specs["original"], `"samples": 3`) || !strings.Contains(specs["original"], `"traffic"`) {
 		t.Fatalf("original spec did not preserve submitted aliases:\n%s", specs["original"])
 	}
+	if !strings.Contains(specs["original"], `"max_num_batched_tokens": 4096`) {
+		t.Fatalf("original spec redacted or dropped token-count field:\n%s", specs["original"])
+	}
+	if strings.Contains(specs["original"], "hf_secret") || !containsRedactedMarker(specs["original"]) {
+		t.Fatalf("original spec did not redact env secret:\n%s", specs["original"])
+	}
+	if !strings.Contains(specs["original"], `"CUTE_DSL_ARCH": "sm_121a"`) {
+		t.Fatalf("original spec redacted non-secret env value:\n%s", specs["original"])
+	}
 	if strings.Contains(specs["original"], `"num_prompts"`) {
 		t.Fatalf("original spec unexpectedly contains normalized num_prompts:\n%s", specs["original"])
 	}
@@ -562,6 +602,16 @@ func TestExecuteDryRunStoresOriginalSpecAndPlannedCommandStatus(t *testing.T) {
 	}
 	if status != "planned" || exitCode.Valid {
 		t.Fatalf("planned command status=%q exit_valid=%t, want planned with null exit", status, exitCode.Valid)
+	}
+}
+
+func TestCheckSQLiteArtifactDoesNotCreateMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.sqlite")
+	if err := CheckSQLiteArtifact(path); err == nil {
+		t.Fatal("CheckSQLiteArtifact error = nil, want missing file error")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("artifact check created missing file or returned unexpected stat error: %v", err)
 	}
 }
 

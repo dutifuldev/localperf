@@ -66,6 +66,9 @@ func WriteSQLiteArtifact(runDir, artifactPath string, spec Spec, summary RunSumm
 }
 
 func CheckSQLiteArtifact(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return err
@@ -257,7 +260,11 @@ func redactSensitiveJSONValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
-			if isSensitiveEnvKey(key) {
+			if strings.EqualFold(key, "env") {
+				typed[key] = redactJSONEnv(child)
+				continue
+			}
+			if isSensitiveJSONKey(key) {
 				typed[key] = "<redacted>"
 				continue
 			}
@@ -272,6 +279,37 @@ func redactSensitiveJSONValue(value any) any {
 	default:
 		return value
 	}
+}
+
+func redactJSONEnv(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if isSensitiveEnvKey(key) {
+				typed[key] = "<redacted>"
+				continue
+			}
+			typed[key] = child
+		}
+		return typed
+	default:
+		return redactSensitiveJSONValue(value)
+	}
+}
+
+func isSensitiveJSONKey(key string) bool {
+	upper := strings.ToUpper(strings.ReplaceAll(key, "-", "_"))
+	switch upper {
+	case "AUTH", "AUTHORIZATION", "COOKIE", "CREDENTIAL", "CREDENTIALS", "KEY", "PASS", "PASSWORD", "SECRET", "TOKEN",
+		"API_KEY", "ACCESS_TOKEN", "REFRESH_TOKEN", "CLIENT_SECRET":
+		return true
+	}
+	for _, suffix := range []string{"_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_CREDENTIALS"} {
+		if strings.HasSuffix(upper, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func insertEngines(tx *sql.Tx, runID string, spec Spec) error {
