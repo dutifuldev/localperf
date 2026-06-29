@@ -288,6 +288,10 @@ func httpLoadWorkload(backend, datasetName, requestRate, endpoint, datasetPath, 
 	if maxConcurrency <= 0 {
 		return vllmbench.Workload{}, fmt.Errorf("--max-concurrency must be positive")
 	}
+	datasetPath, err := absoluteDatasetPath(datasetPath)
+	if err != nil {
+		return vllmbench.Workload{}, err
+	}
 	if strings.TrimSpace(datasetPath) != "" && strings.TrimSpace(datasetName) == "random" {
 		datasetName = "custom"
 	}
@@ -338,6 +342,18 @@ func httpLoadWorkload(backend, datasetName, requestRate, endpoint, datasetPath, 
 		return vllmbench.Workload{}, err
 	}
 	return spec.Workloads[0], nil
+}
+
+func absoluteDatasetPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" || filepath.IsAbs(path) {
+		return path, nil
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return absolute, nil
 }
 
 func mustLoadSpec(path string, filter vllmbench.Filter) vllmbench.Spec {

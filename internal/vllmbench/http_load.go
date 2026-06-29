@@ -266,7 +266,6 @@ func randomHTTPRequests(workload Workload) ([]CanonicalRequest, error) {
 			Ordinal:              i,
 			DatasetID:            datasetIDForWorkload(workload.Name),
 			SourceRecordID:       id,
-			Mode:                 "chat",
 			Messages:             []Message{{Role: "user", Content: syntheticPrompt(workload.RandomInputLen)}},
 			MaxOutputTokens:      workload.RandomOutputLen,
 			Temperature:          workload.Temperature,
@@ -507,19 +506,14 @@ func (client openAIHTTPClient) applyRequestOptions(body map[string]any, request 
 }
 
 func (client openAIHTTPClient) completionRequestBody(body map[string]any, request CanonicalRequest) (map[string]any, string, error) {
-	endpoint := strings.TrimSpace(client.workload.Endpoint)
 	body["prompt"] = firstNonEmpty(request.Prompt, messagesPrompt(request.Messages))
-	if endpoint == "" {
-		endpoint = defaultEndpoint("openai")
-	}
 	if err := mergeExtraBody(body, client.workload.ExtraBody); err != nil {
 		return nil, "", err
 	}
-	return body, endpoint, nil
+	return body, client.endpointForBackend("openai"), nil
 }
 
 func (client openAIHTTPClient) chatRequestBody(body map[string]any, request CanonicalRequest) (map[string]any, string, error) {
-	endpoint := strings.TrimSpace(client.workload.Endpoint)
 	messages := request.Messages
 	if len(messages) == 0 {
 		prompt := firstNonEmpty(request.Prompt, messagesPrompt(request.Messages))
@@ -529,13 +523,10 @@ func (client openAIHTTPClient) chatRequestBody(body map[string]any, request Cano
 		messages = []Message{{Role: "user", Content: prompt}}
 	}
 	body["messages"] = messages
-	if endpoint == "" {
-		endpoint = defaultEndpoint("openai-chat")
-	}
 	if err := mergeExtraBody(body, client.workload.ExtraBody); err != nil {
 		return nil, "", err
 	}
-	return body, endpoint, nil
+	return body, client.endpointForBackend("openai-chat"), nil
 }
 
 func (client openAIHTTPClient) requestBackend(request CanonicalRequest) string {
@@ -543,6 +534,14 @@ func (client openAIHTTPClient) requestBackend(request CanonicalRequest) string {
 		return requestModeBackendFallback(request.Mode)
 	}
 	return firstNonEmpty(client.workload.Backend, "openai-chat")
+}
+
+func (client openAIHTTPClient) endpointForBackend(backend string) string {
+	endpoint := strings.TrimSpace(client.workload.Endpoint)
+	if endpointShouldFollowBackend(endpoint, client.workload.Backend) {
+		return defaultEndpoint(backend)
+	}
+	return endpoint
 }
 
 func mergeExtraBody(body map[string]any, raw string) error {

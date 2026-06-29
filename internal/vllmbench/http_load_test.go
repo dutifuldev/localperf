@@ -58,6 +58,78 @@ func TestStructuredHTTPRequestsReadsPreparedCanonicalDataset(t *testing.T) {
 	}
 }
 
+func TestRandomHTTPRequestsUseWorkloadBackend(t *testing.T) {
+	workload := Workload{
+		Name:       "random",
+		NumPrompts: 1,
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai",
+			DatasetName:     "random",
+			RandomInputLen:  4,
+			RandomOutputLen: 8,
+		},
+	}
+	requests, err := randomHTTPRequests(workload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests[0].Mode != "" {
+		t.Fatalf("random request mode = %q, want workload backend to decide", requests[0].Mode)
+	}
+	client := openAIHTTPClient{profile: Profile{Model: "model"}, workload: workload}
+	body, endpoint, err := client.requestBody(requests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "/v1/completions" {
+		t.Fatalf("endpoint = %q, want completions endpoint", endpoint)
+	}
+	if body["prompt"] == nil || body["messages"] != nil {
+		t.Fatalf("body = %+v, want completion body", body)
+	}
+}
+
+func TestRequestEndpointFollowsRequestModeDefaults(t *testing.T) {
+	client := openAIHTTPClient{
+		profile: Profile{Model: "model"},
+		workload: Workload{
+			BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+				Backend:  "openai-chat",
+				Endpoint: "/v1/chat/completions",
+			},
+		},
+	}
+	body, endpoint, err := client.requestBody(CanonicalRequest{
+		ID:              "one",
+		Mode:            "completion",
+		Prompt:          "hello",
+		MaxOutputTokens: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "/v1/completions" {
+		t.Fatalf("endpoint = %q, want mode-specific completions endpoint", endpoint)
+	}
+	if body["prompt"] != "hello" || body["messages"] != nil {
+		t.Fatalf("body = %+v, want completion body", body)
+	}
+
+	client.workload.Endpoint = "/custom/completions"
+	_, endpoint, err = client.requestBody(CanonicalRequest{
+		ID:              "two",
+		Mode:            "completion",
+		Prompt:          "hello",
+		MaxOutputTokens: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "/custom/completions" {
+		t.Fatalf("endpoint = %q, want custom endpoint", endpoint)
+	}
+}
+
 func TestFeedHTTPJobsAndSleepContext(t *testing.T) {
 	jobs := make(chan localPerfHTTPJob)
 	done := make(chan []localPerfHTTPJob, 1)
