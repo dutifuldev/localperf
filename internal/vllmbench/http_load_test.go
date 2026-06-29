@@ -294,6 +294,30 @@ func TestScheduleHTTPRequestsRecordsUndispatchedCancellation(t *testing.T) {
 	}
 }
 
+func TestScheduleHTTPRequestsCountsInvalidRateAsFailed(t *testing.T) {
+	requests := []CanonicalRequest{
+		{ID: "one", Prompt: "hello", MaxOutputTokens: 8},
+		{ID: "two", Prompt: "bye", MaxOutputTokens: 8},
+	}
+	planned := PlannedRun{
+		Concurrency: 1,
+		Workload: Workload{
+			NumPrompts: 2,
+			BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+				RequestRate: "bad",
+			},
+		},
+	}
+	samples, err := scheduleHTTPRequests(context.Background(), openAIHTTPClient{}, requests, planned)
+	if err == nil {
+		t.Fatal("scheduleHTTPRequests error = nil, want invalid request_rate error")
+	}
+	result := buildHTTPBenchmarkResult(planned, samples, time.Now().Add(-time.Second), time.Now())
+	if len(samples) != 2 || result.Completed != 0 || result.Failed != 2 {
+		t.Fatalf("samples=%+v completed/failed=%d/%d, want two failed samples", samples, result.Completed, result.Failed)
+	}
+}
+
 func TestRequestRateDelayValues(t *testing.T) {
 	cases := []struct {
 		value string

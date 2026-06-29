@@ -298,7 +298,7 @@ func scheduleHTTPRequests(ctx context.Context, client openAIHTTPClient, requests
 	}
 	delay, err := requestRateDelay(planned.Workload.RequestRate)
 	if err != nil {
-		return nil, err
+		return addUndispatchedHTTPSamples(nil, requests, err, time.Now().UTC()), err
 	}
 	jobs := make(chan localPerfHTTPJob)
 	results := make(chan RequestSample, len(requests))
