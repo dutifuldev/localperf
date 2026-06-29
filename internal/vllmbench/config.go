@@ -730,6 +730,7 @@ func validateStructuredDataset(prefix string, workload Workload) []string {
 	var issues []string
 	issues = append(issues, validateStructuredDatasetType(prefix, workload)...)
 	issues = append(issues, validateStructuredDatasetCounts(prefix, workload)...)
+	issues = append(issues, validateStructuredDatasetSelection(prefix, workload)...)
 	issues = append(issues, validateStructuredDatasetRequest(prefix, workload)...)
 	issues = append(issues, validateStructuredDatasetLocation(prefix, workload)...)
 	return issues
@@ -753,6 +754,15 @@ func validateStructuredDatasetCounts(prefix string, workload Workload) []string 
 	return append(issues, validateStructuredDatasetTokenCounts(prefix, workload)...)
 }
 
+func validateStructuredDatasetSelection(prefix string, workload Workload) []string {
+	switch strings.TrimSpace(workload.Dataset.Selection) {
+	case "first_n", "random", "shuffle":
+		return nil
+	default:
+		return []string{prefix + ": unsupported dataset.selection " + workload.Dataset.Selection}
+	}
+}
+
 func validateStructuredDatasetTokenCounts(prefix string, workload Workload) []string {
 	var issues []string
 	if workload.Dataset.InputTokens < 0 {
@@ -771,6 +781,9 @@ func validateStructuredDatasetRequest(prefix string, workload Workload) []string
 	}
 	if strings.TrimSpace(workload.Request.Mode) == "" {
 		issues = append(issues, prefix+": request.mode is required")
+	}
+	if workload.Dataset.Type == "sharegpt" && strings.TrimSpace(workload.Request.TurnPolicy) != "first_user_turn" {
+		issues = append(issues, prefix+": unsupported request.turn_policy "+workload.Request.TurnPolicy)
 	}
 	return issues
 }

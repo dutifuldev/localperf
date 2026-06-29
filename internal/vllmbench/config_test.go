@@ -343,6 +343,21 @@ func TestValidateSpecRejectsInvalidWarmupTraffic(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsUnsupportedStructuredDatasetControls(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload("sharegpt.json", []string{"8k"})}
+	spec.Workloads[0].Dataset.Selection = "randm"
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "dataset.selection") {
+		t.Fatalf("ValidateSpec error = %v, want dataset.selection issue", err)
+	}
+
+	spec.Workloads[0].Dataset.Selection = "first_n"
+	spec.Workloads[0].Request.TurnPolicy = "last_user_turn"
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "request.turn_policy") {
+		t.Fatalf("ValidateSpec error = %v, want request.turn_policy issue", err)
+	}
+}
+
 func TestValidateSpecRequiresMemoryFloor(t *testing.T) {
 	spec := testSpec()
 	spec.Safety.MinMemAvailableGiB = 0
