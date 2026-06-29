@@ -237,6 +237,9 @@ func applyMaterializedDatasetToWorkload(workload *Workload, requestCount int, vl
 	workload.BenchmarkTrafficConfig.CustomOutputLen = intPointer(-1)
 	workload.BenchmarkTrafficConfig.Backend = firstNonEmpty(workload.BenchmarkTrafficConfig.Backend, "openai-chat")
 	workload.BenchmarkTrafficConfig.Endpoint = firstNonEmpty(workload.BenchmarkTrafficConfig.Endpoint, defaultEndpoint(workload.BenchmarkTrafficConfig.Backend))
+	if workload.BenchmarkTrafficConfig.Backend == "openai-chat" {
+		workload.BenchmarkTrafficConfig.SkipChatTemplate = true
+	}
 	workload.BenchmarkTrafficConfig.RequestRate = firstNonEmpty(workload.Load.RequestRate, workload.BenchmarkTrafficConfig.RequestRate, "inf")
 	if len(workload.MaxConcurrency) == 0 && len(workload.Load.MaxConcurrency) > 0 {
 		workload.MaxConcurrency = append([]int(nil), workload.Load.MaxConcurrency...)
@@ -429,7 +432,7 @@ func (shareGPTDatasetAdapter) Open(_ context.Context, spec DatasetSpec, request 
 	if err != nil {
 		return nil, DatasetInfo{}, err
 	}
-	records = selectShareGPTRecords(records, spec)
+	records = selectDatasetRows(records, spec)
 	count := sampleCount(spec, len(records))
 	requests := make([]CanonicalRequest, 0, count)
 	for _, record := range records {
@@ -542,16 +545,16 @@ func shareGPTRecordID(index int, generic map[string]json.RawMessage) string {
 	return fmt.Sprintf("sharegpt-%06d", index+1)
 }
 
-func selectShareGPTRecords(records []shareGPTRecord, spec DatasetSpec) []shareGPTRecord {
+func selectDatasetRows[T any](rows []T, spec DatasetSpec) []T {
 	selection := firstNonEmpty(spec.Selection, "first_n")
 	if selection != "random" && selection != "shuffle" {
-		return records
+		return rows
 	}
 	seed := int64(0)
 	if spec.Seed != nil {
 		seed = int64(*spec.Seed)
 	}
-	out := append([]shareGPTRecord(nil), records...)
+	out := append([]T(nil), rows...)
 	rand.New(rand.NewSource(seed)).Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
 	return out
 }
@@ -616,6 +619,7 @@ func (customJSONLDatasetAdapter) Open(_ context.Context, spec DatasetSpec, reque
 	if err != nil {
 		return nil, DatasetInfo{}, err
 	}
+	rows = selectDatasetRows(rows, spec)
 	rows = limitCanonicalRequests(rows, sampleCount(spec, len(rows)))
 	return &sliceRequestIterator{requests: rows}, datasetInfo(spec, "custom_jsonl", len(rows)), nil
 }

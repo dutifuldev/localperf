@@ -872,7 +872,7 @@ func TestPrepareDatasetsMaterializesShareGPTWorkload(t *testing.T) {
 		t.Fatalf("prepared dataset metadata missing: %+v", workload.Dataset.Prepared)
 	}
 	command := ShellQuote(BenchCommand(spec, BuildPlan(spec, runDir)[0]).Args)
-	for _, want := range []string{"--dataset-name custom", "--dataset-path " + workload.Dataset.Prepared.VLLMCustomPath, "--custom-output-len -1", "--num-prompts 1", "--max-concurrency 1"} {
+	for _, want := range []string{"--dataset-name custom", "--dataset-path " + workload.Dataset.Prepared.VLLMCustomPath, "--custom-output-len -1", "--skip-chat-template", "--num-prompts 1", "--max-concurrency 1"} {
 		if !strings.Contains(command, want) {
 			t.Fatalf("command %q missing %q", command, want)
 		}

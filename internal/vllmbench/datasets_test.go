@@ -2,6 +2,7 @@ package vllmbench
 
 import (
 	"context"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,51 @@ func TestCustomJSONLAndRawPayloadAdapters(t *testing.T) {
 	if _, _, err := (rawPayloadDatasetAdapter{}).Open(context.Background(), DatasetSpec{}, RequestSpec{}); err == nil {
 		t.Fatal("raw_payload should require a path")
 	}
+}
+
+func TestCustomJSONLAdapterAppliesRandomSelection(t *testing.T) {
+	dir := t.TempDir()
+	customPath := filepath.Join(dir, "custom.jsonl")
+	writeFile(t, customPath, `{"id":"one","prompt":"one"}
+{"id":"two","prompt":"two"}
+{"id":"three","prompt":"three"}
+`)
+	orderedIDs := []string{"one", "two", "three"}
+	seed := 1
+	expected := shuffledIDs(orderedIDs, seed)[:2]
+	for strings.Join(expected, ",") == "one,two" {
+		seed++
+		expected = shuffledIDs(orderedIDs, seed)[:2]
+	}
+	iterator, _, err := (customJSONLDatasetAdapter{}).Open(context.Background(), DatasetSpec{
+		Path:        customPath,
+		SampleCount: 2,
+		Selection:   "random",
+		Seed:        &seed,
+	}, RequestSpec{MaxOutputTokens: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for {
+		request, ok, err := iterator.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			break
+		}
+		got = append(got, request.ID)
+	}
+	if strings.Join(got, ",") != strings.Join(expected, ",") {
+		t.Fatalf("custom JSONL selected ids = %v, want %v", got, expected)
+	}
+}
+
+func shuffledIDs(ids []string, seed int) []string {
+	out := append([]string(nil), ids...)
+	rand.New(rand.NewSource(int64(seed))).Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
+	return out
 }
 
 func TestWriteVLLMCustomDatasetValidation(t *testing.T) {
