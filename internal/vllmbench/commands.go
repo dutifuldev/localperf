@@ -97,12 +97,12 @@ func BenchCommand(spec Spec, run PlannedRun) CommandSpec {
 
 func LoadCommand(spec Spec, run PlannedRun) CommandSpec {
 	if run.Workload.LoadGenerator == LoadGeneratorLocalPerfHTTP {
-		return LocalPerfHTTPCommand(run)
+		return LocalPerfHTTPCommand(spec, run)
 	}
 	return BenchCommand(spec, run)
 }
 
-func LocalPerfHTTPCommand(run PlannedRun) CommandSpec {
+func LocalPerfHTTPCommand(spec Spec, run PlannedRun) CommandSpec {
 	args := []string{
 		"localperf", "bench", "http-load",
 		"--backend", run.Workload.Backend,
@@ -113,6 +113,12 @@ func LocalPerfHTTPCommand(run PlannedRun) CommandSpec {
 		"--max-concurrency", strconv.Itoa(run.Concurrency),
 		"--request-rate", run.Workload.RequestRate,
 		"--result-filename", run.ResultFile,
+	}
+	if spec.Safety.MinMemAvailableGiB > 0 {
+		args = append(args, "--min-mem-available-gib", trimFloat(spec.Safety.MinMemAvailableGiB))
+	}
+	if datasetPath := localPerfHTTPDatasetPath(run.Workload); datasetPath != "" {
+		args = append(args, "--dataset-path", datasetPath)
 	}
 	if run.Workload.DatasetName == "random" {
 		if run.Workload.RandomInputLen > 0 {
@@ -132,6 +138,13 @@ func LocalPerfHTTPCommand(run PlannedRun) CommandSpec {
 		args = append(args, "--temperature", trimFloat(*run.Workload.Temperature))
 	}
 	return CommandSpec{Args: args}
+}
+
+func localPerfHTTPDatasetPath(workload Workload) string {
+	if path := strings.TrimSpace(workload.Dataset.Prepared.CanonicalPath); path != "" {
+		return path
+	}
+	return ""
 }
 
 func WarmupCommand(spec Spec, profile Profile, runDir string) CommandSpec {

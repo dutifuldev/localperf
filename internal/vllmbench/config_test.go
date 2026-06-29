@@ -937,6 +937,40 @@ func TestPrepareDatasetsMaterializesShareGPTWorkload(t *testing.T) {
 	}
 }
 
+func TestLocalPerfHTTPCommandUsesPreparedCanonicalDataset(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+	workload := spec.Workloads[0]
+	command := ShellQuote(LoadCommand(spec, BuildPlan(spec, runDir)[0]).Args)
+	for _, want := range []string{
+		"localperf bench http-load",
+		"--dataset-name custom",
+		"--dataset-path " + workload.Dataset.Prepared.CanonicalPath,
+		"--min-mem-available-gib 40",
+		"--num-prompts 1",
+		"--max-concurrency 1",
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command %q missing %q", command, want)
+		}
+	}
+	if strings.Contains(command, workload.Dataset.Prepared.VLLMCustomPath) {
+		t.Fatalf("localperf_http command should use canonical dataset path, got %q", command)
+	}
+}
+
 func TestPrepareDatasetsAllowsPerRowCustomOutputTokens(t *testing.T) {
 	dir := t.TempDir()
 	datasetPath := filepath.Join(dir, "custom.jsonl")

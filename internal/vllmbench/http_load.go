@@ -134,7 +134,7 @@ type numericStats struct {
 }
 
 func executeLocalPerfHTTPBench(ctx context.Context, spec Spec, planned PlannedRun, logPath string) (commandResult, error) {
-	if err := prepareCommandPaths(LocalPerfHTTPCommand(planned), logPath); err != nil {
+	if err := prepareCommandPaths(LocalPerfHTTPCommand(spec, planned), logPath); err != nil {
 		return commandResult{ExitCode: -1}, err
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second)
@@ -205,13 +205,17 @@ func runLocalPerfHTTPBenchmark(ctx context.Context, planned PlannedRun) (*HTTPBe
 }
 
 func plannedRunHTTPRequests(ctx context.Context, planned PlannedRun) ([]CanonicalRequest, error) {
-	if hasStructuredDataset(planned.Workload) {
+	if hasPreparedCanonicalDataset(planned.Workload) || hasStructuredDataset(planned.Workload) {
 		return structuredHTTPRequests(planned)
 	}
 	if planned.Workload.DatasetName == "random" {
 		return randomHTTPRequests(planned.Workload)
 	}
 	return nil, fmt.Errorf("localperf_http supports random and structured datasets, not dataset_name %q", planned.Workload.DatasetName)
+}
+
+func hasPreparedCanonicalDataset(workload Workload) bool {
+	return strings.TrimSpace(workload.Dataset.Prepared.CanonicalPath) != ""
 }
 
 func structuredHTTPRequests(planned PlannedRun) ([]CanonicalRequest, error) {
