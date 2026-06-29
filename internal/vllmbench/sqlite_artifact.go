@@ -1200,7 +1200,7 @@ func eventHasImportableResult(event Event) bool {
 }
 
 func eventHasArtifactResult(event Event) bool {
-	return eventHasImportableResult(event) || (event.Type == "warmup_finish" && event.ResultFile != "")
+	return event.ResultFile != "" && (event.Type == "workload_finish" || event.Type == "warmup_finish")
 }
 
 func eventDetailBool(event Event, key string) bool {

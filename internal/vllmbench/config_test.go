@@ -1726,6 +1726,14 @@ func TestEventHasArtifactResultIncludesWarmup(t *testing.T) {
 	if eventHasImportableResult(event) {
 		t.Fatal("warmup result event should not be imported as a measurement row")
 	}
+
+	event = Event{Type: "workload_finish", ResultFile: filepath.Join("results", "failed.json"), Error: "external benchmark failed"}
+	if !eventHasArtifactResult(event) {
+		t.Fatal("failed workload result should be preserved as a raw artifact")
+	}
+	if eventHasImportableResult(event) {
+		t.Fatal("failed workload result without result_written should not be imported as a measurement row")
+	}
 }
 
 func TestArtifactIDForPathVariants(t *testing.T) {
