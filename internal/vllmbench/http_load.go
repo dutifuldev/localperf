@@ -486,7 +486,11 @@ func (client openAIHTTPClient) requestBody(request CanonicalRequest) (map[string
 	if err != nil {
 		return nil, "", err
 	}
-	if client.requestBackend(request) == "openai" {
+	backend, err := client.requestBackend(request)
+	if err != nil {
+		return nil, "", err
+	}
+	if backend == "openai" {
 		return client.completionRequestBody(body, request)
 	}
 	return client.chatRequestBody(body, request)
@@ -541,11 +545,15 @@ func (client openAIHTTPClient) chatRequestBody(body map[string]any, request Cano
 	return body, client.endpointForBackend("openai-chat"), nil
 }
 
-func (client openAIHTTPClient) requestBackend(request CanonicalRequest) string {
-	if strings.TrimSpace(request.Mode) != "" {
-		return requestModeBackendFallback(request.Mode)
+func (client openAIHTTPClient) requestBackend(request CanonicalRequest) (string, error) {
+	if mode := strings.TrimSpace(request.Mode); mode != "" {
+		backend, ok := requestModeBackend(mode)
+		if !ok {
+			return "", fmt.Errorf("request %s has unsupported mode %q", request.ID, mode)
+		}
+		return backend, nil
 	}
-	return firstNonEmpty(client.workload.Backend, "openai-chat")
+	return firstNonEmpty(client.workload.Backend, "openai-chat"), nil
 }
 
 func (client openAIHTTPClient) endpointForBackend(backend string) string {
@@ -575,14 +583,6 @@ func mergeExtraBody(body map[string]any, raw string) error {
 		body[key] = value
 	}
 	return nil
-}
-
-func requestModeBackendFallback(mode string) string {
-	backend, ok := requestModeBackend(mode)
-	if !ok {
-		return "openai-chat"
-	}
-	return backend
 }
 
 func (sample RequestSample) withSuccess(request CanonicalRequest, response openAIResponse, data []byte, completed time.Time, firstByteAt *time.Time) RequestSample {

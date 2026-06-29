@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,6 +128,24 @@ func TestRequestEndpointFollowsRequestModeDefaults(t *testing.T) {
 	}
 	if endpoint != "/custom/completions" {
 		t.Fatalf("endpoint = %q, want custom endpoint", endpoint)
+	}
+}
+
+func TestRequestBodyRejectsUnsupportedRequestMode(t *testing.T) {
+	client := openAIHTTPClient{
+		profile: Profile{Model: "model"},
+		workload: Workload{
+			BenchmarkTrafficConfig: BenchmarkTrafficConfig{Backend: "openai-chat"},
+		},
+	}
+	_, _, err := client.requestBody(CanonicalRequest{
+		ID:              "raw",
+		Mode:            "raw_payload",
+		Prompt:          "hello",
+		MaxOutputTokens: 8,
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported mode "raw_payload"`) {
+		t.Fatalf("requestBody error = %v, want unsupported mode error", err)
 	}
 }
 
