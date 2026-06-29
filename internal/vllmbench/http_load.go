@@ -226,7 +226,7 @@ func runLocalPerfHTTPBenchmark(ctx context.Context, planned PlannedRun) (*HTTPBe
 }
 
 func plannedRunHTTPRequests(ctx context.Context, planned PlannedRun) ([]CanonicalRequest, error) {
-	if hasPreparedCanonicalDataset(planned.Workload) || hasStructuredDataset(planned.Workload) {
+	if hasHTTPDatasetPath(planned.Workload) || hasStructuredDataset(planned.Workload) {
 		return structuredHTTPRequests(planned)
 	}
 	if planned.Workload.DatasetName == "random" {
@@ -235,12 +235,19 @@ func plannedRunHTTPRequests(ctx context.Context, planned PlannedRun) ([]Canonica
 	return nil, fmt.Errorf("localperf_http supports random and structured datasets, not dataset_name %q", planned.Workload.DatasetName)
 }
 
-func hasPreparedCanonicalDataset(workload Workload) bool {
-	return strings.TrimSpace(workload.Dataset.Prepared.CanonicalPath) != ""
+func hasHTTPDatasetPath(workload Workload) bool {
+	return httpDatasetPath(workload) != ""
+}
+
+func httpDatasetPath(workload Workload) string {
+	if path := strings.TrimSpace(workload.Dataset.Prepared.CanonicalPath); path != "" {
+		return path
+	}
+	return strings.TrimSpace(workload.DatasetPath)
 }
 
 func structuredHTTPRequests(planned PlannedRun) ([]CanonicalRequest, error) {
-	path := resolveResultPath(filepath.Dir(filepath.Dir(planned.ResultFile)), planned.Workload.Dataset.Prepared.CanonicalPath)
+	path := resolveResultPath(filepath.Dir(filepath.Dir(planned.ResultFile)), httpDatasetPath(planned.Workload))
 	requests, err := readCanonicalRequestFile(path)
 	if err != nil {
 		return nil, err
@@ -691,9 +698,9 @@ func buildHTTPBenchmarkResult(planned PlannedRun, samples []RequestSample, start
 }
 
 func applyRequestStats(result *HTTPBenchmarkResult, samples []RequestSample) {
-	outputStats := statsFromSamples(samples, func(sample RequestSample) float64 { return sample.OutputTokensPerSecond })
-	totalStats := statsFromSamples(samples, func(sample RequestSample) float64 { return sample.TotalTokensPerSecond })
-	latencyStats := statsFromSamples(samples, func(sample RequestSample) float64 { return sample.LatencyMillis })
+	outputStats := statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.OutputTokensPerSecond })
+	totalStats := statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.TotalTokensPerSecond })
+	latencyStats := statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.LatencyMillis })
 	result.RequestOutputThroughputMean = outputStats.Mean
 	result.RequestOutputThroughputStdDev = outputStats.StdDev
 	result.RequestOutputThroughputMin = outputStats.Min
@@ -710,17 +717,28 @@ func applyRequestStats(result *HTTPBenchmarkResult, samples []RequestSample) {
 	result.P99LatencyMillis = latencyStats.P99
 }
 
-func statsFromSamples(samples []RequestSample, value func(RequestSample) float64) numericStats {
+func statsFromSamples(samples []RequestSample, includeZero bool, value func(RequestSample) float64) numericStats {
 	values := make([]float64, 0, len(samples))
 	for _, sample := range samples {
-		if sample.Status != "completed" {
-			continue
-		}
-		if v := value(sample); v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0) {
+		if v, ok := sampleStatValue(sample, includeZero, value); ok {
 			values = append(values, v)
 		}
 	}
 	return numericStatsFromValues(values)
+}
+
+func sampleStatValue(sample RequestSample, includeZero bool, value func(RequestSample) float64) (float64, bool) {
+	if sample.Status != "completed" {
+		return 0, false
+	}
+	return usableStatValue(value(sample), includeZero)
+}
+
+func usableStatValue(value float64, includeZero bool) (float64, bool) {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return 0, false
+	}
+	return value, value > 0 || includeZero
 }
 
 func numericStatsFromValues(values []float64) numericStats {

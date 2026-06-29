@@ -847,6 +847,7 @@ type measurementInsert struct {
 }
 
 func insertMeasurement(tx *sql.Tx, insert measurementInsert) (int64, error) {
+	completedMeasurement := insert.status == "completed" && insert.row.Completed > 0
 	result, err := tx.Exec(`INSERT INTO measurements (
 		run_id, profile_id, workload_id, phase_id, repeat_index, concurrency,
 		samples_requested, status, started_at, completed_at, wall_time_ms,
@@ -857,9 +858,10 @@ func insertMeasurement(tx *sql.Tx, insert measurementInsert) (int64, error) {
 		insert.runID, insert.planned.Profile.Name, insert.planned.Workload.Name, zeroNullInt(insert.phaseID),
 		insert.planned.Repeat, insert.planned.Concurrency, insert.planned.Workload.NumPrompts, insert.status,
 		timePtrString(insert.startedAt), timePtrString(insert.completedAt), durationMillis(insert.startedAt, insert.completedAt),
-		insert.row.Completed, insert.row.Failed, intNull(insert.row.PromptTokens), intNull(insert.row.CompletionTokens),
-		intNull(insert.row.TotalTokens), floatNull(insert.row.OutputTokensPerSec),
-		floatNull(insert.row.PerUserOutputTokSec), floatNull(insert.row.TotalTokensPerSec),
+		insert.row.Completed, insert.row.Failed, knownIntNull(completedMeasurement, insert.row.PromptTokens),
+		knownIntNull(completedMeasurement, insert.row.CompletionTokens), knownIntNull(completedMeasurement, insert.row.TotalTokens),
+		knownFloatNull(completedMeasurement, insert.row.OutputTokensPerSec),
+		knownFloatNull(completedMeasurement, insert.row.PerUserOutputTokSec), knownFloatNull(completedMeasurement, insert.row.TotalTokensPerSec),
 		zeroNullInt(insert.rawID), nil, insert.errorText)
 	if err != nil {
 		return 0, err
@@ -951,10 +953,10 @@ type sampleMetricDistribution struct {
 
 func sampleMetricDistributions(samples []RequestSample) []sampleMetricDistribution {
 	return []sampleMetricDistribution{
-		{"request_output_throughput", "tok/s", statsFromSamples(samples, func(sample RequestSample) float64 { return sample.OutputTokensPerSecond })},
-		{"request_total_throughput", "tok/s", statsFromSamples(samples, func(sample RequestSample) float64 { return sample.TotalTokensPerSecond })},
-		{"latency", "ms", statsFromSamples(samples, func(sample RequestSample) float64 { return sample.LatencyMillis })},
-		{"first_byte", "ms", statsFromSamples(samples, func(sample RequestSample) float64 { return sample.FirstByteMillis })},
+		{"request_output_throughput", "tok/s", statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.OutputTokensPerSecond })},
+		{"request_total_throughput", "tok/s", statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.TotalTokensPerSecond })},
+		{"latency", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.LatencyMillis })},
+		{"first_byte", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.FirstByteMillis })},
 	}
 }
 
@@ -962,7 +964,7 @@ func insertMetricDistribution(tx *sql.Tx, measurementID int64, metric, unit stri
 	_, err := tx.Exec(`INSERT INTO metric_stats (
 		measurement_id, metric, unit, mean, stddev, min, p50, p90, p95, p99, max, count
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		measurementID, metric, unit, stats.Mean, floatNull(stats.StdDev), stats.Min, stats.P50,
+		measurementID, metric, unit, stats.Mean, stats.StdDev, stats.Min, stats.P50,
 		stats.P90, stats.P95, stats.P99, stats.Max, stats.Count)
 	return err
 }
@@ -1000,6 +1002,7 @@ func requestSamplesFromResultData(data []byte) ([]RequestSample, error) {
 
 func insertRequestSamples(tx *sql.Tx, measurementID int64, samples []RequestSample) error {
 	for _, sample := range samples {
+		completedSample := sample.Status == "completed"
 		if _, err := tx.Exec(`INSERT INTO requests (
 			measurement_id, request_index, request_id, status, streamed,
 			http_status_code, started_at, first_byte_at, first_byte_ms,
@@ -1013,9 +1016,9 @@ func insertRequestSamples(tx *sql.Tx, measurementID int64, samples []RequestSamp
 			intNull(sample.HTTPStatusCode), sample.StartedAt.Format(time.RFC3339),
 			timePtrString(sample.FirstByteAt), floatNull(sample.FirstByteMillis),
 			nil, timePtrString(sample.CompletedAt), floatNull(sample.LatencyMillis),
-			nil, nil, nil, intNull(sample.PromptTokens), intNull(sample.CompletionTokens),
-			intNull(sample.TotalTokens), floatNull(sample.OutputTokensPerSecond),
-			floatNull(sample.TotalTokensPerSecond), nullString(sample.PromptSHA256),
+			nil, nil, nil, knownIntNull(completedSample, sample.PromptTokens), knownIntNull(completedSample, sample.CompletionTokens),
+			knownIntNull(completedSample, sample.TotalTokens), knownFloatNull(completedSample, sample.OutputTokensPerSecond),
+			knownFloatNull(completedSample, sample.TotalTokensPerSecond), nullString(sample.PromptSHA256),
 			nullString(sample.ResponseSHA256), nullString(sample.ErrorType),
 			nullString(sample.ErrorCode), nullString(sample.ErrorMessage),
 			nullableJSON(sample.ResponseMetadata)); err != nil {
@@ -1445,6 +1448,10 @@ func intNull(value int) any {
 	return value
 }
 
+func knownIntNull(known bool, value int) any {
+	return knownNull(known, value, intNull(value))
+}
+
 func intPointerNull(value *int) any {
 	if value == nil {
 		return nil
@@ -1464,6 +1471,17 @@ func floatNull(value float64) any {
 		return nil
 	}
 	return value
+}
+
+func knownFloatNull(known bool, value float64) any {
+	return knownNull(known, value, floatNull(value))
+}
+
+func knownNull(known bool, value, fallback any) any {
+	if known {
+		return value
+	}
+	return fallback
 }
 
 func eventLevel(event Event) string {

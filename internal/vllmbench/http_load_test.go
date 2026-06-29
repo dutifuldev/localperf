@@ -57,6 +57,17 @@ func TestStructuredHTTPRequestsReadsPreparedCanonicalDataset(t *testing.T) {
 	if _, err := structuredHTTPRequests(planned); err == nil {
 		t.Fatal("expected too-few prepared requests to fail")
 	}
+
+	planned.Workload.NumPrompts = 2
+	planned.Workload.Dataset.Prepared.CanonicalPath = ""
+	planned.Workload.BenchmarkTrafficConfig.DatasetPath = canonicalPath
+	requests, err = structuredHTTPRequests(planned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 || requests[1].ID != "two" {
+		t.Fatalf("dataset_path requests = %+v, want direct canonical path", requests)
+	}
 }
 
 func TestRandomHTTPRequestsUseWorkloadBackend(t *testing.T) {
@@ -179,6 +190,12 @@ func TestHTTPResponsePreservesZeroUsageTokens(t *testing.T) {
 	}
 	if sample.OutputTokensPerSecond != 0 || sample.TotalTokensPerSecond != 12 {
 		t.Fatalf("throughput = output %.3f total %.3f, want 0/12", sample.OutputTokensPerSecond, sample.TotalTokensPerSecond)
+	}
+	stats := statsFromSamples([]RequestSample{sample}, true, func(sample RequestSample) float64 {
+		return sample.OutputTokensPerSecond
+	})
+	if stats.Count != 1 || stats.Mean != 0 {
+		t.Fatalf("zero throughput stats = %+v, want count 1 mean 0", stats)
 	}
 }
 

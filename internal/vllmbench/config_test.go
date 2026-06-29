@@ -1486,6 +1486,70 @@ func TestExecuteLocalPerfHTTPRecordsRequestSamples(t *testing.T) {
 	}
 }
 
+func TestExecuteLocalPerfHTTPPreservesZeroTokenArtifacts(t *testing.T) {
+	server, host, port := fakeOpenAIServerWithUsage(t, 12, 0, 12)
+	defer server.Close()
+	spec := testSpec()
+	spec.Name = "localperf-http-zero-tokens"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Host = host
+	spec.Profiles[0].Port = port
+	spec.Profiles[0].Managed = false
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{testRandomWorkload("localperf-http-zero", []string{spec.Profiles[0].Name}, 64, 8, 1, []int{1})}
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if summary.CompletedRuns != 1 || summary.FailedRuns != 0 {
+		t.Fatalf("summary = %+v, want one completed run", summary)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	assertZeroTokenArtifactRows(t, db)
+}
+
+func assertZeroTokenArtifactRows(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var requestCompletion sql.NullInt64
+	var requestOutput sql.NullFloat64
+	if err := db.QueryRow("SELECT completion_tokens, output_tok_s FROM requests LIMIT 1").Scan(&requestCompletion, &requestOutput); err != nil {
+		t.Fatal(err)
+	}
+	if !requestCompletion.Valid || requestCompletion.Int64 != 0 || !requestOutput.Valid || requestOutput.Float64 != 0 {
+		t.Fatalf("request completion/output = %v/%v, want measured zeroes", requestCompletion, requestOutput)
+	}
+	var measurementCompletion sql.NullInt64
+	var measurementOutput sql.NullFloat64
+	if err := db.QueryRow("SELECT completion_tokens, aggregate_output_tok_s FROM measurements LIMIT 1").Scan(&measurementCompletion, &measurementOutput); err != nil {
+		t.Fatal(err)
+	}
+	if !measurementCompletion.Valid || measurementCompletion.Int64 != 0 || !measurementOutput.Valid || measurementOutput.Float64 != 0 {
+		t.Fatalf("measurement completion/output = %v/%v, want measured zeroes", measurementCompletion, measurementOutput)
+	}
+	var mean float64
+	var count int
+	if err := db.QueryRow("SELECT mean, count FROM metric_stats WHERE metric = 'request_output_throughput'").Scan(&mean, &count); err != nil {
+		t.Fatal(err)
+	}
+	if mean != 0 || count != 1 {
+		t.Fatalf("request_output_throughput mean/count = %v/%d, want 0/1", mean, count)
+	}
+}
+
 func TestLocalPerfHTTPMergesExtraBody(t *testing.T) {
 	client := openAIHTTPClient{
 		profile: Profile{Model: "model"},
@@ -2489,6 +2553,11 @@ func testSpec() Spec {
 
 func fakeOpenAIServer(t *testing.T) (*httptest.Server, string, int) {
 	t.Helper()
+	return fakeOpenAIServerWithUsage(t, 64, 8, 72)
+}
+
+func fakeOpenAIServerWithUsage(t *testing.T, promptTokens, completionTokens, totalTokens int) (*httptest.Server, string, int) {
+	t.Helper()
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -2499,7 +2568,7 @@ func fakeOpenAIServer(t *testing.T) (*httptest.Server, string, int) {
 			call := calls.Add(1)
 			time.Sleep(time.Duration(call*10) * time.Millisecond)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"id":"cmpl-%d","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":64,"completion_tokens":8,"total_tokens":72}}`, call)
+			_, _ = fmt.Fprintf(w, `{"id":"cmpl-%d","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`, call, promptTokens, completionTokens, totalTokens)
 		default:
 			http.NotFound(w, r)
 		}
