@@ -12,70 +12,78 @@ func ApplyFilter(spec *Spec, filter Filter) error {
 	profileFilter := stringSet(filter.Profiles)
 	workloadFilter := stringSet(filter.Workloads)
 	concurrencyFilter := intSet(filter.Concurrencies)
-	if len(profileFilter) == 0 && len(workloadFilter) == 0 && len(concurrencyFilter) == 0 {
+	if filtersEmpty(profileFilter, workloadFilter, concurrencyFilter) {
 		return nil
 	}
 	if len(profileFilter) > 0 {
-		profiles := spec.Profiles[:0]
-		for _, profile := range spec.Profiles {
-			if profileFilter[profile.Name] {
-				profiles = append(profiles, profile)
-			}
-		}
-		spec.Profiles = profiles
+		spec.Profiles = filterProfiles(spec.Profiles, profileFilter)
 	}
 	if len(workloadFilter) > 0 {
-		workloads := spec.Workloads[:0]
-		for _, workload := range spec.Workloads {
-			if workloadFilter[workload.Name] {
-				workloads = append(workloads, workload)
-			}
-		}
-		spec.Workloads = workloads
+		spec.Workloads = filterWorkloadsByName(spec.Workloads, workloadFilter)
 	}
 	if len(profileFilter) > 0 {
-		workloads := spec.Workloads[:0]
-		for _, workload := range spec.Workloads {
-			if len(workload.Profiles) == 0 {
-				workload.Profiles = filter.Profiles
-				workloads = append(workloads, workload)
-				continue
-			}
-			profiles := make([]string, 0, len(workload.Profiles))
-			for _, profileName := range workload.Profiles {
-				if profileFilter[profileName] {
-					profiles = append(profiles, profileName)
-				}
-			}
-			if len(profiles) == 0 {
-				continue
-			}
-			workload.Profiles = profiles
-			workloads = append(workloads, workload)
-		}
-		spec.Workloads = workloads
+		spec.Workloads = filterWorkloadsByProfiles(spec.Workloads, filter.Profiles, profileFilter)
 	}
 	if len(concurrencyFilter) > 0 {
-		workloads := spec.Workloads[:0]
-		for _, workload := range spec.Workloads {
-			values := make([]int, 0, len(workload.MaxConcurrency))
-			for _, concurrency := range workload.MaxConcurrency {
-				if concurrencyFilter[concurrency] {
-					values = append(values, concurrency)
-				}
-			}
-			if len(values) == 0 {
-				continue
-			}
-			workload.MaxConcurrency = values
-			workloads = append(workloads, workload)
-		}
-		spec.Workloads = workloads
+		spec.Workloads = filterWorkloadsByConcurrency(spec.Workloads, concurrencyFilter)
 	}
 	if err := ValidateSpec(*spec); err != nil {
 		return fmt.Errorf("filter produced invalid spec: %w", err)
 	}
 	return nil
+}
+
+func filtersEmpty(profileFilter, workloadFilter map[string]bool, concurrencyFilter map[int]bool) bool {
+	return len(profileFilter) == 0 && len(workloadFilter) == 0 && len(concurrencyFilter) == 0
+}
+
+func filterProfiles(profiles []Profile, filter map[string]bool) []Profile {
+	return filterSlice(profiles, func(profile Profile) bool { return filter[profile.Name] })
+}
+
+func filterWorkloadsByName(workloads []Workload, filter map[string]bool) []Workload {
+	return filterSlice(workloads, func(workload Workload) bool { return filter[workload.Name] })
+}
+
+func filterWorkloadsByProfiles(workloads []Workload, requested []string, filter map[string]bool) []Workload {
+	out := workloads[:0]
+	for _, workload := range workloads {
+		profiles, keep := filteredWorkloadProfiles(workload.Profiles, requested, filter)
+		if keep {
+			workload.Profiles = profiles
+			out = append(out, workload)
+		}
+	}
+	return out
+}
+
+func filteredWorkloadProfiles(profiles, requested []string, filter map[string]bool) ([]string, bool) {
+	if len(profiles) == 0 {
+		return requested, true
+	}
+	selected := filterSlice(profiles, func(profile string) bool { return filter[profile] })
+	return selected, len(selected) > 0
+}
+
+func filterWorkloadsByConcurrency(workloads []Workload, filter map[int]bool) []Workload {
+	out := workloads[:0]
+	for _, workload := range workloads {
+		workload.MaxConcurrency = filterSlice(workload.MaxConcurrency, func(value int) bool { return filter[value] })
+		if len(workload.MaxConcurrency) > 0 {
+			out = append(out, workload)
+		}
+	}
+	return out
+}
+
+func filterSlice[T any](values []T, keep func(T) bool) []T {
+	out := values[:0]
+	for _, value := range values {
+		if keep(value) {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func stringSet(values []string) map[string]bool {

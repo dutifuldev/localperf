@@ -3,10 +3,14 @@ package vllmbench
 import (
 	"fmt"
 	"os"
-	"sort"
+	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/dutifuldev/localperf/internal/collections"
 )
+
+var safeShellArgPattern = regexp.MustCompile(`^[A-Za-z0-9_./:=,+@-]+$`)
 
 type CommandSpec struct {
 	Dir  string            `json:"dir,omitempty"`
@@ -153,71 +157,81 @@ func engineBenchCommand(spec Spec, engine EngineConfig) string {
 }
 
 func appendTrafficArgs(args []string, traffic BenchmarkTrafficConfig) []string {
-	appendStringArg := func(flag, value string) {
-		if strings.TrimSpace(value) != "" {
-			args = append(args, flag, value)
-		}
-	}
-	appendIntArg := func(flag string, value int) {
-		if value > 0 {
-			args = append(args, flag, strconv.Itoa(value))
-		}
-	}
-	appendIntPointerArg := func(flag string, value *int) {
-		if value != nil {
-			args = append(args, flag, strconv.Itoa(*value))
-		}
-	}
-	appendRepeatedArg := func(flag string, values []string) {
-		for _, value := range values {
-			if strings.TrimSpace(value) != "" {
-				args = append(args, flag, value)
-			}
-		}
-	}
+	builder := argBuilder(args)
+	appendCommonTrafficArgs(&builder, traffic)
+	appendRandomTrafficArgs(&builder, traffic)
+	appendDatasetTrafficArgs(&builder, traffic)
+	builder.repeated("--metadata", traffic.Metadata)
+	builder.repeated("--goodput", traffic.Goodput)
+	return append(builder, traffic.ExtraArgs...)
+}
 
-	appendStringArg("--dataset-path", traffic.DatasetPath)
-	if traffic.Seed != nil {
-		args = append(args, "--seed", strconv.Itoa(*traffic.Seed))
+type argBuilder []string
+
+func (builder *argBuilder) string(flag, value string) {
+	if strings.TrimSpace(value) != "" {
+		*builder = append(*builder, flag, value)
 	}
-	if traffic.DisableShuffle {
-		args = append(args, "--disable-shuffle")
+}
+
+func (builder *argBuilder) integer(flag string, value int) {
+	if value > 0 {
+		*builder = append(*builder, flag, strconv.Itoa(value))
 	}
-	if traffic.NoOversample {
-		args = append(args, "--no-oversample")
+}
+
+func (builder *argBuilder) optionalInteger(flag string, value *int) {
+	if value != nil {
+		*builder = append(*builder, flag, strconv.Itoa(*value))
 	}
-	if traffic.SkipChatTemplate {
-		args = append(args, "--skip-chat-template")
+}
+
+func (builder *argBuilder) flag(enabled bool, flag string) {
+	if enabled {
+		*builder = append(*builder, flag)
 	}
-	if traffic.SaveDetailed {
-		args = append(args, "--save-detailed")
+}
+
+func (builder *argBuilder) repeated(flag string, values []string) {
+	for _, value := range values {
+		builder.string(flag, value)
 	}
-	if traffic.PlotDatasetStats {
-		args = append(args, "--plot-dataset-stats")
+}
+
+func appendCommonTrafficArgs(builder *argBuilder, traffic BenchmarkTrafficConfig) {
+	builder.string("--dataset-path", traffic.DatasetPath)
+	builder.optionalInteger("--seed", traffic.Seed)
+	builder.flag(traffic.DisableShuffle, "--disable-shuffle")
+	builder.flag(traffic.NoOversample, "--no-oversample")
+	builder.flag(traffic.SkipChatTemplate, "--skip-chat-template")
+	builder.flag(traffic.SaveDetailed, "--save-detailed")
+	builder.flag(traffic.PlotDatasetStats, "--plot-dataset-stats")
+}
+
+func appendRandomTrafficArgs(builder *argBuilder, traffic BenchmarkTrafficConfig) {
+	if traffic.DatasetName != "random" {
+		return
 	}
-	if traffic.DatasetName == "random" {
-		appendIntArg("--random-input-len", traffic.RandomInputLen)
-		appendIntArg("--random-output-len", traffic.RandomOutputLen)
-		appendStringArg("--random-range-ratio", traffic.RandomRangeRatio)
-		appendIntArg("--random-prefix-len", traffic.RandomPrefixLen)
-	}
-	appendIntPointerArg("--custom-output-len", traffic.CustomOutputLen)
-	appendIntPointerArg("--sharegpt-output-len", traffic.ShareGPTOutputLen)
-	appendIntArg("--sonnet-input-len", traffic.SonnetInputLen)
-	appendIntArg("--sonnet-output-len", traffic.SonnetOutputLen)
-	appendIntArg("--sonnet-prefix-len", traffic.SonnetPrefixLen)
-	appendIntArg("--prefix-repetition-prefix-len", traffic.PrefixRepetitionPrefixLen)
-	appendIntArg("--prefix-repetition-suffix-len", traffic.PrefixRepetitionSuffixLen)
-	appendIntArg("--prefix-repetition-num-prefixes", traffic.PrefixRepetitionNumPrefixes)
-	appendIntArg("--prefix-repetition-output-len", traffic.PrefixRepetitionOutputLen)
-	appendStringArg("--speed-bench-dataset-subset", traffic.SpeedBenchDatasetSubset)
-	appendIntArg("--speed-bench-output-len", traffic.SpeedBenchOutputLen)
-	appendStringArg("--speed-bench-category", traffic.SpeedBenchCategory)
-	appendStringArg("--extra-body", traffic.ExtraBody)
-	appendRepeatedArg("--metadata", traffic.Metadata)
-	appendRepeatedArg("--goodput", traffic.Goodput)
-	args = append(args, traffic.ExtraArgs...)
-	return args
+	builder.integer("--random-input-len", traffic.RandomInputLen)
+	builder.integer("--random-output-len", traffic.RandomOutputLen)
+	builder.string("--random-range-ratio", traffic.RandomRangeRatio)
+	builder.integer("--random-prefix-len", traffic.RandomPrefixLen)
+}
+
+func appendDatasetTrafficArgs(builder *argBuilder, traffic BenchmarkTrafficConfig) {
+	builder.optionalInteger("--custom-output-len", traffic.CustomOutputLen)
+	builder.optionalInteger("--sharegpt-output-len", traffic.ShareGPTOutputLen)
+	builder.integer("--sonnet-input-len", traffic.SonnetInputLen)
+	builder.integer("--sonnet-output-len", traffic.SonnetOutputLen)
+	builder.integer("--sonnet-prefix-len", traffic.SonnetPrefixLen)
+	builder.integer("--prefix-repetition-prefix-len", traffic.PrefixRepetitionPrefixLen)
+	builder.integer("--prefix-repetition-suffix-len", traffic.PrefixRepetitionSuffixLen)
+	builder.integer("--prefix-repetition-num-prefixes", traffic.PrefixRepetitionNumPrefixes)
+	builder.integer("--prefix-repetition-output-len", traffic.PrefixRepetitionOutputLen)
+	builder.string("--speed-bench-dataset-subset", traffic.SpeedBenchDatasetSubset)
+	builder.integer("--speed-bench-output-len", traffic.SpeedBenchOutputLen)
+	builder.string("--speed-bench-category", traffic.SpeedBenchCategory)
+	builder.string("--extra-body", traffic.ExtraBody)
 }
 
 func profileExtraArgs(profile Profile) []string {
@@ -237,7 +251,7 @@ func ShellQuote(args []string) string {
 
 func WithProcessEnv(env map[string]string) []string {
 	out := os.Environ()
-	for _, key := range sortedMapKeys(env) {
+	for _, key := range collections.SortedKeys(env) {
 		out = append(out, key+"="+env[key])
 	}
 	return out
@@ -265,15 +279,6 @@ func cloneMap(values map[string]string) map[string]string {
 	return out
 }
 
-func sortedMapKeys(values map[string]string) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 func trimFloat(value float64) string {
 	return strconv.FormatFloat(value, 'f', -1, 64)
 }
@@ -282,9 +287,7 @@ func shellQuote(arg string) string {
 	if arg == "" {
 		return "''"
 	}
-	if strings.IndexFunc(arg, func(r rune) bool {
-		return !(r == '_' || r == '-' || r == '.' || r == '/' || r == ':' || r == '=' || r == ',' || r == '+' || r == '@' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
-	}) == -1 {
+	if safeShellArgPattern.MatchString(arg) {
 		return arg
 	}
 	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
@@ -298,7 +301,7 @@ func CommandSummary(command CommandSpec) string {
 		return ShellQuote(command.Args)
 	}
 	parts := make([]string, 0, len(command.Env)+len(command.Args))
-	for _, key := range sortedMapKeys(command.Env) {
+	for _, key := range collections.SortedKeys(command.Env) {
 		parts = append(parts, fmt.Sprintf("%s=%s", key, shellQuote(redactEnvValue(key, command.Env[key]))))
 	}
 	parts = append(parts, ShellQuote(command.Args))
@@ -325,15 +328,36 @@ func redactEnvValue(key, value string) string {
 
 func isSensitiveEnvKey(key string) bool {
 	upper := strings.ToUpper(key)
-	parts := strings.FieldsFunc(upper, func(r rune) bool {
-		return !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
-	})
-	for _, part := range parts {
-		switch part {
-		case "AUTH", "AUTHORIZATION", "COOKIE", "CREDENTIAL", "CREDENTIALS", "KEY", "PASS", "PASSWORD", "SECRET", "TOKEN":
+	return hasSensitiveEnvPart(upper) || containsSensitiveEnvMarker(upper)
+}
+
+func hasSensitiveEnvPart(upper string) bool {
+	for _, part := range strings.FieldsFunc(upper, isEnvKeySeparator) {
+		if sensitiveEnvParts[part] {
 			return true
 		}
 	}
+	return false
+}
+
+func isEnvKeySeparator(r rune) bool {
+	return !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+}
+
+var sensitiveEnvParts = map[string]bool{
+	"AUTH":          true,
+	"AUTHORIZATION": true,
+	"COOKIE":        true,
+	"CREDENTIAL":    true,
+	"CREDENTIALS":   true,
+	"KEY":           true,
+	"PASS":          true,
+	"PASSWORD":      true,
+	"SECRET":        true,
+	"TOKEN":         true,
+}
+
+func containsSensitiveEnvMarker(upper string) bool {
 	for _, marker := range []string{"TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"} {
 		if strings.Contains(upper, marker) {
 			return true

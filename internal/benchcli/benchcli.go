@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/dutifuldev/localperf/internal/collections"
 	"github.com/dutifuldev/localperf/internal/vllmbench"
 )
 
@@ -309,21 +309,4 @@ func (values *stringList) Set(raw string) error {
 	return nil
 }
 
-type intList []int
-
-func (values *intList) String() string {
-	parts := make([]string, 0, len(*values))
-	for _, value := range *values {
-		parts = append(parts, fmt.Sprint(value))
-	}
-	return strings.Join(parts, ",")
-}
-
-func (values *intList) Set(raw string) error {
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		return fmt.Errorf("invalid positive integer %q", raw)
-	}
-	*values = append(*values, value)
-	return nil
-}
+type intList = collections.PositiveIntList

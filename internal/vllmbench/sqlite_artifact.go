@@ -39,44 +39,87 @@ func WriteSQLiteArtifact(runDir, artifactPath string, spec Spec, summary RunSumm
 	if strings.TrimSpace(artifactPath) == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
-		return err
-	}
-	_ = os.Remove(artifactPath)
-	db, err := sql.Open("sqlite", artifactPath)
+	db, err := createSQLiteArtifact(artifactPath)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+	return withSQLiteTx(db, func(tx *sql.Tx) error {
+		return writeSQLiteRun(tx, runDir, spec, summary, plan, originalSpecPath)
+	})
+}
+
+func createSQLiteArtifact(path string) (*sql.DB, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	_ = os.Remove(path)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		return err
+		_ = db.Close()
+		return nil, err
 	}
 	if _, err := db.Exec(sqliteSchema); err != nil {
-		return err
+		_ = db.Close()
+		return nil, err
 	}
+	return db, nil
+}
+
+func withSQLiteTx(db *sql.DB, run func(*sql.Tx) error) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := writeSQLiteRun(tx, runDir, spec, summary, plan, originalSpecPath); err != nil {
+	if err := run(tx); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 func CheckSQLiteArtifact(path string) error {
-	if _, err := os.Stat(path); err != nil {
-		return err
-	}
-	db, err := sql.Open("sqlite", path)
+	db, err := openSQLiteArtifactForCheck(path)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		return err
+	for _, check := range []func(*sql.DB) error{
+		checkIntegrity,
+		checkMetadata,
+		checkRequiredTables,
+		checkSpecHashes,
+		checkRunRowCount,
+		checkSpecKindRows,
+		checkForeignKeys,
+		checkArtifactHashes,
+	} {
+		if err := check(db); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func openSQLiteArtifactForCheck(path string) (*sql.DB, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func checkIntegrity(db *sql.DB) error {
 	var integrity string
 	if err := db.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
 		return err
@@ -84,15 +127,10 @@ func CheckSQLiteArtifact(path string) error {
 	if integrity != "ok" {
 		return fmt.Errorf("sqlite integrity_check = %s", integrity)
 	}
-	if err := checkMetadata(db); err != nil {
-		return err
-	}
-	if err := checkRequiredTables(db); err != nil {
-		return err
-	}
-	if err := checkSpecHashes(db); err != nil {
-		return err
-	}
+	return nil
+}
+
+func checkRunRowCount(db *sql.DB) error {
 	var runRows int
 	if err := db.QueryRow("SELECT COUNT(*) FROM run").Scan(&runRows); err != nil {
 		return err
@@ -100,6 +138,10 @@ func CheckSQLiteArtifact(path string) error {
 	if runRows != 1 {
 		return fmt.Errorf("run rows = %d, want 1", runRows)
 	}
+	return nil
+}
+
+func checkSpecKindRows(db *sql.DB) error {
 	for _, kind := range []string{"original", "normalized"} {
 		var count int
 		if err := db.QueryRow("SELECT COUNT(*) FROM specs WHERE kind = ?", kind).Scan(&count); err != nil {
@@ -109,6 +151,10 @@ func CheckSQLiteArtifact(path string) error {
 			return fmt.Errorf("spec kind %s rows = %d, want 1", kind, count)
 		}
 	}
+	return nil
+}
+
+func checkForeignKeys(db *sql.DB) error {
 	rows, err := db.Query("PRAGMA foreign_key_check")
 	if err != nil {
 		return err
@@ -117,47 +163,76 @@ func CheckSQLiteArtifact(path string) error {
 	if rows.Next() {
 		return errors.New("foreign key check reported at least one failure")
 	}
-	return checkArtifactHashes(db)
+	return rows.Err()
 }
 
 func writeSQLiteRun(tx *sql.Tx, runDir string, spec Spec, summary RunSummary, plan []PlannedRun, originalSpecPath string) error {
 	now := time.Now().UTC()
+	runID := sqliteRunID(runDir, spec)
+	if err := insertRunMetadata(tx, now); err != nil {
+		return err
+	}
+	if err := insertRunRow(tx, runID, spec, summary); err != nil {
+		return err
+	}
+	if err := insertRunSpecs(tx, runID, runDir, spec, originalSpecPath, now); err != nil {
+		return err
+	}
+	return insertRunData(tx, runID, runDir, spec, summary, plan, now)
+}
+
+func sqliteRunID(runDir string, spec Spec) string {
 	runID := filepath.Base(filepath.Clean(runDir))
 	if runID == "." || runID == "" {
-		runID = spec.Name
+		return spec.Name
 	}
-	if err := insertMetadata(tx, "format_name", sqliteFormatName); err != nil {
-		return err
+	return runID
+}
+
+func insertRunMetadata(tx *sql.Tx, now time.Time) error {
+	values := map[string]string{
+		"format_name":    sqliteFormatName,
+		"format_version": sqliteFormatVersion,
+		"generated_at":   now.Format(time.RFC3339),
 	}
-	if err := insertMetadata(tx, "format_version", sqliteFormatVersion); err != nil {
-		return err
+	for key, value := range values {
+		if err := insertMetadata(tx, key, value); err != nil {
+			return err
+		}
 	}
-	if err := insertMetadata(tx, "generated_at", now.Format(time.RFC3339)); err != nil {
-		return err
-	}
-	status := "completed"
-	if summary.FailedRuns > 0 {
-		status = "failed"
-	}
+	return nil
+}
+
+func insertRunRow(tx *sql.Tx, runID string, spec Spec, summary RunSummary) error {
 	hostname, _ := os.Hostname()
-	currentUser, _ := user.Current()
-	username := ""
-	if currentUser != nil {
-		username = currentUser.Username
-	}
+	username := currentUsername()
 	cwd, _ := os.Getwd()
-	commandLineJSON := mustJSONString(os.Args)
-	hostJSON := mustJSONString(map[string]string{"hostname": hostname})
 	_, err := tx.Exec(`INSERT INTO run (
 		id, name, description, status, created_at, started_at, completed_at,
 		hostname, username, cwd, command_line_json, host_json
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		runID, spec.Name, spec.Description, status, summary.StartedAt.Format(time.RFC3339),
+		runID, spec.Name, spec.Description, runStatus(summary), summary.StartedAt.Format(time.RFC3339),
 		timeOrNull(summary.StartedAt), timeOrNull(summary.FinishedAt), hostname, username, cwd,
-		commandLineJSON, hostJSON)
-	if err != nil {
-		return err
+		mustJSONString(os.Args), mustJSONString(map[string]string{"hostname": hostname}))
+	return err
+}
+
+func runStatus(summary RunSummary) string {
+	if summary.FailedRuns > 0 {
+		return "failed"
 	}
+	return "completed"
+}
+
+func currentUsername() string {
+	currentUser, _ := user.Current()
+	if currentUser == nil {
+		return ""
+	}
+	return currentUser.Username
+}
+
+func insertRunSpecs(tx *sql.Tx, runID, runDir string, spec Spec, originalSpecPath string, now time.Time) error {
 	specData, err := json.MarshalIndent(RedactedSpec(spec), "", "  ")
 	if err != nil {
 		return err
@@ -169,23 +244,34 @@ func writeSQLiteRun(tx *sql.Tx, runDir string, spec Spec, summary RunSummary, pl
 	if err := insertSpec(tx, runID, "original", originalData, now); err != nil {
 		return err
 	}
+	return insertSpec(tx, runID, "normalized", normalizedSpecBytes(runDir, specData), now)
+}
+
+func normalizedSpecBytes(runDir string, fallback []byte) []byte {
 	if normalized, err := os.ReadFile(filepath.Join(runDir, "spec.normalized.json")); err == nil {
-		if err := insertSpec(tx, runID, "normalized", normalized, now); err != nil {
-			return err
-		}
-	} else if err := insertSpec(tx, runID, "normalized", specData, now); err != nil {
-		return err
+		return normalized
 	}
-	if err := insertEngines(tx, runID, spec); err != nil {
-		return err
-	}
-	if err := insertProfiles(tx, runID, spec); err != nil {
-		return err
-	}
-	if err := insertWorkloads(tx, runID, spec); err != nil {
+	return fallback
+}
+
+func insertRunData(tx *sql.Tx, runID, runDir string, spec Spec, _ RunSummary, plan []PlannedRun, now time.Time) error {
+	if err := insertRunDimensions(tx, runID, spec); err != nil {
 		return err
 	}
 	events, _ := readEvents(filepath.Join(runDir, "events.jsonl"))
+	return insertRunExecutionData(tx, runID, runDir, plan, events, now)
+}
+
+func insertRunDimensions(tx *sql.Tx, runID string, spec Spec) error {
+	for _, insert := range []func(*sql.Tx, string, Spec) error{insertEngines, insertProfiles, insertWorkloads} {
+		if err := insert(tx, runID, spec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertRunExecutionData(tx *sql.Tx, runID, runDir string, plan []PlannedRun, events []Event, now time.Time) error {
 	artifactIDs, err := insertRunArtifacts(tx, runID, runDir, events)
 	if err != nil {
 		return err
@@ -204,13 +290,14 @@ func writeSQLiteRun(tx *sql.Tx, runDir string, spec Spec, summary RunSummary, pl
 	if err := insertCommands(tx, runID, events, phaseIDs, measurementIDs, artifactIDs); err != nil {
 		return err
 	}
+	return insertTelemetryAndReports(tx, runID, events, phaseIDs, measurementIDs, artifactIDs, now)
+}
+
+func insertTelemetryAndReports(tx *sql.Tx, runID string, events []Event, phaseIDs, measurementIDs, artifactIDs map[string]int64, now time.Time) error {
 	if err := insertTelemetry(tx, runID, events, phaseIDs, measurementIDs); err != nil {
 		return err
 	}
-	if err := insertReports(tx, runID, artifactIDs, now); err != nil {
-		return err
-	}
-	return nil
+	return insertReports(tx, runID, artifactIDs, now)
 }
 
 func insertMetadata(tx *sql.Tx, key, value string) error {
@@ -376,60 +463,100 @@ func insertWorkloads(tx *sql.Tx, runID string, spec Spec) error {
 }
 
 func insertRunArtifacts(tx *sql.Tx, runID, runDir string, events []Event) (map[string]int64, error) {
-	artifactIDs := map[string]int64{}
-	addPath := func(kind, name, path, mediaType string) error {
-		if strings.TrimSpace(path) == "" {
-			return nil
-		}
-		resolved := resolveResultPath(runDir, path)
-		if _, err := os.Stat(resolved); err != nil {
-			if !os.IsNotExist(err) {
-				return err
-			}
-			return nil
-		}
-		id, err := insertArtifactPath(tx, runID, kind, name, resolved, mediaType)
-		if err != nil {
+	inserter := artifactInserter{tx: tx, runID: runID, runDir: runDir, ids: map[string]int64{}}
+	if err := inserter.addDefaultArtifacts(); err != nil {
+		return nil, err
+	}
+	if err := inserter.addEventArtifacts(events); err != nil {
+		return nil, err
+	}
+	return inserter.ids, nil
+}
+
+type artifactInserter struct {
+	tx     *sql.Tx
+	runID  string
+	runDir string
+	ids    map[string]int64
+}
+
+type artifactSpec struct {
+	kind      string
+	name      string
+	path      string
+	mediaType string
+}
+
+func (inserter artifactInserter) addDefaultArtifacts() error {
+	for _, artifact := range []artifactSpec{
+		{"debug", "events.jsonl", filepath.Join(inserter.runDir, "events.jsonl"), "application/x-ndjson"},
+		{"debug", "summary.json", filepath.Join(inserter.runDir, "summary.json"), "application/json"},
+		{"normalized_report", "report.md", filepath.Join(inserter.runDir, "report.md"), "text/markdown"},
+		{"normalized_report", "report.json", filepath.Join(inserter.runDir, "report.json"), "application/json"},
+		{"normalized_report", "report.csv", filepath.Join(inserter.runDir, "report.csv"), "text/csv"},
+	} {
+		if err := inserter.add(artifact); err != nil {
 			return err
 		}
-		artifactIDs[resolved] = id
-		artifactIDs[path] = id
-		if rel, err := filepath.Rel(runDir, resolved); err == nil {
-			artifactIDs[rel] = id
-		}
-		return nil
 	}
-	for _, artifact := range []struct {
-		kind      string
-		name      string
-		path      string
-		mediaType string
-	}{
-		{"debug", "events.jsonl", filepath.Join(runDir, "events.jsonl"), "application/x-ndjson"},
-		{"debug", "summary.json", filepath.Join(runDir, "summary.json"), "application/json"},
-		{"normalized_report", "report.md", filepath.Join(runDir, "report.md"), "text/markdown"},
-		{"normalized_report", "report.json", filepath.Join(runDir, "report.json"), "application/json"},
-		{"normalized_report", "report.csv", filepath.Join(runDir, "report.csv"), "text/csv"},
-	} {
-		if err := addPath(artifact.kind, artifact.name, artifact.path, artifact.mediaType); err != nil {
-			return nil, err
-		}
-	}
+	return nil
+}
+
+func (inserter artifactInserter) addEventArtifacts(events []Event) error {
 	for _, event := range events {
 		if event.ResultFile != "" {
 			name := rawResultArtifactName(event)
-			if err := addPath("bench_raw_result", name, event.ResultFile, "application/json"); err != nil {
-				return nil, err
+			if err := inserter.add(artifactSpec{"bench_raw_result", name, event.ResultFile, "application/json"}); err != nil {
+				return err
 			}
 		}
 		if event.LogFile != "" {
 			name := filepath.Base(event.LogFile)
-			if err := addPath("server_log", name, event.LogFile, "text/plain"); err != nil {
-				return nil, err
+			if err := inserter.add(artifactSpec{"server_log", name, event.LogFile, "text/plain"}); err != nil {
+				return err
 			}
 		}
 	}
-	return artifactIDs, nil
+	return nil
+}
+
+func (inserter artifactInserter) add(artifact artifactSpec) error {
+	if strings.TrimSpace(artifact.path) == "" {
+		return nil
+	}
+	resolved, ok, err := existingArtifactPath(inserter.runDir, artifact.path)
+	if err != nil || !ok {
+		return err
+	}
+	id, err := insertArtifactPath(inserter.tx, inserter.runID, artifact.kind, artifact.name, resolved, artifact.mediaType)
+	if err != nil {
+		return err
+	}
+	inserter.recordPathIDs(artifact.path, resolved, id)
+	return nil
+}
+
+func existingArtifactPath(runDir, path string) (string, bool, error) {
+	resolved := resolveResultPath(runDir, path)
+	if _, err := os.Stat(resolved); err != nil {
+		return resolved, false, nonMissingFileError(err)
+	}
+	return resolved, true, nil
+}
+
+func nonMissingFileError(err error) error {
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func (inserter artifactInserter) recordPathIDs(original, resolved string, id int64) {
+	inserter.ids[resolved] = id
+	inserter.ids[original] = id
+	if rel, err := filepath.Rel(inserter.runDir, resolved); err == nil {
+		inserter.ids[rel] = id
+	}
 }
 
 func rawResultArtifactName(event Event) string {
@@ -449,19 +576,9 @@ func insertArtifactPath(tx *sql.Tx, runID, kind, name, path, mediaType string) (
 	if err != nil {
 		return 0, err
 	}
-	content := data
-	compression := "none"
-	if len(data) > 64*1024 && (strings.HasPrefix(mediaType, "text/") || strings.Contains(mediaType, "json")) {
-		var compressed bytes.Buffer
-		gzipWriter := gzip.NewWriter(&compressed)
-		if _, err := gzipWriter.Write(data); err != nil {
-			return 0, err
-		}
-		if err := gzipWriter.Close(); err != nil {
-			return 0, err
-		}
-		content = compressed.Bytes()
-		compression = "gzip"
+	content, compression, err := artifactContent(data, mediaType)
+	if err != nil {
+		return 0, err
 	}
 	result, err := tx.Exec(`INSERT OR IGNORE INTO artifacts (
 		run_id, kind, name, media_type, compression, content, content_size_bytes,
@@ -478,6 +595,30 @@ func insertArtifactPath(tx *sql.Tx, runID, kind, name, path, mediaType string) (
 	}
 	err = tx.QueryRow(`SELECT id FROM artifacts WHERE run_id = ? AND kind = ? AND name = ?`, runID, kind, name).Scan(&id)
 	return id, err
+}
+
+func artifactContent(data []byte, mediaType string) ([]byte, string, error) {
+	if !shouldCompressArtifact(data, mediaType) {
+		return data, "none", nil
+	}
+	content, err := gzipBytes(data)
+	return content, "gzip", err
+}
+
+func shouldCompressArtifact(data []byte, mediaType string) bool {
+	return len(data) > 64*1024 && (strings.HasPrefix(mediaType, "text/") || strings.Contains(mediaType, "json"))
+}
+
+func gzipBytes(data []byte) ([]byte, error) {
+	var compressed bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressed)
+	if _, err := gzipWriter.Write(data); err != nil {
+		return nil, err
+	}
+	if err := gzipWriter.Close(); err != nil {
+		return nil, err
+	}
+	return compressed.Bytes(), nil
 }
 
 func insertPhases(tx *sql.Tx, runID string, plan []PlannedRun, events []Event) (map[string]int64, error) {
@@ -869,23 +1010,31 @@ func checkArtifactHashes(db *sql.DB) error {
 		if err := rows.Scan(&name, &compression, &content, &want); err != nil {
 			return err
 		}
-		data := content
-		if compression == "gzip" {
-			reader, err := gzip.NewReader(bytes.NewReader(content))
-			if err != nil {
-				return fmt.Errorf("artifact %s gzip decode: %w", name, err)
-			}
-			data, err = io.ReadAll(reader)
-			_ = reader.Close()
-			if err != nil {
-				return fmt.Errorf("artifact %s gzip read: %w", name, err)
-			}
+		data, err := artifactHashContent(name, compression, content)
+		if err != nil {
+			return err
 		}
 		if got := sha256Hex(data); got != want {
 			return fmt.Errorf("artifact %s sha256 = %s, want %s", name, got, want)
 		}
 	}
 	return rows.Err()
+}
+
+func artifactHashContent(name, compression string, content []byte) ([]byte, error) {
+	if compression != "gzip" {
+		return content, nil
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("artifact %s gzip decode: %w", name, err)
+	}
+	data, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		return nil, fmt.Errorf("artifact %s gzip read: %w", name, err)
+	}
+	return data, nil
 }
 
 func artifactIDForPath(ids map[string]int64, path string) int64 {

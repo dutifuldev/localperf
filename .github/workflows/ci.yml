@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.0 run
+      - run: ./scripts/check-go-coverage.sh
+      - run: ./scripts/check-dry.sh
+      - run: ./scripts/check-crap.sh
+      - run: ./scripts/check-mutation.sh
+      - run: go run github.com/dutifuldev/slophammer/go/cmd/slophammer-go@v0.4.0 check .

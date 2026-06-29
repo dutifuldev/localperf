@@ -7,9 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/dutifuldev/localperf/internal/collections"
 )
 
 const DefaultHealthPath = "/v1/models"
@@ -171,106 +172,132 @@ func LoadSpec(path string) (Spec, error) {
 }
 
 func ApplyDefaults(spec *Spec) {
+	applyRunnerDefaults(spec)
+	applyEngineDefaults(spec)
+	applySafetyDefaults(spec)
+	applyProfileDefaults(spec)
+	applyWarmupDefaults(&spec.Warmup)
+	applyWorkloadDefaults(spec.Workloads)
+}
+
+func applyRunnerDefaults(spec *Spec) {
 	if strings.TrimSpace(spec.Runner.VLLMCommand) == "" {
 		spec.Runner.VLLMCommand = "vllm"
 	}
 	if strings.TrimSpace(spec.Runner.VLLMBenchCommand) == "" {
 		spec.Runner.VLLMBenchCommand = "vllm"
 	}
+	defaultTrue(&spec.Runner.OneAwakeProfile)
+	defaultTrue(&spec.Runner.StopManagedOnExit)
+	defaultTrue(&spec.Runner.AppendTimestampToRun)
+}
+
+func defaultTrue(value **bool) {
+	if *value == nil {
+		yes := true
+		*value = &yes
+	}
+}
+
+func applyEngineDefaults(spec *Spec) {
 	if len(spec.Engines) == 0 {
-		spec.Engines = []EngineConfig{{
-			Name:         "vllm",
-			Type:         "vllm-managed",
-			Command:      spec.Runner.VLLMCommand,
-			BenchCommand: spec.Runner.VLLMBenchCommand,
-		}}
+		spec.Engines = defaultEngines(spec.Runner)
 	}
 	for i := range spec.Engines {
-		engine := &spec.Engines[i]
-		if strings.TrimSpace(engine.Type) == "" {
-			engine.Type = "vllm-managed"
-		}
-		if strings.TrimSpace(engine.Command) == "" && engine.Type == "vllm-managed" {
-			engine.Command = spec.Runner.VLLMCommand
-		}
-		if strings.TrimSpace(engine.BenchCommand) == "" && engine.Type == "vllm-managed" {
-			engine.BenchCommand = spec.Runner.VLLMBenchCommand
-		}
+		applyEngineDefault(&spec.Engines[i], spec.Runner)
 	}
-	if spec.Runner.OneAwakeProfile == nil {
-		yes := true
-		spec.Runner.OneAwakeProfile = &yes
+}
+
+func defaultEngines(runner RunnerConfig) []EngineConfig {
+	return []EngineConfig{{
+		Name:         "vllm",
+		Type:         "vllm-managed",
+		Command:      runner.VLLMCommand,
+		BenchCommand: runner.VLLMBenchCommand,
+	}}
+}
+
+func applyEngineDefault(engine *EngineConfig, runner RunnerConfig) {
+	if strings.TrimSpace(engine.Type) == "" {
+		engine.Type = "vllm-managed"
 	}
-	if spec.Runner.StopManagedOnExit == nil {
-		yes := true
-		spec.Runner.StopManagedOnExit = &yes
+	if strings.TrimSpace(engine.Command) == "" && engine.Type == "vllm-managed" {
+		engine.Command = runner.VLLMCommand
 	}
-	if spec.Runner.AppendTimestampToRun == nil {
-		yes := true
-		spec.Runner.AppendTimestampToRun = &yes
+	if strings.TrimSpace(engine.BenchCommand) == "" && engine.Type == "vllm-managed" {
+		engine.BenchCommand = runner.VLLMBenchCommand
 	}
-	if spec.Safety.PollIntervalMillis <= 0 {
-		spec.Safety.PollIntervalMillis = 1000
+}
+
+func applySafetyDefaults(spec *Spec) {
+	defaultPositiveInt(&spec.Safety.PollIntervalMillis, 1000)
+	defaultPositiveInt(&spec.Safety.StartupTimeoutSec, 900)
+	defaultPositiveInt(&spec.Safety.WorkloadTimeoutSec, 1800)
+	defaultPositiveInt(&spec.Safety.HTTPTimeoutSec, 15)
+}
+
+func defaultPositiveInt(value *int, fallback int) {
+	if *value <= 0 {
+		*value = fallback
 	}
-	if spec.Safety.StartupTimeoutSec <= 0 {
-		spec.Safety.StartupTimeoutSec = 900
-	}
-	if spec.Safety.WorkloadTimeoutSec <= 0 {
-		spec.Safety.WorkloadTimeoutSec = 1800
-	}
-	if spec.Safety.HTTPTimeoutSec <= 0 {
-		spec.Safety.HTTPTimeoutSec = 15
-	}
+}
+
+func applyProfileDefaults(spec *Spec) {
 	for i := range spec.Profiles {
-		profile := &spec.Profiles[i]
-		if strings.TrimSpace(profile.Engine) == "" {
-			profile.Engine = spec.Engines[0].Name
-		}
-		if strings.TrimSpace(profile.Model) == "" {
-			profile.Model = spec.Model
-		}
-		if strings.TrimSpace(profile.Host) == "" {
-			profile.Host = "127.0.0.1"
-		}
-		if strings.TrimSpace(profile.HealthPath) == "" {
-			profile.HealthPath = DefaultHealthPath
-		}
-		applyServeDefaults(profile)
-		if profile.EnableSleepMode && profile.SleepLevel == nil {
-			profile.SleepLevel = intPointer(2)
-		}
+		applyProfileDefault(&spec.Profiles[i], spec)
 	}
-	if spec.Warmup.Enabled {
-		applyTrafficDefaults(&spec.Warmup.BenchmarkTrafficConfig, "random")
-		if spec.Warmup.RandomInputLen <= 0 {
-			spec.Warmup.RandomInputLen = 256
-		}
-		if spec.Warmup.RandomOutputLen <= 0 {
-			spec.Warmup.RandomOutputLen = 16
-		}
-		if spec.Warmup.NumPrompts <= 0 {
-			spec.Warmup.NumPrompts = 4
-		}
-		if spec.Warmup.MaxConcurrency <= 0 {
-			spec.Warmup.MaxConcurrency = 1
-		}
+}
+
+func applyProfileDefault(profile *Profile, spec *Spec) {
+	if strings.TrimSpace(profile.Engine) == "" {
+		profile.Engine = spec.Engines[0].Name
 	}
-	for i := range spec.Workloads {
-		workload := &spec.Workloads[i]
-		if !trafficConfigEmpty(workload.Traffic) {
-			workload.BenchmarkTrafficConfig = overlayTrafficConfig(workload.BenchmarkTrafficConfig, workload.Traffic)
-		}
-		if workload.NumPrompts <= 0 && workload.Samples > 0 {
-			workload.NumPrompts = workload.Samples
-		}
-		if len(workload.MaxConcurrency) == 0 && len(workload.Concurrency) > 0 {
-			workload.MaxConcurrency = append([]int(nil), workload.Concurrency...)
-		}
-		if workload.Repeats <= 0 {
-			workload.Repeats = 1
-		}
-		applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
+	if strings.TrimSpace(profile.Model) == "" {
+		profile.Model = spec.Model
 	}
+	if strings.TrimSpace(profile.Host) == "" {
+		profile.Host = "127.0.0.1"
+	}
+	if strings.TrimSpace(profile.HealthPath) == "" {
+		profile.HealthPath = DefaultHealthPath
+	}
+	applyServeDefaults(profile)
+	if profile.EnableSleepMode && profile.SleepLevel == nil {
+		profile.SleepLevel = intPointer(2)
+	}
+}
+
+func applyWarmupDefaults(warmup *WarmupConfig) {
+	if !warmup.Enabled {
+		return
+	}
+	applyTrafficDefaults(&warmup.BenchmarkTrafficConfig, "random")
+	defaultPositiveInt(&warmup.RandomInputLen, 256)
+	defaultPositiveInt(&warmup.RandomOutputLen, 16)
+	defaultPositiveInt(&warmup.NumPrompts, 4)
+	defaultPositiveInt(&warmup.MaxConcurrency, 1)
+}
+
+func applyWorkloadDefaults(workloads []Workload) {
+	for i := range workloads {
+		applyWorkloadDefault(&workloads[i])
+	}
+}
+
+func applyWorkloadDefault(workload *Workload) {
+	if !trafficConfigEmpty(workload.Traffic) {
+		workload.BenchmarkTrafficConfig = overlayTrafficConfig(workload.BenchmarkTrafficConfig, workload.Traffic)
+	}
+	if workload.NumPrompts <= 0 && workload.Samples > 0 {
+		workload.NumPrompts = workload.Samples
+	}
+	if len(workload.MaxConcurrency) == 0 && len(workload.Concurrency) > 0 {
+		workload.MaxConcurrency = append([]int(nil), workload.Concurrency...)
+	}
+	if workload.Repeats <= 0 {
+		workload.Repeats = 1
+	}
+	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
 }
 
 func trafficConfigEmpty(traffic BenchmarkTrafficConfig) bool {
@@ -356,6 +383,20 @@ func defaultEndpoint(backend string) string {
 }
 
 func ValidateSpec(spec Spec) error {
+	issues := validateSpecBasics(spec)
+	engineIssues, engineNames := validateEngines(spec.Engines)
+	profileIssues, profileNames := validateProfiles(spec, engineNames)
+	issues = append(issues, engineIssues...)
+	issues = append(issues, profileIssues...)
+	issues = append(issues, validateWarmup(spec.Warmup)...)
+	issues = append(issues, validateWorkloads(spec.Workloads, profileNames)...)
+	if len(issues) > 0 {
+		return errors.New(strings.Join(issues, "\n"))
+	}
+	return nil
+}
+
+func validateSpecBasics(spec Spec) []string {
 	var issues []string
 	if strings.TrimSpace(spec.Name) == "" {
 		issues = append(issues, "name is required")
@@ -366,156 +407,241 @@ func ValidateSpec(spec Spec) error {
 	if spec.Safety.MinMemAvailableGiB <= 0 {
 		issues = append(issues, "safety.min_mem_available_gib must be positive")
 	}
-	engineNames := map[string]bool{}
-	if len(spec.Engines) == 0 {
+	return issues
+}
+
+func validateEngines(engines []EngineConfig) ([]string, map[string]bool) {
+	names := map[string]bool{}
+	var issues []string
+	if len(engines) == 0 {
 		issues = append(issues, "at least one engine is required")
 	}
-	for i, engine := range spec.Engines {
-		prefix := fmt.Sprintf("engines[%d]", i)
-		name := strings.TrimSpace(engine.Name)
-		if name == "" {
-			issues = append(issues, prefix+": name is required")
-		}
-		if engineNames[engine.Name] {
-			issues = append(issues, prefix+": duplicate engine name "+engine.Name)
-		}
-		engineNames[engine.Name] = true
-		if strings.TrimSpace(engine.Type) == "" {
-			issues = append(issues, prefix+": type is required")
-		}
+	for i, engine := range engines {
+		issues = append(issues, validateEngine(fmt.Sprintf("engines[%d]", i), engine, names)...)
 	}
-	profileNames := map[string]bool{}
-	profileSlugs := map[string]string{}
+	return issues, names
+}
+
+func validateEngine(prefix string, engine EngineConfig, names map[string]bool) []string {
+	var issues []string
+	name := strings.TrimSpace(engine.Name)
+	if name == "" {
+		issues = append(issues, prefix+": name is required")
+	}
+	if names[engine.Name] {
+		issues = append(issues, prefix+": duplicate engine name "+engine.Name)
+	}
+	names[engine.Name] = true
+	if strings.TrimSpace(engine.Type) == "" {
+		issues = append(issues, prefix+": type is required")
+	}
+	return issues
+}
+
+func validateProfiles(spec Spec, engineNames map[string]bool) ([]string, map[string]bool) {
+	names := map[string]bool{}
+	slugs := map[string]string{}
+	var issues []string
 	if len(spec.Profiles) == 0 {
 		issues = append(issues, "at least one profile is required")
 	}
-	oneAwakeProfile := spec.Runner.OneAwakeProfile == nil || *spec.Runner.OneAwakeProfile
 	for i, profile := range spec.Profiles {
 		prefix := fmt.Sprintf("profiles[%d]", i)
-		profileName := strings.TrimSpace(profile.Name)
-		if profileName == "" {
-			issues = append(issues, prefix+": name is required")
-		}
-		if profileNames[profile.Name] {
-			issues = append(issues, prefix+": duplicate profile name "+profile.Name)
-		}
-		profileNames[profile.Name] = true
-		if profileName != "" {
-			profileSlug := Slug(profileName)
-			if profileSlug == "" {
-				issues = append(issues, prefix+": name must contain at least one ASCII letter or digit")
-			} else if previous, ok := profileSlugs[profileSlug]; ok {
-				issues = append(issues, prefix+": profile name "+profile.Name+" collides with "+previous+" after slug normalization")
-			} else {
-				profileSlugs[profileSlug] = profile.Name
-			}
-		}
-		if profile.Port <= 0 {
-			issues = append(issues, prefix+": port must be positive")
-		}
-		if strings.TrimSpace(profile.Model) == "" {
-			issues = append(issues, prefix+": model is required")
-		}
-		if strings.TrimSpace(profile.Engine) == "" {
-			issues = append(issues, prefix+": engine is required")
-		} else if !engineNames[profile.Engine] {
-			issues = append(issues, prefix+": unknown engine "+profile.Engine)
-		}
-		if profile.Managed {
-			if profile.MaxModelLen <= 0 {
-				issues = append(issues, prefix+": max_model_len must be positive for managed profiles")
-			}
-			if profile.MaxNumSeqs <= 0 {
-				issues = append(issues, prefix+": max_num_seqs must be positive for managed profiles")
-			}
-			if spec.Runner.PrebootProfiles && oneAwakeProfile && !profile.EnableSleepMode {
-				issues = append(issues, prefix+": enable_sleep_mode is required when runner.preboot_profiles and runner.one_awake_profile are true")
-			}
-		}
-		if profile.SleepLevel != nil && (*profile.SleepLevel < 0 || *profile.SleepLevel > 2) {
-			issues = append(issues, prefix+": sleep_level must be 0, 1, or 2")
-		}
+		issues = append(issues, validateProfile(prefix, profile, spec.Runner, engineNames, names, slugs)...)
 	}
-	if spec.Warmup.Enabled {
-		if spec.Warmup.NumPrompts <= 0 {
-			issues = append(issues, "warmup: num_prompts must be positive")
-		}
-		if spec.Warmup.MaxConcurrency <= 0 {
-			issues = append(issues, "warmup: max_concurrency must be positive")
-		}
-		if strings.TrimSpace(spec.Warmup.DatasetName) == "" {
-			issues = append(issues, "warmup: dataset_name is required")
-		}
-		issues = append(issues, validateTrafficConfig("warmup", spec.Warmup.BenchmarkTrafficConfig)...)
+	return issues, names
+}
+
+func validateProfile(prefix string, profile Profile, runner RunnerConfig, engineNames, names map[string]bool, slugs map[string]string) []string {
+	var issues []string
+	issues = append(issues, validateRequiredUniqueName(prefix, "profile", profile.Name, names)...)
+	issues = append(issues, validateSlug(prefix, "profile name", profile.Name, nil, slugs)...)
+	issues = append(issues, validateProfileFields(prefix, profile, engineNames)...)
+	issues = append(issues, validateManagedProfile(prefix, profile, runner)...)
+	return append(issues, validateSleepLevel(prefix, profile)...)
+}
+
+func validateRequiredUniqueName(prefix, label, name string, names map[string]bool) []string {
+	var issues []string
+	if strings.TrimSpace(name) == "" {
+		issues = append(issues, prefix+": name is required")
 	}
-	if len(spec.Workloads) == 0 {
-		issues = append(issues, "at least one workload is required")
+	if names[name] {
+		issues = append(issues, prefix+": duplicate "+label+" name "+name)
 	}
-	workloadNames := map[string]bool{}
-	workloadSlugs := map[string]string{}
-	for i, workload := range spec.Workloads {
-		prefix := fmt.Sprintf("workloads[%d]", i)
-		workloadName := strings.TrimSpace(workload.Name)
-		if workloadName == "" {
-			issues = append(issues, prefix+": name is required")
-		}
-		if workloadNames[workload.Name] {
-			issues = append(issues, prefix+": duplicate workload name "+workload.Name)
-		}
-		workloadNames[workload.Name] = true
-		if workloadName != "" {
-			workloadSlug := Slug(workloadName)
-			if workloadSlug == "" {
-				issues = append(issues, prefix+": name must contain at least one ASCII letter or digit")
-			} else if workloadSlug == "warmup" {
-				issues = append(issues, prefix+": workload name warmup is reserved for warmup artifacts")
-			} else if previous, ok := workloadSlugs[workloadSlug]; ok {
-				issues = append(issues, prefix+": workload name "+workload.Name+" collides with "+previous+" after slug normalization")
-			} else {
-				workloadSlugs[workloadSlug] = workload.Name
-			}
-		}
-		if strings.TrimSpace(workload.DatasetName) == "" {
-			issues = append(issues, prefix+": dataset_name is required")
-		}
-		if workload.NumPrompts <= 0 {
-			issues = append(issues, prefix+": num_prompts must be positive")
-		}
-		if workload.Repeats <= 0 {
-			issues = append(issues, prefix+": repeats must be positive")
-		}
-		if len(workload.MaxConcurrency) == 0 {
-			issues = append(issues, prefix+": max_concurrency must not be empty")
-		}
-		seenConcurrency := map[int]bool{}
-		for _, concurrency := range workload.MaxConcurrency {
-			if concurrency <= 0 {
-				issues = append(issues, prefix+": max_concurrency values must be positive")
-			}
-			if seenConcurrency[concurrency] {
-				issues = append(issues, prefix+": duplicate max_concurrency value "+fmt.Sprint(concurrency))
-			}
-			seenConcurrency[concurrency] = true
-		}
-		seenProfileRefs := map[string]bool{}
-		for _, profileName := range workload.Profiles {
-			if seenProfileRefs[profileName] {
-				issues = append(issues, prefix+": duplicate profile reference "+profileName)
-			}
-			seenProfileRefs[profileName] = true
-			if !profileNames[profileName] {
-				issues = append(issues, prefix+": unknown profile "+profileName)
-			}
-		}
-		issues = append(issues, validateTrafficConfig(prefix, workload.BenchmarkTrafficConfig)...)
+	names[name] = true
+	return issues
+}
+
+func validateSlug(prefix, label, name string, reserved map[string]string, slugs map[string]string) []string {
+	if strings.TrimSpace(name) == "" {
+		return nil
 	}
-	if len(issues) > 0 {
-		return errors.New(strings.Join(issues, "\n"))
+	slug := Slug(name)
+	if slug == "" {
+		return []string{prefix + ": name must contain at least one ASCII letter or digit"}
 	}
+	if message := reserved[slug]; message != "" {
+		return []string{prefix + ": " + message}
+	}
+	if previous, ok := slugs[slug]; ok {
+		return []string{prefix + ": " + label + " " + name + " collides with " + previous + " after slug normalization"}
+	}
+	slugs[slug] = name
 	return nil
 }
 
+func validateProfileFields(prefix string, profile Profile, engineNames map[string]bool) []string {
+	var issues []string
+	if profile.Port <= 0 {
+		issues = append(issues, prefix+": port must be positive")
+	}
+	if strings.TrimSpace(profile.Model) == "" {
+		issues = append(issues, prefix+": model is required")
+	}
+	if strings.TrimSpace(profile.Engine) == "" {
+		return append(issues, prefix+": engine is required")
+	}
+	if !engineNames[profile.Engine] {
+		issues = append(issues, prefix+": unknown engine "+profile.Engine)
+	}
+	return issues
+}
+
+func validateManagedProfile(prefix string, profile Profile, runner RunnerConfig) []string {
+	if !profile.Managed {
+		return nil
+	}
+	var issues []string
+	issues = append(issues, validateManagedProfileSizes(prefix, profile)...)
+	if runner.PrebootProfiles && oneAwakeProfile(runner) && !profile.EnableSleepMode {
+		issues = append(issues, prefix+": enable_sleep_mode is required when runner.preboot_profiles and runner.one_awake_profile are true")
+	}
+	return issues
+}
+
+func validateManagedProfileSizes(prefix string, profile Profile) []string {
+	var issues []string
+	if profile.MaxModelLen <= 0 {
+		issues = append(issues, prefix+": max_model_len must be positive for managed profiles")
+	}
+	if profile.MaxNumSeqs <= 0 {
+		issues = append(issues, prefix+": max_num_seqs must be positive for managed profiles")
+	}
+	return issues
+}
+
+func oneAwakeProfile(runner RunnerConfig) bool {
+	return runner.OneAwakeProfile == nil || *runner.OneAwakeProfile
+}
+
+func validateSleepLevel(prefix string, profile Profile) []string {
+	if profile.SleepLevel == nil || (*profile.SleepLevel >= 0 && *profile.SleepLevel <= 2) {
+		return nil
+	}
+	return []string{prefix + ": sleep_level must be 0, 1, or 2"}
+}
+
+func validateWarmup(warmup WarmupConfig) []string {
+	if !warmup.Enabled {
+		return nil
+	}
+	var issues []string
+	if warmup.NumPrompts <= 0 {
+		issues = append(issues, "warmup: num_prompts must be positive")
+	}
+	if warmup.MaxConcurrency <= 0 {
+		issues = append(issues, "warmup: max_concurrency must be positive")
+	}
+	if strings.TrimSpace(warmup.DatasetName) == "" {
+		issues = append(issues, "warmup: dataset_name is required")
+	}
+	return append(issues, validateTrafficConfig("warmup", warmup.BenchmarkTrafficConfig)...)
+}
+
+func validateWorkloads(workloads []Workload, profileNames map[string]bool) []string {
+	var issues []string
+	names := map[string]bool{}
+	slugs := map[string]string{}
+	if len(workloads) == 0 {
+		issues = append(issues, "at least one workload is required")
+	}
+	for i, workload := range workloads {
+		prefix := fmt.Sprintf("workloads[%d]", i)
+		issues = append(issues, validateWorkload(prefix, workload, profileNames, names, slugs)...)
+	}
+	return issues
+}
+
+func validateWorkload(prefix string, workload Workload, profileNames, names map[string]bool, slugs map[string]string) []string {
+	var issues []string
+	reserved := map[string]string{"warmup": "workload name warmup is reserved for warmup artifacts"}
+	issues = append(issues, validateRequiredUniqueName(prefix, "workload", workload.Name, names)...)
+	issues = append(issues, validateSlug(prefix, "workload name", workload.Name, reserved, slugs)...)
+	issues = append(issues, validateWorkloadFields(prefix, workload)...)
+	issues = append(issues, validateConcurrencyValues(prefix, workload.MaxConcurrency)...)
+	issues = append(issues, validateProfileRefs(prefix, workload.Profiles, profileNames)...)
+	return append(issues, validateTrafficConfig(prefix, workload.BenchmarkTrafficConfig)...)
+}
+
+func validateWorkloadFields(prefix string, workload Workload) []string {
+	var issues []string
+	if strings.TrimSpace(workload.DatasetName) == "" {
+		issues = append(issues, prefix+": dataset_name is required")
+	}
+	if workload.NumPrompts <= 0 {
+		issues = append(issues, prefix+": num_prompts must be positive")
+	}
+	if workload.Repeats <= 0 {
+		issues = append(issues, prefix+": repeats must be positive")
+	}
+	if len(workload.MaxConcurrency) == 0 {
+		issues = append(issues, prefix+": max_concurrency must not be empty")
+	}
+	return issues
+}
+
+func validateConcurrencyValues(prefix string, values []int) []string {
+	var issues []string
+	seen := map[int]bool{}
+	for _, value := range values {
+		if value <= 0 {
+			issues = append(issues, prefix+": max_concurrency values must be positive")
+		}
+		if seen[value] {
+			issues = append(issues, prefix+": duplicate max_concurrency value "+fmt.Sprint(value))
+		}
+		seen[value] = true
+	}
+	return issues
+}
+
+func validateProfileRefs(prefix string, refs []string, profileNames map[string]bool) []string {
+	var issues []string
+	seen := map[string]bool{}
+	for _, name := range refs {
+		if seen[name] {
+			issues = append(issues, prefix+": duplicate profile reference "+name)
+		}
+		seen[name] = true
+		if !profileNames[name] {
+			issues = append(issues, prefix+": unknown profile "+name)
+		}
+	}
+	return issues
+}
+
 func validateTrafficConfig(prefix string, traffic BenchmarkTrafficConfig) []string {
+	var issues []string
+	issues = append(issues, validateRandomTraffic(prefix, traffic)...)
+	issues = append(issues, validateNegativeTrafficFields(prefix, traffic)...)
+	issues = append(issues, validateTrafficPointerFields(prefix, traffic)...)
+	issues = append(issues, validateNonEmptyValues(prefix, "metadata", traffic.Metadata)...)
+	issues = append(issues, validateNonEmptyValues(prefix, "goodput", traffic.Goodput)...)
+	return issues
+}
+
+func validateRandomTraffic(prefix string, traffic BenchmarkTrafficConfig) []string {
 	var issues []string
 	if traffic.DatasetName == "random" {
 		if traffic.RandomInputLen <= 0 {
@@ -528,7 +654,12 @@ func validateTrafficConfig(prefix string, traffic BenchmarkTrafficConfig) []stri
 	if traffic.Seed != nil && *traffic.Seed < 0 {
 		issues = append(issues, prefix+": seed must be non-negative")
 	}
-	for field, value := range map[string]int{
+	return issues
+}
+
+func validateNegativeTrafficFields(prefix string, traffic BenchmarkTrafficConfig) []string {
+	var issues []string
+	fields := map[string]int{
 		"random_prefix_len":              traffic.RandomPrefixLen,
 		"sonnet_input_len":               traffic.SonnetInputLen,
 		"sonnet_output_len":              traffic.SonnetOutputLen,
@@ -538,25 +669,31 @@ func validateTrafficConfig(prefix string, traffic BenchmarkTrafficConfig) []stri
 		"prefix_repetition_num_prefixes": traffic.PrefixRepetitionNumPrefixes,
 		"prefix_repetition_output_len":   traffic.PrefixRepetitionOutputLen,
 		"speed_bench_output_len":         traffic.SpeedBenchOutputLen,
-	} {
+	}
+	for field, value := range fields {
 		if value < 0 {
 			issues = append(issues, prefix+": "+field+" must not be negative")
 		}
 	}
+	return issues
+}
+
+func validateTrafficPointerFields(prefix string, traffic BenchmarkTrafficConfig) []string {
+	var issues []string
 	if traffic.CustomOutputLen != nil && *traffic.CustomOutputLen < -1 {
 		issues = append(issues, prefix+": custom_output_len must be -1 or greater")
 	}
 	if traffic.ShareGPTOutputLen != nil && *traffic.ShareGPTOutputLen <= 0 {
 		issues = append(issues, prefix+": sharegpt_output_len must be positive")
 	}
-	for _, metadata := range traffic.Metadata {
-		if strings.TrimSpace(metadata) == "" {
-			issues = append(issues, prefix+": metadata values must not be empty")
-		}
-	}
-	for _, goodput := range traffic.Goodput {
-		if strings.TrimSpace(goodput) == "" {
-			issues = append(issues, prefix+": goodput values must not be empty")
+	return issues
+}
+
+func validateNonEmptyValues(prefix, field string, values []string) []string {
+	var issues []string
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			issues = append(issues, prefix+": "+field+" values must not be empty")
 		}
 	}
 	return issues
@@ -569,30 +706,41 @@ func BuildPlan(spec Spec, runDir string) []PlannedRun {
 	}
 	var runs []PlannedRun
 	for _, workload := range spec.Workloads {
-		names := workload.Profiles
-		if len(names) == 0 {
-			names = sortedProfileNames(profiles)
-		}
-		for _, profileName := range names {
+		for _, profileName := range plannedProfileNames(workload, profiles) {
 			profile := profiles[profileName]
 			for _, concurrency := range workload.MaxConcurrency {
-				repeats := workload.Repeats
-				if repeats <= 0 {
-					repeats = 1
-				}
-				for repeat := 0; repeat < repeats; repeat++ {
-					runs = append(runs, PlannedRun{
-						Profile:     profile,
-						Workload:    workload,
-						Concurrency: concurrency,
-						Repeat:      repeat,
-						ResultFile:  ResultPath(runDir, profile.Name, workload.Name, concurrency, repeat, repeats),
-					})
+				for repeat := 0; repeat < plannedRepeats(workload); repeat++ {
+					runs = append(runs, buildPlannedRun(runDir, profile, workload, concurrency, repeat))
 				}
 			}
 		}
 	}
 	return runs
+}
+
+func plannedProfileNames(workload Workload, profiles map[string]Profile) []string {
+	if len(workload.Profiles) > 0 {
+		return workload.Profiles
+	}
+	return collections.SortedKeys(profiles)
+}
+
+func plannedRepeats(workload Workload) int {
+	if workload.Repeats > 0 {
+		return workload.Repeats
+	}
+	return 1
+}
+
+func buildPlannedRun(runDir string, profile Profile, workload Workload, concurrency, repeat int) PlannedRun {
+	repeats := plannedRepeats(workload)
+	return PlannedRun{
+		Profile:     profile,
+		Workload:    workload,
+		Concurrency: concurrency,
+		Repeat:      repeat,
+		ResultFile:  ResultPath(runDir, profile.Name, workload.Name, concurrency, repeat, repeats),
+	}
 }
 
 func RunDir(base string, spec Spec, now time.Time) string {
@@ -639,15 +787,6 @@ func SleepLevelValue(profile Profile) int {
 
 func intPointer(value int) *int {
 	return &value
-}
-
-func sortedProfileNames(profiles map[string]Profile) []string {
-	names := make([]string, 0, len(profiles))
-	for name := range profiles {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 func Slug(text string) string {

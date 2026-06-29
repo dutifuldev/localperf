@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/dutifuldev/localperf/internal/collections"
 )
 
 type row struct {
@@ -102,10 +103,10 @@ func readProgress(reader io.Reader, targetRows int) (progress, error) {
 func printProgress(report progress) {
 	fmt.Printf("rows: %d / %d\n", report.Rows, report.Target)
 	fmt.Printf("latest: %s (%s)\n", report.LatestCandidate, report.LatestStatus)
-	fmt.Printf("contexts: %s\n", joinInts(report.Contexts))
-	fmt.Printf("max_num_seqs: %s\n", joinInts(report.Seqs))
+	fmt.Printf("contexts: %s\n", collections.JoinIntKeys(report.Contexts, ", "))
+	fmt.Printf("max_num_seqs: %s\n", collections.JoinIntKeys(report.Seqs, ", "))
 	fmt.Println("statuses:")
-	for _, status := range sortedStatusKeys(report.Statuses) {
+	for _, status := range collections.SortedKeys(report.Statuses) {
 		fmt.Printf("  %s: %d\n", status, report.Statuses[status])
 	}
 	if report.Rows > 1 && !report.FirstStartedAt.IsZero() && !report.LatestFinished.IsZero() {
@@ -118,28 +119,6 @@ func printProgress(report progress) {
 			fmt.Printf("rough ETA to %d rows: %s\n", report.Target, (perRow * time.Duration(remaining)).Round(time.Minute))
 		}
 	}
-}
-
-func sortedStatusKeys(values map[string]int) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func joinInts(values map[int]bool) string {
-	ints := make([]int, 0, len(values))
-	for value := range values {
-		ints = append(ints, value)
-	}
-	sort.Ints(ints)
-	parts := make([]string, 0, len(ints))
-	for _, value := range ints {
-		parts = append(parts, fmt.Sprint(value))
-	}
-	return strings.Join(parts, ", ")
 }
 
 func intField(row map[string]any, key string) int {
