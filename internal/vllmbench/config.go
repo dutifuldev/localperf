@@ -236,9 +236,6 @@ func ApplyDefaults(spec *Spec) {
 			profile.HealthPath = DefaultHealthPath
 		}
 		applyServeDefaults(profile)
-		if len(profile.EngineArgs) > 0 {
-			profile.Args = append(profile.Args, profile.EngineArgs...)
-		}
 		if profile.EnableSleepMode && profile.SleepLevel == nil {
 			profile.SleepLevel = intPointer(2)
 		}

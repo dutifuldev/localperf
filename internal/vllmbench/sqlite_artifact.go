@@ -35,7 +35,7 @@ func SQLiteArtifactPath(runDir, override string) string {
 	return clean + ".sqlite"
 }
 
-func WriteSQLiteArtifact(runDir, artifactPath string, spec Spec, summary RunSummary, plan []PlannedRun) error {
+func WriteSQLiteArtifact(runDir, artifactPath string, spec Spec, summary RunSummary, plan []PlannedRun, originalSpecPath string) error {
 	if strings.TrimSpace(artifactPath) == "" {
 		return nil
 	}
@@ -59,7 +59,7 @@ func WriteSQLiteArtifact(runDir, artifactPath string, spec Spec, summary RunSumm
 		return err
 	}
 	defer tx.Rollback()
-	if err := writeSQLiteRun(tx, runDir, spec, summary, plan); err != nil {
+	if err := writeSQLiteRun(tx, runDir, spec, summary, plan, originalSpecPath); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -85,6 +85,9 @@ func CheckSQLiteArtifact(path string) error {
 		return err
 	}
 	if err := checkRequiredTables(db); err != nil {
+		return err
+	}
+	if err := checkSpecHashes(db); err != nil {
 		return err
 	}
 	var runRows int
@@ -114,7 +117,7 @@ func CheckSQLiteArtifact(path string) error {
 	return checkArtifactHashes(db)
 }
 
-func writeSQLiteRun(tx *sql.Tx, runDir string, spec Spec, summary RunSummary, plan []PlannedRun) error {
+func writeSQLiteRun(tx *sql.Tx, runDir string, spec Spec, summary RunSummary, plan []PlannedRun, originalSpecPath string) error {
 	now := time.Now().UTC()
 	runID := filepath.Base(filepath.Clean(runDir))
 	if runID == "." || runID == "" {
@@ -156,7 +159,11 @@ func writeSQLiteRun(tx *sql.Tx, runDir string, spec Spec, summary RunSummary, pl
 	if err != nil {
 		return err
 	}
-	if err := insertSpec(tx, runID, "original", specData, now); err != nil {
+	originalData, err := originalSpecBytes(originalSpecPath, specData)
+	if err != nil {
+		return err
+	}
+	if err := insertSpec(tx, runID, "original", originalData, now); err != nil {
 		return err
 	}
 	if normalized, err := os.ReadFile(filepath.Join(runDir, "spec.normalized.json")); err == nil {
@@ -209,10 +216,62 @@ func insertMetadata(tx *sql.Tx, key, value string) error {
 }
 
 func insertSpec(tx *sql.Tx, runID, kind string, data []byte, createdAt time.Time) error {
+	content := strings.TrimSpace(string(data))
 	_, err := tx.Exec(`INSERT INTO specs (run_id, kind, format, content, sha256, created_at)
 		VALUES (?, ?, 'json', ?, ?, ?)`,
-		runID, kind, strings.TrimSpace(string(data)), sha256Hex(data), createdAt.Format(time.RFC3339))
+		runID, kind, content, sha256Hex([]byte(content)), createdAt.Format(time.RFC3339))
 	return err
+}
+
+func originalSpecBytes(path string, fallback []byte) ([]byte, error) {
+	if strings.TrimSpace(path) == "" {
+		return fallback, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	redacted, err := redactedJSONDocument(data)
+	if err != nil {
+		return nil, err
+	}
+	return redacted, nil
+}
+
+func redactedJSONDocument(data []byte) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("extra content after JSON document")
+	}
+	value = redactSensitiveJSONValue(value)
+	return json.MarshalIndent(value, "", "  ")
+}
+
+func redactSensitiveJSONValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if isSensitiveEnvKey(key) {
+				typed[key] = "<redacted>"
+				continue
+			}
+			typed[key] = redactSensitiveJSONValue(child)
+		}
+		return typed
+	case []any:
+		for i, child := range typed {
+			typed[i] = redactSensitiveJSONValue(child)
+		}
+		return typed
+	default:
+		return value
+	}
 }
 
 func insertEngines(tx *sql.Tx, runID string, spec Spec) error {
@@ -254,7 +313,7 @@ func insertProfiles(tx *sql.Tx, runID string, spec Spec) error {
 			profile.Name, runID, profile.Engine, profile.Name, profile.Model, profile.Host, profile.Port,
 			baseURL(profile), boolToInt(profile.Managed), intNull(profile.MaxModelLen), intNull(profile.MaxNumSeqs),
 			intNull(profile.MaxNumBatchedTokens), floatNull(profile.GPUMemoryUtilization), boolToInt(profile.EnableSleepMode),
-			SleepLevelValue(profile), serveJSON, nullableJSON(profile.Args), nullableJSON(redactedEnv(profile.Env))); err != nil {
+			SleepLevelValue(profile), serveJSON, nullableJSON(profileExtraArgs(profile)), nullableJSON(redactedEnv(profile.Env))); err != nil {
 			return err
 		}
 	}
@@ -286,6 +345,9 @@ func insertRunArtifacts(tx *sql.Tx, runID, runDir string, events []Event) (map[s
 		}
 		resolved := resolveResultPath(runDir, path)
 		if _, err := os.Stat(resolved); err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
 			return nil
 		}
 		id, err := insertArtifactPath(tx, runID, kind, name, resolved, mediaType)
@@ -299,11 +361,22 @@ func insertRunArtifacts(tx *sql.Tx, runID, runDir string, events []Event) (map[s
 		}
 		return nil
 	}
-	_ = addPath("debug", "events.jsonl", filepath.Join(runDir, "events.jsonl"), "application/x-ndjson")
-	_ = addPath("debug", "summary.json", filepath.Join(runDir, "summary.json"), "application/json")
-	_ = addPath("normalized_report", "report.md", filepath.Join(runDir, "report.md"), "text/markdown")
-	_ = addPath("normalized_report", "report.json", filepath.Join(runDir, "report.json"), "application/json")
-	_ = addPath("normalized_report", "report.csv", filepath.Join(runDir, "report.csv"), "text/csv")
+	for _, artifact := range []struct {
+		kind      string
+		name      string
+		path      string
+		mediaType string
+	}{
+		{"debug", "events.jsonl", filepath.Join(runDir, "events.jsonl"), "application/x-ndjson"},
+		{"debug", "summary.json", filepath.Join(runDir, "summary.json"), "application/json"},
+		{"normalized_report", "report.md", filepath.Join(runDir, "report.md"), "text/markdown"},
+		{"normalized_report", "report.json", filepath.Join(runDir, "report.json"), "application/json"},
+		{"normalized_report", "report.csv", filepath.Join(runDir, "report.csv"), "text/csv"},
+	} {
+		if err := addPath(artifact.kind, artifact.name, artifact.path, artifact.mediaType); err != nil {
+			return nil, err
+		}
+	}
 	for _, event := range events {
 		if event.ResultFile != "" {
 			name := "result-" + Slug(event.Profile+"-"+event.Workload+fmt.Sprintf("-c%d-r%d", event.Concurrency, event.Repeat+1)) + ".json"
@@ -473,21 +546,52 @@ func insertCommands(tx *sql.Tx, runID string, events []Event, phaseIDs, measurem
 			continue
 		}
 		key := eventMeasurementKey(event)
-		status := "completed"
-		if event.Error != "" {
-			status = "failed"
-		}
+		status := commandStatus(event)
 		_, err := tx.Exec(`INSERT INTO commands (
 			run_id, phase_id, measurement_id, profile_id, phase, argv_json,
 			started_at, completed_at, exit_code, status, stdout_artifact_id, stderr_artifact_id
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			runID, zeroNullInt(phaseIDs[key]), zeroNullInt(measurementIDs[key]),
 			nullString(event.Profile), event.Type, mustJSONString(event.Args),
-			event.Timestamp.Format(time.RFC3339), event.Timestamp.Format(time.RFC3339),
-			event.ExitCode, status, zeroNullInt(artifactIDForPath(artifactIDs, event.LogFile)), nil)
+			commandStartedAt(event, status), commandCompletedAt(event, status),
+			commandExitCode(event, status), status, zeroNullInt(artifactIDForPath(artifactIDs, event.LogFile)), nil)
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func commandStatus(event Event) string {
+	if event.Type == "planned_run" {
+		return "planned"
+	}
+	if strings.HasSuffix(event.Type, "_start") {
+		return "running"
+	}
+	if event.Error != "" {
+		return "failed"
+	}
+	return "completed"
+}
+
+func commandStartedAt(event Event, status string) any {
+	if status == "planned" {
+		return nil
+	}
+	return event.Timestamp.Format(time.RFC3339)
+}
+
+func commandCompletedAt(event Event, status string) any {
+	if status == "completed" || status == "failed" || status == "canceled" {
+		return event.Timestamp.Format(time.RFC3339)
+	}
+	return nil
+}
+
+func commandExitCode(event Event, status string) any {
+	if status == "completed" || status == "failed" || status == "canceled" {
+		return event.ExitCode
 	}
 	return nil
 }
@@ -568,20 +672,21 @@ func rowsByMeasurement(runDir string, events []Event) map[string]ReportRow {
 }
 
 func measurementStatus(events []Event, planned PlannedRun) string {
+	status := "planned"
 	for _, event := range events {
 		if eventMatchesPlanned(event, planned) {
-			if event.Type == "workload_finish" && event.Error == "" {
-				return "completed"
+			if event.Type == "workload_skipped" {
+				return "skipped"
 			}
 			if event.Type == "workload_failed" || event.Error != "" {
 				return "failed"
 			}
-			if event.Type == "workload_skipped" {
-				return "skipped"
+			if event.Type == "workload_finish" && event.Error == "" {
+				status = "completed"
 			}
 		}
 	}
-	return "planned"
+	return status
 }
 
 func measurementError(events []Event, planned PlannedRun) any {
@@ -682,6 +787,24 @@ func checkRequiredTables(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func checkSpecHashes(db *sql.DB) error {
+	rows, err := db.Query("SELECT kind, content, sha256 FROM specs")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, content, want string
+		if err := rows.Scan(&kind, &content, &want); err != nil {
+			return err
+		}
+		if got := sha256Hex([]byte(content)); got != want {
+			return fmt.Errorf("spec %s sha256 = %s, want %s", kind, got, want)
+		}
+	}
+	return rows.Err()
 }
 
 func checkArtifactHashes(db *sql.DB) error {

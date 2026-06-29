@@ -129,7 +129,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 		})
 	}
 	if opts.DryRun {
-		if err := finalizeRun(runDir, &summary, events, spec, nil); err != nil {
+		if err := finalizeRun(runDir, &summary, events, spec, opts.OriginalSpecPath, nil); err != nil {
 			return summary, err
 		}
 		return summary, nil
@@ -145,7 +145,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 		if err := prebootProfiles(ctx, spec, runDir, plan, events, processes); err != nil {
 			summary.FailedRuns += remainingUnaccountedRuns(summary)
 			events.Write(Event{Timestamp: time.Now().UTC(), Type: "preboot_failed", Error: err.Error()})
-			if finishErr := finalizeRun(runDir, &summary, events, spec, fmt.Errorf("preboot profiles failed: %w", err)); finishErr != nil {
+			if finishErr := finalizeRun(runDir, &summary, events, spec, opts.OriginalSpecPath, fmt.Errorf("preboot profiles failed: %w", err)); finishErr != nil {
 				return summary, finishErr
 			}
 			return summary, err
@@ -200,7 +200,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 		for i, planned := range runs {
 			if err := checkMemoryEvent(spec, events, "before_workload", planned.Profile.Name); err != nil {
 				summary.FailedRuns++
-				events.Write(Event{Timestamp: time.Now().UTC(), Type: "workload_skipped", Profile: planned.Profile.Name, Workload: planned.Workload.Name, Concurrency: planned.Concurrency, Error: err.Error()})
+				events.Write(Event{Timestamp: time.Now().UTC(), Type: "workload_skipped", Profile: planned.Profile.Name, Workload: planned.Workload.Name, Concurrency: planned.Concurrency, Repeat: planned.Repeat, Error: err.Error()})
 				if IsMemoryFloorError(err) {
 					remaining := len(runs) - i - 1
 					summary.FailedRuns += remaining
@@ -213,7 +213,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 			result, err := executeBench(ctx, spec, planned, runDir, events)
 			if err != nil {
 				summary.FailedRuns++
-				events.Write(Event{Timestamp: time.Now().UTC(), Type: "workload_failed", Profile: planned.Profile.Name, Workload: planned.Workload.Name, Concurrency: planned.Concurrency, Error: err.Error()})
+				events.Write(Event{Timestamp: time.Now().UTC(), Type: "workload_failed", Profile: planned.Profile.Name, Workload: planned.Workload.Name, Concurrency: planned.Concurrency, Repeat: planned.Repeat, Error: err.Error()})
 				if IsMemoryFloorError(err) {
 					remaining := len(runs) - i - 1
 					summary.FailedRuns += remaining
@@ -240,7 +240,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 				}
 				summary.FailedRuns += remainingRunsAfterProfile(spec.Profiles, plan, profile.Name)
 				runErr := fmt.Errorf("profile %s sleep failed: %w", profile.Name, err)
-				if finishErr := finalizeRun(runDir, &summary, events, spec, runErr); finishErr != nil {
+				if finishErr := finalizeRun(runDir, &summary, events, spec, opts.OriginalSpecPath, runErr); finishErr != nil {
 					return summary, finishErr
 				}
 				return summary, runErr
@@ -251,13 +251,13 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 			delete(processes, profile.Name)
 		}
 	}
-	if err := finalizeRun(runDir, &summary, events, spec, nil); err != nil {
+	if err := finalizeRun(runDir, &summary, events, spec, opts.OriginalSpecPath, nil); err != nil {
 		return summary, err
 	}
 	return summary, nil
 }
 
-func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, spec Spec, runErr error) error {
+func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, spec Spec, originalSpecPath string, runErr error) error {
 	summary.FinishedAt = time.Now().UTC()
 	event := Event{Timestamp: summary.FinishedAt, Type: "run_finish", Details: mustJSON(map[string]any{
 		"completed_runs": summary.CompletedRuns,
@@ -278,7 +278,7 @@ func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, spec S
 		return err
 	}
 	if summary.ArtifactPath != "" {
-		if err := WriteSQLiteArtifact(runDir, summary.ArtifactPath, spec, *summary, BuildPlan(spec, runDir)); err != nil && runErr == nil {
+		if err := WriteSQLiteArtifact(runDir, summary.ArtifactPath, spec, *summary, BuildPlan(spec, runDir), originalSpecPath); err != nil && runErr == nil {
 			return err
 		}
 	}
@@ -493,7 +493,7 @@ func runWarmup(ctx context.Context, spec Spec, profile Profile, runDir string, e
 
 func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir string, events *eventWriter) (*ReportRow, error) {
 	command := BenchCommand(spec, planned)
-	logPath := filepath.Join(runDir, "logs", fmt.Sprintf("%s__%s__c%d.log", Slug(planned.Profile.Name), Slug(planned.Workload.Name), planned.Concurrency))
+	logPath := benchmarkLogPath(runDir, planned)
 	events.Write(Event{
 		Timestamp:   time.Now().UTC(),
 		Type:        "workload_start",
@@ -549,6 +549,14 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		return &row, fmt.Errorf("benchmark result reported %d failed request(s)", failed)
 	}
 	return &row, nil
+}
+
+func benchmarkLogPath(runDir string, planned PlannedRun) string {
+	name := fmt.Sprintf("%s__%s__c%d", Slug(planned.Profile.Name), Slug(planned.Workload.Name), planned.Concurrency)
+	if planned.Workload.Repeats > 1 {
+		name += fmt.Sprintf("__r%d", planned.Repeat+1)
+	}
+	return filepath.Join(runDir, "logs", name+".log")
 }
 
 func failedRequestCount(rows []ReportRow) int {

@@ -49,7 +49,7 @@ func ServeCommand(spec Spec, profile Profile) CommandSpec {
 	if profile.EnableSleepMode {
 		args = append(args, "--enable-sleep-mode")
 	}
-	args = append(args, profile.Args...)
+	args = append(args, profileExtraArgs(profile)...)
 	return CommandSpec{
 		Env:  mergeEnv(spec.Env, profile.Env, profile.EnableSleepMode),
 		Args: args,
@@ -217,6 +217,13 @@ func appendTrafficArgs(args []string, traffic BenchmarkTrafficConfig) []string {
 	appendRepeatedArg("--metadata", traffic.Metadata)
 	appendRepeatedArg("--goodput", traffic.Goodput)
 	args = append(args, traffic.ExtraArgs...)
+	return args
+}
+
+func profileExtraArgs(profile Profile) []string {
+	args := make([]string, 0, len(profile.Args)+len(profile.EngineArgs))
+	args = append(args, profile.Args...)
+	args = append(args, profile.EngineArgs...)
 	return args
 }
 

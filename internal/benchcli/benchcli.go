@@ -106,8 +106,9 @@ func runBench(args []string) {
 	}
 	defer cancel()
 	summary, err := vllmbench.Execute(ctx, spec, vllmbench.RunOptions{
-		RunDir: *runDir,
-		DryRun: *dryRun,
+		RunDir:           *runDir,
+		DryRun:           *dryRun,
+		OriginalSpecPath: *specPath,
 	})
 	fmt.Printf("run dir: %s\n", summary.RunDir)
 	fmt.Printf("planned: %d completed: %d failed: %d\n", summary.PlannedRuns, summary.CompletedRuns, summary.FailedRuns)
