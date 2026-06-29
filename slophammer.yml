@@ -1,0 +1,59 @@
+go:
+  coverage:
+    threshold: 85
+  targets:
+    - internal/vllmbench
+  exclude:
+    - "**/*_test.go"
+    - pattern: "examples/**"
+      reason: benchmark fixture specs and example scripts, not production library code
+    - pattern: "runs/**"
+      reason: generated benchmark outputs and local run data
+    - pattern: "docs/**"
+      reason: markdown project plans and user docs
+  dry:
+    max_findings: 0
+    paths:
+      - cmd
+      - internal
+    exclude:
+      - "**/*_test.go"
+      - pattern: "examples/**"
+        reason: benchmark fixture specs and example scripts, not production library code
+      - pattern: "runs/**"
+        reason: generated benchmark outputs and local run data
+      - pattern: "docs/**"
+        reason: markdown project plans and user docs
+    structural:
+      enabled: true
+      threshold: 0.82
+      min_lines: 4
+      min_nodes: 20
+    copied_blocks:
+      enabled: true
+      min_tokens: 100
+  crap:
+    max_score: 8
+  mutation:
+    targets:
+      - internal/vllmbench/config.go
+      - internal/vllmbench/report.go
+      - internal/vllmbench/sqlite_artifact.go
+  dependency_boundaries:
+    - from: cmd/localperf
+      allow:
+        - internal/benchcli
+    - from: cmd/localperf-vllm-bench
+      allow:
+        - internal/benchcli
+    - from: internal/benchcli
+      allow:
+        - internal/vllmbench
+        - internal/collections
+    - from: internal/bench
+      allow: []
+    - from: internal/vllmbench
+      allow:
+        - internal/collections
+    - from: internal/collections
+      allow: []

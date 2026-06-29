@@ -20,8 +20,10 @@ import (
 )
 
 type RunOptions struct {
-	RunDir string
-	DryRun bool
+	RunDir           string
+	ArtifactPath     string
+	DryRun           bool
+	OriginalSpecPath string
 }
 
 type RunSummary struct {
@@ -35,6 +37,7 @@ type RunSummary struct {
 	Rows          []ReportRow `json:"rows,omitempty"`
 	EventsPath    string      `json:"events_path"`
 	ReportPath    string      `json:"report_path,omitempty"`
+	ArtifactPath  string      `json:"artifact_path,omitempty"`
 	SpecPath      string      `json:"spec_path"`
 	MemoryFloor   float64     `json:"memory_floor_gib"`
 }
@@ -45,6 +48,7 @@ type Event struct {
 	Profile         string          `json:"profile,omitempty"`
 	Workload        string          `json:"workload,omitempty"`
 	Concurrency     int             `json:"concurrency,omitempty"`
+	Repeat          int             `json:"repeat,omitempty"`
 	Command         string          `json:"command,omitempty"`
 	Args            []string        `json:"args,omitempty"`
 	ResultFile      string          `json:"result_file,omitempty"`
@@ -71,188 +75,316 @@ type eventWriter struct {
 	enc  *json.Encoder
 }
 
+type runSession struct {
+	ctx       context.Context
+	spec      Spec
+	opts      RunOptions
+	runDir    string
+	summary   RunSummary
+	events    *eventWriter
+	plan      []PlannedRun
+	processes map[string]*serverProcess
+}
+
 func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error) {
 	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 
-	ApplyDefaults(&spec)
-	if err := ValidateSpec(spec); err != nil {
-		return RunSummary{}, err
-	}
-	runDir := RunDir(opts.RunDir, spec, time.Now())
-	summary := RunSummary{
-		RunDir:      runDir,
-		StartedAt:   time.Now().UTC(),
-		DryRun:      opts.DryRun,
-		EventsPath:  filepath.Join(runDir, "events.jsonl"),
-		SpecPath:    filepath.Join(runDir, "spec.normalized.json"),
-		MemoryFloor: spec.Safety.MinMemAvailableGiB,
-	}
-	if err := os.MkdirAll(filepath.Join(runDir, "results"), 0o755); err != nil {
-		return summary, err
-	}
-	if err := os.MkdirAll(filepath.Join(runDir, "logs"), 0o755); err != nil {
-		return summary, err
-	}
-	if err := writeJSONFile(summary.SpecPath, RedactedSpec(spec)); err != nil {
-		return summary, err
-	}
-	events, err := newEventWriter(summary.EventsPath)
+	session, err := newRunSession(ctx, spec, opts)
 	if err != nil {
-		return summary, err
+		return sessionSummary(session), err
 	}
-	defer events.Close()
+	defer session.close()
 
-	plan := BuildPlan(spec, runDir)
-	summary.PlannedRuns = len(plan)
-	events.Write(Event{Timestamp: time.Now().UTC(), Type: "run_start", Details: mustJSON(map[string]any{
-		"name":         spec.Name,
-		"planned_runs": len(plan),
-		"dry_run":      opts.DryRun,
-	})})
-	for _, planned := range plan {
-		events.Write(Event{
-			Timestamp:   time.Now().UTC(),
-			Type:        "planned_run",
-			Profile:     planned.Profile.Name,
-			Workload:    planned.Workload.Name,
-			Concurrency: planned.Concurrency,
-			Command:     CommandSummary(BenchCommand(spec, planned)),
-			Args:        BenchCommand(spec, planned).Args,
-			ResultFile:  planned.ResultFile,
-		})
-	}
 	if opts.DryRun {
-		if err := finalizeRun(runDir, &summary, events, nil); err != nil {
-			return summary, err
-		}
-		return summary, nil
+		return session.finish(nil)
 	}
 
-	processes := map[string]*serverProcess{}
-	defer func() {
-		if shouldStopManaged(spec) || ctx.Err() != nil {
-			stopAll(processes)
-		}
-	}()
-	if spec.Runner.PrebootProfiles {
-		if err := prebootProfiles(ctx, spec, runDir, plan, events, processes); err != nil {
-			summary.FailedRuns += remainingUnaccountedRuns(summary)
-			events.Write(Event{Timestamp: time.Now().UTC(), Type: "preboot_failed", Error: err.Error()})
-			if finishErr := finalizeRun(runDir, &summary, events, fmt.Errorf("preboot profiles failed: %w", err)); finishErr != nil {
-				return summary, finishErr
-			}
-			return summary, err
-		}
-	}
-
-	for _, profile := range profilesInPlanOrder(spec.Profiles, plan) {
-		runs := runsForProfile(plan, profile.Name)
-		if len(runs) == 0 {
-			continue
-		}
-		proc := processes[profile.Name]
-		if proc == nil {
-			var err error
-			proc, err = prepareProfile(ctx, spec, runDir, profile, events, true)
-			if err != nil {
-				summary.FailedRuns += len(runs)
-				events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
-				continue
-			}
-			if proc != nil {
-				processes[profile.Name] = proc
-			}
-		} else {
-			if err := wakeProfile(ctx, spec, profile, events); err != nil {
-				summary.FailedRuns += len(runs)
-				events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
-				if proc != nil {
-					stopProcess(proc)
-					delete(processes, profile.Name)
-				}
-				continue
-			}
-			if spec.Warmup.Enabled {
-				if err := runWarmup(ctx, spec, profile, runDir, events); err != nil {
-					summary.FailedRuns += len(runs)
-					events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
-					if profile.EnableSleepMode {
-						if sleepErr := sleepProfile(ctx, spec, profile, events); sleepErr != nil {
-							events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_sleep_failed", Profile: profile.Name, Error: sleepErr.Error()})
-							if proc != nil {
-								stopProcess(proc)
-								delete(processes, profile.Name)
-							}
-						}
-					}
-					continue
-				}
-			}
-		}
-		profileAborted := false
-		for i, planned := range runs {
-			if err := checkMemoryEvent(spec, events, "before_workload", planned.Profile.Name); err != nil {
-				summary.FailedRuns++
-				events.Write(Event{Timestamp: time.Now().UTC(), Type: "workload_skipped", Profile: planned.Profile.Name, Workload: planned.Workload.Name, Concurrency: planned.Concurrency, Error: err.Error()})
-				if IsMemoryFloorError(err) {
-					remaining := len(runs) - i - 1
-					summary.FailedRuns += remaining
-					stopProfileAfterMemoryFloor(events, profile, proc, processes, remaining)
-					profileAborted = true
-					break
-				}
-				continue
-			}
-			result, err := executeBench(ctx, spec, planned, runDir, events)
-			if err != nil {
-				summary.FailedRuns++
-				events.Write(Event{Timestamp: time.Now().UTC(), Type: "workload_failed", Profile: planned.Profile.Name, Workload: planned.Workload.Name, Concurrency: planned.Concurrency, Error: err.Error()})
-				if IsMemoryFloorError(err) {
-					remaining := len(runs) - i - 1
-					summary.FailedRuns += remaining
-					stopProfileAfterMemoryFloor(events, profile, proc, processes, remaining)
-					profileAborted = true
-					break
-				}
-				continue
-			}
-			summary.CompletedRuns++
-			if result != nil {
-				summary.Rows = append(summary.Rows, *result)
-			}
-		}
-		if profileAborted {
-			continue
-		}
-		if profile.EnableSleepMode {
-			if err := sleepProfile(ctx, spec, profile, events); err != nil {
-				events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_sleep_failed", Profile: profile.Name, Error: err.Error()})
-				if proc != nil {
-					stopProcess(proc)
-					delete(processes, profile.Name)
-				}
-				summary.FailedRuns += remainingRunsAfterProfile(spec.Profiles, plan, profile.Name)
-				runErr := fmt.Errorf("profile %s sleep failed: %w", profile.Name, err)
-				if finishErr := finalizeRun(runDir, &summary, events, runErr); finishErr != nil {
-					return summary, finishErr
-				}
-				return summary, runErr
-			}
-		}
-		if proc != nil && shouldStopManaged(spec) && !spec.Runner.PrebootProfiles {
-			stopProcess(proc)
-			delete(processes, profile.Name)
-		}
-	}
-	if err := finalizeRun(runDir, &summary, events, nil); err != nil {
-		return summary, err
-	}
-	return summary, nil
+	return session.finish(session.run())
 }
 
-func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, runErr error) error {
+func sessionSummary(session *runSession) RunSummary {
+	if session == nil {
+		return RunSummary{}
+	}
+	return session.summary
+}
+
+func newRunSession(ctx context.Context, spec Spec, opts RunOptions) (*runSession, error) {
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		return nil, err
+	}
+	session := initRunSession(ctx, spec, opts)
+	if err := prepareRunDir(session); err != nil {
+		return session, err
+	}
+	events, err := newEventWriter(session.summary.EventsPath)
+	if err != nil {
+		return session, err
+	}
+	session.events = events
+	session.plan = BuildPlan(spec, session.runDir)
+	session.summary.PlannedRuns = len(session.plan)
+	writePlanEvents(session)
+	return session, nil
+}
+
+func initRunSession(ctx context.Context, spec Spec, opts RunOptions) *runSession {
+	runDir := RunDir(opts.RunDir, spec, time.Now())
+	summary := RunSummary{
+		RunDir:       runDir,
+		StartedAt:    time.Now().UTC(),
+		DryRun:       opts.DryRun,
+		EventsPath:   filepath.Join(runDir, "events.jsonl"),
+		ArtifactPath: SQLiteArtifactPath(runDir, opts.ArtifactPath),
+		SpecPath:     filepath.Join(runDir, "spec.normalized.json"),
+		MemoryFloor:  spec.Safety.MinMemAvailableGiB,
+	}
+	return &runSession{ctx: ctx, spec: spec, opts: opts, runDir: runDir, summary: summary, processes: map[string]*serverProcess{}}
+}
+
+func prepareRunDir(session *runSession) error {
+	for _, name := range []string{"results", "logs"} {
+		if err := os.MkdirAll(filepath.Join(session.runDir, name), 0o755); err != nil {
+			return err
+		}
+	}
+	return writeJSONFile(session.summary.SpecPath, RedactedSpec(session.spec))
+}
+
+func writePlanEvents(session *runSession) {
+	session.events.Write(Event{Timestamp: time.Now().UTC(), Type: "run_start", Details: mustJSON(map[string]any{
+		"name":         session.spec.Name,
+		"planned_runs": len(session.plan),
+		"dry_run":      session.opts.DryRun,
+	})})
+	for _, planned := range session.plan {
+		writePlannedRunEvent(session, planned)
+	}
+}
+
+func writePlannedRunEvent(session *runSession, planned PlannedRun) {
+	command := BenchCommand(session.spec, planned)
+	session.events.Write(Event{
+		Timestamp:   time.Now().UTC(),
+		Type:        "planned_run",
+		Profile:     planned.Profile.Name,
+		Workload:    planned.Workload.Name,
+		Concurrency: planned.Concurrency,
+		Repeat:      planned.Repeat,
+		Command:     CommandSummary(command),
+		Args:        command.Args,
+		ResultFile:  planned.ResultFile,
+	})
+}
+
+func (session *runSession) close() {
+	if shouldStopManaged(session.spec) || session.ctx.Err() != nil {
+		stopAll(session.processes)
+	}
+	_ = session.events.Close()
+}
+
+func (session *runSession) run() error {
+	if err := session.prebootProfiles(); err != nil {
+		return err
+	}
+	return session.runProfiles()
+}
+
+func (session *runSession) finish(runErr error) (RunSummary, error) {
+	err := finalizeRun(session.runDir, &session.summary, session.events, session.spec, session.opts.OriginalSpecPath, runErr)
+	return session.summary, err
+}
+
+func (session *runSession) prebootProfiles() error {
+	if !session.spec.Runner.PrebootProfiles {
+		return nil
+	}
+	err := prebootProfiles(session.ctx, session.spec, session.runDir, session.plan, session.events, session.processes)
+	if err == nil {
+		return nil
+	}
+	session.summary.FailedRuns += remainingUnaccountedRuns(session.summary)
+	session.events.Write(Event{Timestamp: time.Now().UTC(), Type: "preboot_failed", Error: err.Error()})
+	markRunsSkipped(session.events, session.plan, err.Error())
+	return fmt.Errorf("preboot profiles failed: %w", err)
+}
+
+func (session *runSession) runProfiles() error {
+	for _, profile := range profilesInPlanOrder(session.spec.Profiles, session.plan) {
+		if err := session.runProfile(profile); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (session *runSession) runProfile(profile Profile) error {
+	runs := runsForProfile(session.plan, profile.Name)
+	if len(runs) == 0 {
+		return nil
+	}
+	proc, ok := session.ensureProfileReady(profile, runs)
+	if !ok {
+		return nil
+	}
+	if session.runProfileWorkloads(profile, proc, runs) {
+		return nil
+	}
+	if err := session.sleepFinishedProfile(profile, proc); err != nil {
+		return err
+	}
+	session.stopFinishedProfile(profile, proc)
+	return nil
+}
+
+func (session *runSession) ensureProfileReady(profile Profile, runs []PlannedRun) (*serverProcess, bool) {
+	proc := session.processes[profile.Name]
+	if proc == nil {
+		return session.prepareManagedProfile(profile, runs)
+	}
+	return proc, session.wakePrebootedProfile(profile, proc, runs)
+}
+
+func (session *runSession) prepareManagedProfile(profile Profile, runs []PlannedRun) (*serverProcess, bool) {
+	proc, err := prepareProfile(session.ctx, session.spec, session.runDir, profile, session.events, true)
+	if err != nil {
+		session.failProfile(profile, runs, err)
+		return nil, false
+	}
+	if proc != nil {
+		session.processes[profile.Name] = proc
+	}
+	return proc, true
+}
+
+func (session *runSession) wakePrebootedProfile(profile Profile, proc *serverProcess, runs []PlannedRun) bool {
+	if err := wakeProfile(session.ctx, session.spec, profile, session.events); err != nil {
+		session.failProfileAndStop(profile, proc, runs, err)
+		return false
+	}
+	if err := session.runProfileWarmup(profile, proc, runs); err != nil {
+		return false
+	}
+	return true
+}
+
+func (session *runSession) runProfileWarmup(profile Profile, proc *serverProcess, runs []PlannedRun) error {
+	if !session.spec.Warmup.Enabled {
+		return nil
+	}
+	if err := runWarmup(session.ctx, session.spec, profile, session.runDir, session.events); err != nil {
+		session.failProfile(profile, runs, err)
+		session.sleepFailedWarmupProfile(profile, proc)
+		return err
+	}
+	return nil
+}
+
+func (session *runSession) failProfile(profile Profile, runs []PlannedRun, err error) {
+	session.summary.FailedRuns += len(runs)
+	session.events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
+	markRunsSkipped(session.events, runs, err.Error())
+}
+
+func (session *runSession) failProfileAndStop(profile Profile, proc *serverProcess, runs []PlannedRun, err error) {
+	session.failProfile(profile, runs, err)
+	stopProcess(proc)
+	delete(session.processes, profile.Name)
+}
+
+func (session *runSession) sleepFailedWarmupProfile(profile Profile, proc *serverProcess) {
+	if !profile.EnableSleepMode {
+		return
+	}
+	if err := sleepProfile(session.ctx, session.spec, profile, session.events); err != nil {
+		session.stopAfterWarmupSleepFailure(profile, proc, err)
+	}
+}
+
+func (session *runSession) stopAfterWarmupSleepFailure(profile Profile, proc *serverProcess, err error) {
+	session.events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_sleep_failed", Profile: profile.Name, Error: err.Error()})
+	stopProcess(proc)
+	delete(session.processes, profile.Name)
+}
+
+func (session *runSession) runProfileWorkloads(profile Profile, proc *serverProcess, runs []PlannedRun) bool {
+	for i, planned := range runs {
+		if aborted := session.runProfileWorkload(profile, proc, runs, i, planned); aborted {
+			return true
+		}
+	}
+	return false
+}
+
+func (session *runSession) runProfileWorkload(profile Profile, proc *serverProcess, runs []PlannedRun, index int, planned PlannedRun) bool {
+	if err := checkMemoryEvent(session.spec, session.events, "before_workload", planned.Profile.Name); err != nil {
+		return session.handleWorkloadError(profile, proc, runs, index, planned, "workload_skipped", err)
+	}
+	result, err := executeBench(session.ctx, session.spec, planned, session.runDir, session.events)
+	if err != nil {
+		return session.handleWorkloadError(profile, proc, runs, index, planned, "workload_failed", err)
+	}
+	session.summary.CompletedRuns++
+	if result != nil {
+		session.summary.Rows = append(session.summary.Rows, *result)
+	}
+	return false
+}
+
+func (session *runSession) handleWorkloadError(profile Profile, proc *serverProcess, runs []PlannedRun, index int, planned PlannedRun, eventType string, err error) bool {
+	session.summary.FailedRuns++
+	session.events.Write(Event{Timestamp: time.Now().UTC(), Type: eventType, Profile: planned.Profile.Name, Workload: planned.Workload.Name, Concurrency: planned.Concurrency, Repeat: planned.Repeat, Error: err.Error()})
+	if !IsMemoryFloorError(err) {
+		return false
+	}
+	remaining := len(runs) - index - 1
+	session.summary.FailedRuns += remaining
+	markRunsSkipped(session.events, runs[index+1:], "skipped after memory floor guard tripped")
+	stopProfileAfterMemoryFloor(session.events, profile, proc, session.processes, remaining)
+	return true
+}
+
+func (session *runSession) sleepFinishedProfile(profile Profile, proc *serverProcess) error {
+	if !profile.EnableSleepMode {
+		return nil
+	}
+	err := sleepProfile(session.ctx, session.spec, profile, session.events)
+	if err == nil {
+		return nil
+	}
+	session.events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_sleep_failed", Profile: profile.Name, Error: err.Error()})
+	stopProcess(proc)
+	delete(session.processes, profile.Name)
+	remaining := runsAfterProfile(session.spec.Profiles, session.plan, profile.Name)
+	session.summary.FailedRuns += len(remaining)
+	markRunsSkipped(session.events, remaining, err.Error())
+	return fmt.Errorf("profile %s sleep failed: %w", profile.Name, err)
+}
+
+func (session *runSession) stopFinishedProfile(profile Profile, proc *serverProcess) {
+	if proc != nil && shouldStopManaged(session.spec) && !session.spec.Runner.PrebootProfiles {
+		stopProcess(proc)
+		delete(session.processes, profile.Name)
+	}
+}
+
+func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, spec Spec, originalSpecPath string, runErr error) error {
 	summary.FinishedAt = time.Now().UTC()
+	writeRunFinishEvent(summary, events, runErr)
+	writeFinalReports(runDir, summary)
+	if err := writeJSONFile(filepath.Join(runDir, "summary.json"), summary); err != nil {
+		return err
+	}
+	if err := writeFinalArtifact(runDir, summary, spec, originalSpecPath); err != nil && runErr == nil {
+		return err
+	}
+	return finalRunError(*summary, runErr)
+}
+
+func writeRunFinishEvent(summary *RunSummary, events *eventWriter, runErr error) {
 	event := Event{Timestamp: summary.FinishedAt, Type: "run_finish", Details: mustJSON(map[string]any{
 		"completed_runs": summary.CompletedRuns,
 		"failed_runs":    summary.FailedRuns,
@@ -261,16 +393,27 @@ func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, runErr
 		event.Error = runErr.Error()
 	}
 	events.Write(event)
+}
+
+func writeFinalReports(runDir string, summary *RunSummary) {
 	report, err := BuildReport(runDir)
-	if err == nil {
-		reportPath := filepath.Join(runDir, "report.md")
-		if err := WriteReportFiles(report, reportPath); err == nil {
-			summary.ReportPath = reportPath
-		}
+	if err != nil {
+		return
 	}
-	if err := writeJSONFile(filepath.Join(runDir, "summary.json"), summary); err != nil {
-		return err
+	reportPath := filepath.Join(runDir, "report.md")
+	if err := WriteReportFiles(report, reportPath); err == nil {
+		summary.ReportPath = reportPath
 	}
+}
+
+func writeFinalArtifact(runDir string, summary *RunSummary, spec Spec, originalSpecPath string) error {
+	if summary.ArtifactPath == "" {
+		return nil
+	}
+	return WriteSQLiteArtifact(runDir, summary.ArtifactPath, spec, *summary, BuildPlan(spec, runDir), originalSpecPath)
+}
+
+func finalRunError(summary RunSummary, runErr error) error {
 	if runErr != nil {
 		return runErr
 	}
@@ -310,37 +453,52 @@ func prepareProfile(ctx context.Context, spec Spec, runDir string, profile Profi
 	if err := checkMemoryEvent(spec, events, "before_profile", profile.Name); err != nil {
 		return nil, err
 	}
-	var proc *serverProcess
-	var err error
-	if profile.Managed {
-		proc, err = startServer(ctx, spec, runDir, profile, events)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if err := waitReady(ctx, spec, profile, events, proc); err != nil {
-		if proc != nil {
-			stopProcess(proc)
-		}
+	proc, err := startManagedProfile(ctx, spec, runDir, profile, events)
+	if err != nil {
 		return nil, err
 	}
-	if profile.EnableSleepMode {
-		if err := wakeProfile(ctx, spec, profile, events); err != nil {
-			if proc != nil {
-				stopProcess(proc)
-			}
-			return nil, err
-		}
-	}
-	if shouldWarmup && spec.Warmup.Enabled {
-		if err := runWarmup(ctx, spec, profile, runDir, events); err != nil {
-			if proc != nil {
-				stopProcess(proc)
-			}
+	for _, step := range profilePrepareSteps(shouldWarmup) {
+		if err := step(ctx, spec, runDir, profile, events, proc); err != nil {
+			stopProcess(proc)
 			return nil, err
 		}
 	}
 	return proc, nil
+}
+
+func startManagedProfile(ctx context.Context, spec Spec, runDir string, profile Profile, events *eventWriter) (*serverProcess, error) {
+	if !profile.Managed {
+		return nil, nil
+	}
+	return startServer(ctx, spec, runDir, profile, events)
+}
+
+type profilePrepareStep func(context.Context, Spec, string, Profile, *eventWriter, *serverProcess) error
+
+func profilePrepareSteps(shouldWarmup bool) []profilePrepareStep {
+	steps := []profilePrepareStep{waitReadyStep, wakeProfileStep}
+	if shouldWarmup {
+		steps = append(steps, warmupProfileStep)
+	}
+	return steps
+}
+
+func waitReadyStep(ctx context.Context, spec Spec, _ string, profile Profile, events *eventWriter, proc *serverProcess) error {
+	return waitReady(ctx, spec, profile, events, proc)
+}
+
+func wakeProfileStep(ctx context.Context, spec Spec, _ string, profile Profile, events *eventWriter, _ *serverProcess) error {
+	if profile.EnableSleepMode {
+		return wakeProfile(ctx, spec, profile, events)
+	}
+	return nil
+}
+
+func warmupProfileStep(ctx context.Context, spec Spec, runDir string, profile Profile, events *eventWriter, _ *serverProcess) error {
+	if spec.Warmup.Enabled {
+		return runWarmup(ctx, spec, profile, runDir, events)
+	}
+	return nil
 }
 
 func startServer(_ context.Context, spec Spec, runDir string, profile Profile, events *eventWriter) (*serverProcess, error) {
@@ -384,57 +542,119 @@ func startServer(_ context.Context, spec Spec, runDir string, profile Profile, e
 }
 
 func waitReady(ctx context.Context, spec Spec, profile Profile, events *eventWriter, proc *serverProcess) error {
-	start := time.Now()
-	timeout := time.Duration(spec.Safety.StartupTimeoutSec) * time.Second
-	poll := time.Duration(spec.Safety.PollIntervalMillis) * time.Millisecond
-	url := baseURL(profile) + profile.HealthPath
-	client := &http.Client{Timeout: time.Duration(spec.Safety.HTTPTimeoutSec) * time.Second}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	ticker := time.NewTicker(poll)
-	defer ticker.Stop()
+	waiter := newReadinessWaiter(ctx, spec, profile, events, proc)
+	defer waiter.poll.stop()
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			return fmt.Errorf("profile %s did not become ready within %s", profile.Name, timeout)
-		default:
-		}
-		if proc != nil {
-			select {
-			case err := <-proc.done:
-				proc.done <- err
-				return fmt.Errorf("profile %s server exited before readiness: %v; log tail: %s", profile.Name, err, tailFile(proc.logPath, 4096))
-			default:
-			}
-		}
-		if snapshot, err := checkMemoryFloor(spec.Safety.MinMemAvailableGiB); err != nil {
-			events.Write(Event{
-				Timestamp:       time.Now().UTC(),
-				Type:            "startup_memory_floor",
-				Profile:         profile.Name,
-				MemAvailableGiB: snapshot.MemAvailableGiB,
-				Error:           err.Error(),
-			})
+		if ready, err := waiter.check(); ready || err != nil {
 			return err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err == nil {
-			resp, err := client.Do(req)
-			if err == nil {
-				_ = resp.Body.Close()
-				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-					events.Write(Event{Timestamp: time.Now().UTC(), Type: "server_ready", Profile: profile.Name, DurationSeconds: time.Since(start).Seconds()})
-					return nil
-				}
-			}
+		if err := waiter.waitNext(); err != nil {
+			return err
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
+	}
+}
+
+type readinessWaiter struct {
+	ctx     context.Context
+	spec    Spec
+	profile Profile
+	events  *eventWriter
+	proc    *serverProcess
+	start   time.Time
+	timeout time.Duration
+	client  *http.Client
+	poll    pollTimer
+}
+
+type pollTimer struct {
+	timer  *time.Timer
+	ticker *time.Ticker
+}
+
+func newPollTimer(timeout, interval time.Duration) pollTimer {
+	return pollTimer{
+		timer:  time.NewTimer(timeout),
+		ticker: time.NewTicker(interval),
+	}
+}
+
+func (poll pollTimer) stop() {
+	poll.timer.Stop()
+	poll.ticker.Stop()
+}
+
+func newReadinessWaiter(ctx context.Context, spec Spec, profile Profile, events *eventWriter, proc *serverProcess) *readinessWaiter {
+	timeout := time.Duration(spec.Safety.StartupTimeoutSec) * time.Second
+	poll := time.Duration(spec.Safety.PollIntervalMillis) * time.Millisecond
+	return &readinessWaiter{
+		ctx:     ctx,
+		spec:    spec,
+		profile: profile,
+		events:  events,
+		proc:    proc,
+		start:   time.Now(),
+		timeout: timeout,
+		client:  &http.Client{Timeout: time.Duration(spec.Safety.HTTPTimeoutSec) * time.Second},
+		poll:    newPollTimer(timeout, poll),
+	}
+}
+
+func (waiter *readinessWaiter) check() (bool, error) {
+	if err := waiter.serverExitError(); err != nil {
+		return false, err
+	}
+	if err := waiter.checkStartupMemory(); err != nil {
+		return false, err
+	}
+	return waiter.probeReady(), nil
+}
+
+func (waiter *readinessWaiter) serverExitError() error {
+	if waiter.proc == nil {
+		return nil
+	}
+	select {
+	case err := <-waiter.proc.done:
+		waiter.proc.done <- err
+		return fmt.Errorf("profile %s server exited before readiness: %v; log tail: %s", waiter.profile.Name, err, tailFile(waiter.proc.logPath, 4096))
+	default:
+		return nil
+	}
+}
+
+func (waiter *readinessWaiter) checkStartupMemory() error {
+	snapshot, err := checkMemoryFloor(waiter.spec.Safety.MinMemAvailableGiB)
+	if err != nil {
+		waiter.events.Write(Event{Timestamp: time.Now().UTC(), Type: "startup_memory_floor", Profile: waiter.profile.Name, MemAvailableGiB: snapshot.MemAvailableGiB, Error: err.Error()})
+	}
+	return err
+}
+
+func (waiter *readinessWaiter) probeReady() bool {
+	req, err := http.NewRequestWithContext(waiter.ctx, http.MethodGet, baseURL(waiter.profile)+waiter.profile.HealthPath, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := waiter.client.Do(req)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
+	waiter.events.Write(Event{Timestamp: time.Now().UTC(), Type: "server_ready", Profile: waiter.profile.Name, DurationSeconds: time.Since(waiter.start).Seconds()})
+	return true
+}
+
+func (waiter *readinessWaiter) waitNext() error {
+	select {
+	case <-waiter.ctx.Done():
+		return waiter.ctx.Err()
+	case <-waiter.poll.timer.C:
+		return fmt.Errorf("profile %s did not become ready within %s", waiter.profile.Name, waiter.timeout)
+	case <-waiter.poll.ticker.C:
+		return nil
 	}
 }
 
@@ -461,17 +681,7 @@ func runWarmup(ctx context.Context, spec Spec, profile Profile, runDir string, e
 		events.Write(event)
 		return err
 	}
-	if rows, err := ParseResultFile(event.ResultFile); err != nil {
-		event.Error = err.Error()
-		events.Write(event)
-		return err
-	} else if len(rows) == 0 {
-		err := errors.New("warmup result file did not contain a parseable row")
-		event.Error = err.Error()
-		events.Write(event)
-		return err
-	} else if failed := failedRequestCount(rows); failed > 0 {
-		err := fmt.Errorf("warmup result reported %d failed request(s)", failed)
+	if err := validateWarmupResult(event.ResultFile); err != nil {
 		event.Error = err.Error()
 		events.Write(event)
 		return err
@@ -480,15 +690,30 @@ func runWarmup(ctx context.Context, spec Spec, profile Profile, runDir string, e
 	return nil
 }
 
+func validateWarmupResult(path string) error {
+	rows, err := ParseResultFile(path)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return errors.New("warmup result file did not contain a parseable row")
+	}
+	if failed := failedRequestCount(rows); failed > 0 {
+		return fmt.Errorf("warmup result reported %d failed request(s)", failed)
+	}
+	return nil
+}
+
 func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir string, events *eventWriter) (*ReportRow, error) {
 	command := BenchCommand(spec, planned)
-	logPath := filepath.Join(runDir, "logs", fmt.Sprintf("%s__%s__c%d.log", Slug(planned.Profile.Name), Slug(planned.Workload.Name), planned.Concurrency))
+	logPath := benchmarkLogPath(runDir, planned)
 	events.Write(Event{
 		Timestamp:   time.Now().UTC(),
 		Type:        "workload_start",
 		Profile:     planned.Profile.Name,
 		Workload:    planned.Workload.Name,
 		Concurrency: planned.Concurrency,
+		Repeat:      planned.Repeat,
 		Command:     CommandSummary(command),
 		Args:        command.Args,
 		ResultFile:  planned.ResultFile,
@@ -501,6 +726,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		Profile:         planned.Profile.Name,
 		Workload:        planned.Workload.Name,
 		Concurrency:     planned.Concurrency,
+		Repeat:          planned.Repeat,
 		Command:         CommandSummary(command),
 		Args:            command.Args,
 		ResultFile:      planned.ResultFile,
@@ -527,6 +753,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	row.Context = planned.Profile.MaxModelLen
 	row.ServerMaxNumSeqs = planned.Profile.MaxNumSeqs
 	row.Concurrency = planned.Concurrency
+	row.Repeat = planned.Repeat
 	row.RandomInputLen = planned.Workload.RandomInputLen
 	row.RandomOutputLen = planned.Workload.RandomOutputLen
 	row.DatasetName = planned.Workload.DatasetName
@@ -536,6 +763,14 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		return &row, fmt.Errorf("benchmark result reported %d failed request(s)", failed)
 	}
 	return &row, nil
+}
+
+func benchmarkLogPath(runDir string, planned PlannedRun) string {
+	name := fmt.Sprintf("%s__%s__c%d", Slug(planned.Profile.Name), Slug(planned.Workload.Name), planned.Concurrency)
+	if planned.Workload.Repeats > 1 {
+		name += fmt.Sprintf("__r%d", planned.Repeat+1)
+	}
+	return filepath.Join(runDir, "logs", name+".log")
 }
 
 func failedRequestCount(rows []ReportRow) int {
@@ -555,19 +790,29 @@ func executeCommand(ctx context.Context, command CommandSpec, logPath string, ti
 	if len(command.Args) == 0 {
 		return commandResult{ExitCode: -1}, errors.New("empty command")
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := prepareCommandPaths(command, logPath); err != nil {
 		return commandResult{ExitCode: -1}, err
-	}
-	if result := resultFromArgs(command.Args); result != "" {
-		if err := os.MkdirAll(filepath.Dir(result), 0o755); err != nil {
-			return commandResult{ExitCode: -1}, err
-		}
 	}
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return commandResult{ExitCode: -1}, err
 	}
 	defer logFile.Close()
+	return runLoggedCommand(ctx, command, logPath, logFile, timeout, minMemAvailableGiB, pollInterval)
+}
+
+func prepareCommandPaths(command CommandSpec, logPath string) error {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
+	result := resultFromArgs(command.Args)
+	if result == "" {
+		return nil
+	}
+	return os.MkdirAll(filepath.Dir(result), 0o755)
+}
+
+func runLoggedCommand(ctx context.Context, command CommandSpec, logPath string, logFile *os.File, timeout time.Duration, minMemAvailableGiB float64, pollInterval time.Duration) (commandResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	memoryMonitor := monitorMemoryFloor(runCtx, cancel, minMemAvailableGiB, pollInterval)
@@ -576,7 +821,7 @@ func executeCommand(ctx context.Context, command CommandSpec, logPath string, ti
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	start := time.Now()
-	err = cmd.Run()
+	runErr := cmd.Run()
 	duration := time.Since(start)
 	cancel()
 	memoryErr := <-memoryMonitor
@@ -586,14 +831,18 @@ func executeCommand(ctx context.Context, command CommandSpec, logPath string, ti
 	} else {
 		result.ExitCode = -1
 	}
+	return classifyCommandResult(runCtx, result, runErr, memoryErr, timeout, logPath)
+}
+
+func classifyCommandResult(runCtx context.Context, result commandResult, runErr, memoryErr error, timeout time.Duration, logPath string) (commandResult, error) {
 	if runCtx.Err() == context.DeadlineExceeded {
 		return result, fmt.Errorf("command timed out after %s", timeout)
 	}
 	if memoryErr != nil {
 		return result, memoryErr
 	}
-	if err != nil {
-		return result, fmt.Errorf("%w; log tail: %s", err, strings.TrimSpace(tailFile(logPath, 4096)))
+	if runErr != nil {
+		return result, fmt.Errorf("%w; log tail: %s", runErr, strings.TrimSpace(tailFile(logPath, 4096)))
 	}
 	return result, nil
 }
@@ -685,37 +934,72 @@ func wakeProfile(ctx context.Context, spec Spec, profile Profile, events *eventW
 }
 
 func waitSleepState(ctx context.Context, spec Spec, profile Profile, wantSleeping bool) error {
+	waiter := newSleepStateWaiter(ctx, spec, profile, wantSleeping)
+	defer waiter.poll.stop()
+	var lastErr error
+	for {
+		if done, err := waiter.check(); done {
+			return nil
+		} else if err != nil {
+			lastErr = err
+		}
+		if err := waiter.waitNext(lastErr); err != nil {
+			return err
+		}
+	}
+}
+
+type sleepStateWaiter struct {
+	ctx          context.Context
+	spec         Spec
+	profile      Profile
+	wantSleeping bool
+	state        string
+	start        time.Time
+	poll         pollTimer
+}
+
+func newSleepStateWaiter(ctx context.Context, spec Spec, profile Profile, wantSleeping bool) *sleepStateWaiter {
 	state := "awake"
 	if wantSleeping {
 		state = "sleeping"
 	}
-	start := time.Now()
-	timeout := time.Duration(spec.Safety.StartupTimeoutSec) * time.Second
-	poll := time.Duration(spec.Safety.PollIntervalMillis) * time.Millisecond
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	ticker := time.NewTicker(poll)
-	defer ticker.Stop()
-	var lastErr error
-	for {
-		sleeping, err := isSleeping(ctx, spec, profile)
-		if err == nil && sleeping == wantSleeping {
-			return nil
-		}
-		if err != nil {
-			lastErr = err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			if lastErr != nil {
-				return fmt.Errorf("profile %s did not become %s within %s: %w", profile.Name, state, time.Since(start).Round(time.Millisecond), lastErr)
-			}
-			return fmt.Errorf("profile %s did not become %s within %s", profile.Name, state, time.Since(start).Round(time.Millisecond))
-		case <-ticker.C:
-		}
+	return &sleepStateWaiter{
+		ctx:          ctx,
+		spec:         spec,
+		profile:      profile,
+		wantSleeping: wantSleeping,
+		state:        state,
+		start:        time.Now(),
+		poll: newPollTimer(
+			time.Duration(spec.Safety.StartupTimeoutSec)*time.Second,
+			time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond,
+		),
 	}
+}
+
+func (waiter *sleepStateWaiter) check() (bool, error) {
+	sleeping, err := isSleeping(waiter.ctx, waiter.spec, waiter.profile)
+	return err == nil && sleeping == waiter.wantSleeping, err
+}
+
+func (waiter *sleepStateWaiter) waitNext(lastErr error) error {
+	select {
+	case <-waiter.ctx.Done():
+		return waiter.ctx.Err()
+	case <-waiter.poll.timer.C:
+		return waiter.timeoutError(lastErr)
+	case <-waiter.poll.ticker.C:
+		return nil
+	}
+}
+
+func (waiter *sleepStateWaiter) timeoutError(lastErr error) error {
+	elapsed := time.Since(waiter.start).Round(time.Millisecond)
+	if lastErr != nil {
+		return fmt.Errorf("profile %s did not become %s within %s: %w", waiter.profile.Name, waiter.state, elapsed, lastErr)
+	}
+	return fmt.Errorf("profile %s did not become %s within %s", waiter.profile.Name, waiter.state, elapsed)
 }
 
 func isSleeping(ctx context.Context, spec Spec, profile Profile) (bool, error) {
@@ -733,16 +1017,31 @@ func isSleeping(ctx context.Context, spec Spec, profile Profile) (bool, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return false, fmt.Errorf("%s/is_sleeping returned HTTP %d: %s", baseURL(profile), resp.StatusCode, strings.TrimSpace(string(data)))
 	}
-	text := strings.TrimSpace(strings.ToLower(string(data)))
+	return parseSleepingResponse(data), nil
+}
+
+func parseSleepingResponse(data []byte) bool {
+	if sleeping, ok := parseSleepingJSON(data); ok {
+		return sleeping
+	}
+	return parseSleepingText(data)
+}
+
+func parseSleepingJSON(data []byte) (bool, bool) {
 	var object map[string]any
 	if err := json.Unmarshal(data, &object); err == nil {
 		for _, key := range []string{"is_sleeping", "sleeping"} {
 			if value, ok := object[key].(bool); ok {
-				return value, nil
+				return value, true
 			}
 		}
 	}
-	return text == "true" || text == `"true"` || strings.Contains(text, ":true"), nil
+	return false, false
+}
+
+func parseSleepingText(data []byte) bool {
+	text := strings.TrimSpace(strings.ToLower(string(data)))
+	return text == "true" || text == `"true"` || strings.Contains(text, ":true")
 }
 
 func postAdmin(ctx context.Context, spec Spec, url string) error {
@@ -855,19 +1154,33 @@ func runsForProfile(plan []PlannedRun, profileName string) []PlannedRun {
 	return out
 }
 
-func remainingRunsAfterProfile(profiles []Profile, plan []PlannedRun, profileName string) int {
+func runsAfterProfile(profiles []Profile, plan []PlannedRun, profileName string) []PlannedRun {
 	seenProfile := false
-	remaining := 0
+	var remaining []PlannedRun
 	for _, profile := range profilesInPlanOrder(profiles, plan) {
 		if profile.Name == profileName {
 			seenProfile = true
 			continue
 		}
 		if seenProfile {
-			remaining += len(runsForProfile(plan, profile.Name))
+			remaining = append(remaining, runsForProfile(plan, profile.Name)...)
 		}
 	}
 	return remaining
+}
+
+func markRunsSkipped(events *eventWriter, runs []PlannedRun, message string) {
+	for _, planned := range runs {
+		events.Write(Event{
+			Timestamp:   time.Now().UTC(),
+			Type:        "workload_skipped",
+			Profile:     planned.Profile.Name,
+			Workload:    planned.Workload.Name,
+			Concurrency: planned.Concurrency,
+			Repeat:      planned.Repeat,
+			Error:       message,
+		})
+	}
 }
 
 func shouldStopManaged(spec Spec) bool {
@@ -893,25 +1206,39 @@ func stopProcess(proc *serverProcess) {
 	if proc == nil || proc.cmd == nil || proc.cmd.Process == nil {
 		return
 	}
-	pgid := proc.pgid
-	if pgid <= 0 {
-		if value, err := syscall.Getpgid(proc.cmd.Process.Pid); err == nil {
-			pgid = value
-		}
+	pgid := processGroupID(proc)
+	signalProcess(proc, pgid, syscall.SIGTERM)
+	waitForProcessExit(proc, pgid)
+}
+
+func processGroupID(proc *serverProcess) int {
+	if proc.pgid > 0 {
+		return proc.pgid
 	}
+	pgid, err := syscall.Getpgid(proc.cmd.Process.Pid)
+	if err != nil {
+		return 0
+	}
+	return pgid
+}
+
+func signalProcess(proc *serverProcess, pgid int, signal syscall.Signal) {
 	if pgid > 0 {
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	} else {
-		_ = proc.cmd.Process.Signal(syscall.SIGTERM)
+		_ = syscall.Kill(-pgid, signal)
+		return
 	}
+	if signal == syscall.SIGKILL {
+		_ = proc.cmd.Process.Kill()
+		return
+	}
+	_ = proc.cmd.Process.Signal(signal)
+}
+
+func waitForProcessExit(proc *serverProcess, pgid int) {
 	select {
 	case <-proc.done:
 	case <-time.After(20 * time.Second):
-		if pgid > 0 {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		} else {
-			_ = proc.cmd.Process.Kill()
-		}
+		signalProcess(proc, pgid, syscall.SIGKILL)
 		<-proc.done
 	}
 }
@@ -934,11 +1261,22 @@ func tailFile(path string, maxBytes int64) string {
 		return ""
 	}
 	data, _ := io.ReadAll(file)
-	if start > 0 {
-		if index := bytes.IndexByte(data, '\n'); index >= 0 && index+1 < len(data) {
-			data = data[index+1:]
-		}
+	data = trimPartialFirstLine(data, start)
+	return nonEmptyTailLines(data, 12)
+}
+
+func trimPartialFirstLine(data []byte, start int64) []byte {
+	if start <= 0 {
+		return data
 	}
+	index := bytes.IndexByte(data, '\n')
+	if index >= 0 && index+1 < len(data) {
+		return data[index+1:]
+	}
+	return data
+}
+
+func nonEmptyTailLines(data []byte, maxLines int) string {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	var lines []string
 	for scanner.Scan() {
@@ -947,8 +1285,8 @@ func tailFile(path string, maxBytes int64) string {
 			lines = append(lines, line)
 		}
 	}
-	if len(lines) > 12 {
-		lines = lines[len(lines)-12:]
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
 	}
 	return strings.Join(lines, " | ")
 }

@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
-	"strconv"
 	"strings"
+
+	"github.com/dutifuldev/localperf/internal/collections"
 )
 
 type config struct {
@@ -191,8 +191,8 @@ func requiresShutdownRecord(status string) bool {
 
 func finalizeCoverage(sum *summary, state checkState, cfg config) {
 	sum.UniqueCandidates = len(state.candidates)
-	sum.Contexts = sortedInts(state.contexts)
-	sum.Seqs = sortedInts(state.seqs)
+	sum.Contexts = collections.SortedKeys(state.contexts)
+	sum.Seqs = collections.SortedKeys(state.seqs)
 	for _, context := range cfg.requireContexts {
 		if !state.contexts[context] {
 			sum.Issues = append(sum.Issues, fmt.Sprintf("required context %d was not recorded", context))
@@ -299,7 +299,7 @@ func printSummary(cfg config, sum summary) {
 	fmt.Printf("max context: %d\n", sum.MaxContext)
 	fmt.Printf("max max_num_seqs: %d\n", sum.MaxSeqs)
 	fmt.Println("statuses:")
-	for _, status := range sortedKeys(sum.Statuses) {
+	for _, status := range collections.SortedKeys(sum.Statuses) {
 		fmt.Printf("  %s: %d\n", status, sum.Statuses[status])
 	}
 	if len(sum.Issues) == 0 {
@@ -311,24 +311,6 @@ func printSummary(cfg config, sum summary) {
 	for _, issue := range sum.Issues {
 		fmt.Printf("  - %s\n", issue)
 	}
-}
-
-func sortedKeys(values map[string]int) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedInts(values map[int]bool) []int {
-	out := make([]int, 0, len(values))
-	for value := range values {
-		out = append(out, value)
-	}
-	sort.Ints(out)
-	return out
 }
 
 func objectField(row map[string]any, key string) map[string]any {
@@ -396,24 +378,4 @@ func numericFieldValue(row map[string]any, key string) (float64, bool) {
 	return number, true
 }
 
-type intList []int
-
-func (values *intList) String() string {
-	if values == nil {
-		return ""
-	}
-	parts := make([]string, 0, len(*values))
-	for _, value := range *values {
-		parts = append(parts, fmt.Sprint(value))
-	}
-	return strings.Join(parts, ",")
-}
-
-func (values *intList) Set(raw string) error {
-	parsed, err := strconv.Atoi(raw)
-	if err != nil || parsed <= 0 {
-		return fmt.Errorf("invalid positive integer %q", raw)
-	}
-	*values = append(*values, parsed)
-	return nil
-}
+type intList = collections.PositiveIntList

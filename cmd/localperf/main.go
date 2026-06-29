@@ -7,5 +7,5 @@ import (
 )
 
 func main() {
-	benchcli.Main(os.Args[1:])
+	benchcli.LocalPerfMain(os.Args[1:])
 }

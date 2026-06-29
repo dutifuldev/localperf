@@ -2,6 +2,7 @@ package vllmbench
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -117,6 +118,155 @@ func TestBenchCommandSupportsStandardDatasetKnobs(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("command %q missing %q", got, want)
+		}
+	}
+}
+
+func TestLoadSpecSupportsEngineNeutralShape(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spec.json")
+	writeFile(t, path, `{
+  "version": "localperf.bench/v1",
+  "name": "engine-neutral",
+  "model": "example/model",
+  "safety": {"min_mem_available_gib": 1},
+  "engines": [
+    {"name": "vllm", "type": "vllm-managed", "command": "vllm-custom"}
+  ],
+  "profiles": [
+    {
+      "name": "4k",
+      "engine": "vllm",
+      "managed": true,
+      "port": 8104,
+      "serve": {
+        "max_model_len": 4096,
+        "max_num_seqs": 8,
+        "max_num_batched_tokens": 4096,
+        "gpu_memory_utilization": 0.25
+      },
+      "engine_args": ["--disable-log-requests"]
+    }
+  ],
+  "workloads": [
+    {
+      "name": "decode",
+      "profiles": ["4k"],
+      "traffic": {
+        "backend": "openai-chat",
+        "dataset_name": "random",
+        "random_input_len": 128,
+        "random_output_len": 16,
+        "request_rate": "inf"
+      },
+      "samples": 3,
+      "repeats": 2,
+      "concurrency": [1, 2]
+    }
+  ]
+}`)
+	spec, err := LoadSpec(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Profiles[0].MaxModelLen != 4096 || spec.Profiles[0].MaxNumSeqs != 8 {
+		t.Fatalf("serve fields were not lifted into profile: %+v", spec.Profiles[0])
+	}
+	if spec.Workloads[0].NumPrompts != 3 || spec.Workloads[0].Repeats != 2 {
+		t.Fatalf("samples/repeats not normalized: %+v", spec.Workloads[0])
+	}
+	if got := len(BuildPlan(spec, "runs/example")); got != 4 {
+		t.Fatalf("plan length = %d, want 4", got)
+	}
+	command := ServeCommand(spec, spec.Profiles[0])
+	got := ShellQuote(command.Args)
+	for _, want := range []string{"vllm-custom serve", "--max-model-len 4096", "--disable-log-requests"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("serve command %q missing %q", got, want)
+		}
+	}
+}
+
+func TestApplyDefaultsOverlaysNestedTraffic(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{{
+		Name:     "mixed-traffic",
+		Profiles: []string{"8k"},
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			SaveDetailed: true,
+			Metadata:     []string{"suite=localperf"},
+			Goodput:      []string{"ttft:5000"},
+			ExtraArgs:    []string{"--request-id-prefix", "mixed"},
+		},
+		Traffic: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "random",
+			RandomInputLen:  128,
+			RandomOutputLen: 16,
+			RequestRate:     "inf",
+		},
+		Samples:     2,
+		Concurrency: []int{1},
+	}}
+	ApplyDefaults(&spec)
+	workload := spec.Workloads[0]
+	if !workload.SaveDetailed || fmt.Sprint(workload.Metadata) != "[suite=localperf]" || fmt.Sprint(workload.Goodput) != "[ttft:5000]" {
+		t.Fatalf("top-level traffic flags were not preserved: %+v", workload.BenchmarkTrafficConfig)
+	}
+	if workload.RandomInputLen != 128 || workload.RandomOutputLen != 16 || workload.NumPrompts != 2 || fmt.Sprint(workload.MaxConcurrency) != "[1]" {
+		t.Fatalf("nested traffic aliases were not applied: %+v", workload)
+	}
+	command := ShellQuote(BenchCommand(spec, BuildPlan(spec, "runs/example")[0]).Args)
+	for _, want := range []string{"--save-detailed", "--metadata suite=localperf", "--goodput ttft:5000", "--request-id-prefix mixed"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command %q missing preserved arg %q", command, want)
+		}
+	}
+}
+
+func TestApplyDefaultsDoesNotDuplicateEngineArgs(t *testing.T) {
+	spec := testSpec()
+	spec.Profiles[0].Args = []string{"--served-model-name", "alias"}
+	spec.Profiles[0].EngineArgs = []string{"--disable-log-requests"}
+	ApplyDefaults(&spec)
+	ApplyDefaults(&spec)
+	if len(spec.Profiles[0].Args) != 2 {
+		t.Fatalf("profile args were mutated by defaults: %+v", spec.Profiles[0].Args)
+	}
+	got := ShellQuote(ServeCommand(spec, spec.Profiles[0]).Args)
+	if count := strings.Count(got, "--disable-log-requests"); count != 1 {
+		t.Fatalf("serve command has %d engine arg copies, want 1: %s", count, got)
+	}
+	if count := strings.Count(got, "--served-model-name"); count != 1 {
+		t.Fatalf("serve command has %d args copies, want 1: %s", count, got)
+	}
+}
+
+func TestCommandsIncludeEngineEnv(t *testing.T) {
+	spec := testSpec()
+	spec.Env["SPEC_ENV"] = "spec"
+	spec.Engines[0].Env = map[string]string{"ENGINE_ENV": "engine"}
+	spec.Profiles[0].Env = map[string]string{"PROFILE_ENV": "profile"}
+	spec.Warmup.Enabled = true
+	serve := ServeCommand(spec, spec.Profiles[0])
+	for key, want := range map[string]string{
+		"SPEC_ENV":             "spec",
+		"ENGINE_ENV":           "engine",
+		"PROFILE_ENV":          "profile",
+		"VLLM_SERVER_DEV_MODE": "1",
+	} {
+		if serve.Env[key] != want {
+			t.Fatalf("serve env %s = %q, want %q; env=%v", key, serve.Env[key], want, serve.Env)
+		}
+	}
+	planned := BuildPlan(spec, "runs/example")[0]
+	bench := BenchCommand(spec, planned)
+	warmup := WarmupCommand(spec, spec.Profiles[0], "runs/example")
+	for name, command := range map[string]CommandSpec{"bench": bench, "warmup": warmup} {
+		if command.Env["SPEC_ENV"] != "spec" || command.Env["ENGINE_ENV"] != "engine" {
+			t.Fatalf("%s env did not include spec and engine env: %v", name, command.Env)
+		}
+		if _, ok := command.Env["PROFILE_ENV"]; ok {
+			t.Fatalf("%s env unexpectedly included profile env: %v", name, command.Env)
 		}
 	}
 }
@@ -394,6 +544,114 @@ func TestExecuteDryRunAndReport(t *testing.T) {
 	}
 }
 
+func TestExecuteDryRunStoresOriginalSpecAndPlannedCommandStatus(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.json")
+	writeFile(t, specPath, `{
+  "version": "localperf.bench/v1",
+  "name": "original-spec-artifact",
+  "model": "example/model",
+  "env": {"HF_TOKEN": "hf_secret", "CUTE_DSL_ARCH": "sm_121a"},
+  "safety": {"min_mem_available_gib": 1},
+  "profiles": [
+    {
+      "name": "4k",
+      "managed": true,
+      "port": 8104,
+      "serve": {"max_model_len": 4096, "max_num_seqs": 4, "max_num_batched_tokens": 4096}
+    }
+  ],
+  "workloads": [
+    {
+      "name": "decode",
+      "profiles": ["4k"],
+      "traffic": {
+        "dataset_name": "random",
+        "random_input_len": 128,
+        "random_output_len": 16
+      },
+      "samples": 3,
+      "concurrency": [1]
+    }
+  ]
+}`)
+	spec, err := LoadSpec(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := Execute(context.Background(), spec, RunOptions{
+		DryRun:           true,
+		RunDir:           filepath.Join(dir, "run"),
+		OriginalSpecPath: specPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckSQLiteArtifact(summary.ArtifactPath); err != nil {
+		t.Fatalf("artifact check failed: %v", err)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	specs := map[string]string{}
+	rows, err := db.Query("SELECT kind, content, sha256 FROM specs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, content, hash string
+		if err := rows.Scan(&kind, &content, &hash); err != nil {
+			t.Fatal(err)
+		}
+		if got := sha256Hex([]byte(content)); got != hash {
+			t.Fatalf("%s spec hash = %s, want %s", kind, got, hash)
+		}
+		specs[kind] = content
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(specs["original"], `"samples": 3`) || !strings.Contains(specs["original"], `"traffic"`) {
+		t.Fatalf("original spec did not preserve submitted aliases:\n%s", specs["original"])
+	}
+	if !strings.Contains(specs["original"], `"max_num_batched_tokens": 4096`) {
+		t.Fatalf("original spec redacted or dropped token-count field:\n%s", specs["original"])
+	}
+	if strings.Contains(specs["original"], "hf_secret") || !containsRedactedMarker(specs["original"]) {
+		t.Fatalf("original spec did not redact env secret:\n%s", specs["original"])
+	}
+	if !strings.Contains(specs["original"], `"CUTE_DSL_ARCH": "sm_121a"`) {
+		t.Fatalf("original spec redacted non-secret env value:\n%s", specs["original"])
+	}
+	if strings.Contains(specs["original"], `"num_prompts"`) {
+		t.Fatalf("original spec unexpectedly contains normalized num_prompts:\n%s", specs["original"])
+	}
+	if !strings.Contains(specs["normalized"], `"num_prompts": 3`) {
+		t.Fatalf("normalized spec did not contain normalized num_prompts:\n%s", specs["normalized"])
+	}
+	var status string
+	var exitCode sql.NullInt64
+	if err := db.QueryRow("SELECT status, exit_code FROM commands WHERE phase = 'planned_run'").Scan(&status, &exitCode); err != nil {
+		t.Fatal(err)
+	}
+	if status != "planned" || exitCode.Valid {
+		t.Fatalf("planned command status=%q exit_valid=%t, want planned with null exit", status, exitCode.Valid)
+	}
+}
+
+func TestCheckSQLiteArtifactDoesNotCreateMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.sqlite")
+	if err := CheckSQLiteArtifact(path); err == nil {
+		t.Fatal("CheckSQLiteArtifact error = nil, want missing file error")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("artifact check created missing file or returned unexpected stat error: %v", err)
+	}
+}
+
 func TestExecuteRedactsSensitiveEnvInArtifacts(t *testing.T) {
 	spec := testSpec()
 	spec.OutputDir = t.TempDir()
@@ -460,6 +718,134 @@ func TestExecuteWithFakeVLLMEndToEnd(t *testing.T) {
 	if report.Rows[0].OutputTokensPerSec != 20 {
 		t.Fatalf("output throughput = %v, want 20", report.Rows[0].OutputTokensPerSec)
 	}
+	assertSQLiteArtifact(t, summary.ArtifactPath)
+}
+
+func TestExecuteRepeatsUseDistinctLogsAndMeasurements(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-repeats"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
+	spec.Workloads[0].Repeats = 2
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.CompletedRuns != 2 || summary.FailedRuns != 0 {
+		t.Fatalf("summary = %+v, want two completed repeat runs", summary)
+	}
+	if len(summary.Rows) != 2 || summary.Rows[0].Repeat != 0 || summary.Rows[1].Repeat != 1 {
+		t.Fatalf("summary row repeats = %+v, want repeat indexes 0 and 1", summary.Rows)
+	}
+	for _, name := range []string{
+		"8k__fake-random__c1__r1.log",
+		"8k__fake-random__c1__r2.log",
+	} {
+		if _, err := os.Stat(filepath.Join(summary.RunDir, "logs", name)); err != nil {
+			t.Fatalf("expected repeat log %s: %v", name, err)
+		}
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query("SELECT repeat_index, status FROM measurements ORDER BY repeat_index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var repeats []int
+	for rows.Next() {
+		var repeat int
+		var status string
+		if err := rows.Scan(&repeat, &status); err != nil {
+			t.Fatal(err)
+		}
+		if status != "completed" {
+			t.Fatalf("repeat %d status = %s, want completed", repeat, status)
+		}
+		repeats = append(repeats, repeat)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(repeats) != "[0 1]" {
+		t.Fatalf("measurement repeats = %v, want [0 1]", repeats)
+	}
+	var logArtifacts int
+	if err := db.QueryRow("SELECT COUNT(*) FROM artifacts WHERE kind = 'server_log' AND (name LIKE '%__r1.log' OR name LIKE '%__r2.log')").Scan(&logArtifacts); err != nil {
+		t.Fatal(err)
+	}
+	if logArtifacts != 2 {
+		t.Fatalf("repeat log artifacts = %d, want 2", logArtifacts)
+	}
+}
+
+func TestRawResultArtifactNameAvoidsHyphenCollisions(t *testing.T) {
+	first := rawResultArtifactName(Event{Profile: "a-b", Workload: "c", Concurrency: 1})
+	second := rawResultArtifactName(Event{Profile: "a", Workload: "b-c", Concurrency: 1})
+	if first == second {
+		t.Fatalf("raw result artifact names collide: %s", first)
+	}
+	if !strings.Contains(first, "a-b__c") || !strings.Contains(second, "a__b-c") {
+		t.Fatalf("artifact names do not preserve component boundaries: %q %q", first, second)
+	}
+}
+
+func assertSQLiteArtifact(t *testing.T, path string) {
+	t.Helper()
+	if path == "" {
+		t.Fatal("summary artifact path is empty")
+	}
+	if err := CheckSQLiteArtifact(path); err != nil {
+		t.Fatalf("artifact check failed: %v", err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for table, want := range map[string]int{
+		"run":              1,
+		"specs":            2,
+		"engines":          1,
+		"profiles":         1,
+		"workloads":        1,
+		"measurements":     1,
+		"metric_stats":     2,
+		"artifacts":        1,
+		"events":           1,
+		"telemetry_series": 1,
+	} {
+		var got int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if got < want {
+			t.Fatalf("%s rows = %d, want at least %d", table, got, want)
+		}
+	}
+	var outputThroughput float64
+	if err := db.QueryRow("SELECT aggregate_output_tok_s FROM measurements LIMIT 1").Scan(&outputThroughput); err != nil {
+		t.Fatal(err)
+	}
+	if outputThroughput != 20 {
+		t.Fatalf("artifact aggregate_output_tok_s = %v, want 20", outputThroughput)
+	}
 }
 
 func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
@@ -501,6 +887,64 @@ func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
 	}
 	if len(report.Rows) != 1 || report.Rows[0].Failed != 1 {
 		t.Fatalf("report rows = %+v, want failed request row", report.Rows)
+	}
+}
+
+func TestExecuteFailedRepeatsAttachToCorrectMeasurements(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "fake-vllm-repeat-failures"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Env["FAKE_BENCH_FAILED"] = "1"
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
+	spec.Workloads[0].Repeats = 2
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
+		t.Fatalf("Execute error = %v, want failed benchmark run", err)
+	}
+	if summary.CompletedRuns != 0 || summary.FailedRuns != 2 {
+		t.Fatalf("summary = %+v, want two failed repeats", summary)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query("SELECT repeat_index, status, error_message FROM measurements ORDER BY repeat_index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var repeats []int
+	for rows.Next() {
+		var repeat int
+		var status string
+		var message sql.NullString
+		if err := rows.Scan(&repeat, &status, &message); err != nil {
+			t.Fatal(err)
+		}
+		if status != "failed" || !message.Valid || !strings.Contains(message.String, "failed request") {
+			t.Fatalf("repeat %d status=%s message=%q, want failed request error", repeat, status, message.String)
+		}
+		repeats = append(repeats, repeat)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(repeats) != "[0 1]" {
+		t.Fatalf("measurement repeats = %v, want [0 1]", repeats)
 	}
 }
 
@@ -624,6 +1068,19 @@ func TestExecuteFailsWhenWarmupReportsRequestFailures(t *testing.T) {
 	}
 	if !strings.Contains(string(events), `"type":"warmup_finish"`) || !strings.Contains(string(events), "warmup result reported") {
 		t.Fatalf("events did not record failed warmup:\n%s", events)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var status string
+	var message sql.NullString
+	if err := db.QueryRow("SELECT status, error_message FROM measurements").Scan(&status, &message); err != nil {
+		t.Fatal(err)
+	}
+	if status != "skipped" || !message.Valid || !strings.Contains(message.String, "warmup result reported") {
+		t.Fatalf("measurement status=%s message=%q, want skipped warmup failure", status, message.String)
 	}
 }
 
@@ -1114,7 +1571,7 @@ func TestWriteReportFilesWritesCSV(t *testing.T) {
 	text := string(csvData)
 	for _, want := range []string{
 		"profile,workload,dataset_name,context",
-		"8k,prefill,random,8192,16,4,7168,16,7168,16,8,0,10.5,200,250,50,1234.5",
+		"8k,prefill,random,8192,16,4,,7168,16,7168,16,8,0,10.5,200,250,50,1234.5",
 		"results/8k__prefill__c4.json",
 	} {
 		if !strings.Contains(text, want) {

@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dutifuldev/localperf/internal/collections"
 )
 
 type Report struct {
@@ -36,6 +38,7 @@ type ReportRow struct {
 	Context             int     `json:"context,omitempty"`
 	ServerMaxNumSeqs    int     `json:"server_max_num_seqs,omitempty"`
 	Concurrency         int     `json:"concurrency,omitempty"`
+	Repeat              int     `json:"repeat,omitempty"`
 	InputLen            int     `json:"input_len,omitempty"`
 	OutputLen           int     `json:"output_len,omitempty"`
 	RandomInputLen      int     `json:"random_input_len,omitempty"`
@@ -53,51 +56,84 @@ type ReportRow struct {
 }
 
 func BuildReport(runDir string) (Report, error) {
-	report := Report{
-		RunDir:    runDir,
-		Generated: time.Now().UTC(),
-		Events: EventCounts{
-			ByType: map[string]int{},
-		},
-	}
+	report := newReport(runDir)
 	spec, _ := loadNormalizedSpec(filepath.Join(runDir, "spec.normalized.json"))
 	eventRows, err := readEvents(filepath.Join(runDir, "events.jsonl"))
 	if err == nil {
-		report.Events.Total = len(eventRows)
-		resultEvents := map[string]Event{}
-		for _, event := range eventRows {
-			report.Events.ByType[event.Type]++
-			if event.Type == "workload_failed" {
-				report.Events.FailedWorkload++
-			}
-			if event.Type == "workload_finish" && event.ResultFile != "" && event.Error == "" {
-				resultEvents[event.ResultFile] = event
-			}
-		}
-		for resultFile, event := range resultEvents {
-			resultPath := resolveResultPath(runDir, resultFile)
-			rows, err := ParseResultFile(resultPath)
-			if err != nil {
-				continue
-			}
-			event.ResultFile = resultPath
-			for _, row := range rows {
-				enrichRowFromEvent(&row, event, spec)
-				report.Rows = append(report.Rows, row)
-			}
-		}
+		addEventRowsToReport(&report, runDir, spec, eventRows)
 	} else {
-		rows, err := parseResultDirectory(filepath.Join(runDir, "results"))
-		if err != nil {
+		if err := addResultDirectoryRows(&report, runDir); err != nil {
 			return report, err
 		}
-		report.Rows = rows
 	}
 	sortReportRows(report.Rows)
 	return report, nil
 }
 
+func newReport(runDir string) Report {
+	return Report{
+		RunDir:    runDir,
+		Generated: time.Now().UTC(),
+		Events:    EventCounts{ByType: map[string]int{}},
+	}
+}
+
+func addEventRowsToReport(report *Report, runDir string, spec *Spec, events []Event) {
+	report.Events.Total = len(events)
+	resultEvents := collectResultEvents(report, events)
+	for resultFile, event := range resultEvents {
+		addResultEventRows(report, runDir, spec, resultFile, event)
+	}
+}
+
+func collectResultEvents(report *Report, events []Event) map[string]Event {
+	resultEvents := map[string]Event{}
+	for _, event := range events {
+		report.Events.ByType[event.Type]++
+		if event.Type == "workload_failed" {
+			report.Events.FailedWorkload++
+		}
+		if event.Type == "workload_finish" && event.ResultFile != "" && event.Error == "" {
+			resultEvents[event.ResultFile] = event
+		}
+	}
+	return resultEvents
+}
+
+func addResultEventRows(report *Report, runDir string, spec *Spec, resultFile string, event Event) {
+	resultPath := resolveResultPath(runDir, resultFile)
+	rows, err := ParseResultFile(resultPath)
+	if err != nil {
+		return
+	}
+	event.ResultFile = resultPath
+	for _, row := range rows {
+		enrichRowFromEvent(&row, event, spec)
+		report.Rows = append(report.Rows, row)
+	}
+}
+
+func addResultDirectoryRows(report *Report, runDir string) error {
+	rows, err := parseResultDirectory(filepath.Join(runDir, "results"))
+	if err != nil {
+		return err
+	}
+	report.Rows = rows
+	return nil
+}
+
 func ParseResultFile(path string) ([]ReportRow, error) {
+	data, err := readTrimmedFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	return parseResultData(data, path)
+}
+
+func readTrimmedFile(path string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -107,23 +143,27 @@ func ParseResultFile(path string) ([]ReportRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	data = []byte(strings.TrimSpace(string(data)))
-	if len(data) == 0 {
-		return nil, nil
-	}
-	if data[0] == '[' {
+	return []byte(strings.TrimSpace(string(data))), nil
+}
+
+func parseResultData(data []byte, path string) ([]ReportRow, error) {
+	switch data[0] {
+	case '[':
 		var raw []map[string]any
 		if err := json.Unmarshal(data, &raw); err != nil {
 			return nil, err
 		}
 		return rowsFromRaw(raw, path), nil
-	}
-	if data[0] == '{' {
+	case '{':
 		var raw map[string]any
 		if err := json.Unmarshal(data, &raw); err == nil {
 			return rowsFromRaw([]map[string]any{raw}, path), nil
 		}
 	}
+	return parseJSONLines(data, path)
+}
+
+func parseJSONLines(data []byte, path string) ([]ReportRow, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 	var raw []map[string]any
@@ -159,48 +199,53 @@ func loadNormalizedSpec(path string) (*Spec, error) {
 
 func enrichRowFromEvent(row *ReportRow, event Event, spec *Spec) {
 	defer deriveReportRowFields(row)
-	row.Profile = event.Profile
-	row.Workload = event.Workload
-	row.Concurrency = event.Concurrency
-	row.ResultFile = event.ResultFile
+	applyEventFields(row, event)
 	if spec == nil {
 		return
 	}
+	enrichRowFromProfile(row, event, spec)
+	enrichRowFromWorkload(row, event, spec)
+}
+
+func applyEventFields(row *ReportRow, event Event) {
+	row.Profile = event.Profile
+	row.Workload = event.Workload
+	row.Concurrency = event.Concurrency
+	row.Repeat = event.Repeat
+	row.ResultFile = event.ResultFile
+}
+
+func enrichRowFromProfile(row *ReportRow, event Event, spec *Spec) {
 	for _, profile := range spec.Profiles {
 		if profile.Name != event.Profile {
 			continue
 		}
-		if row.Context == 0 {
-			row.Context = profile.MaxModelLen
-		}
-		if row.ServerMaxNumSeqs == 0 {
-			row.ServerMaxNumSeqs = profile.MaxNumSeqs
-		}
+		row.Context = firstNonZeroInt(row.Context, profile.MaxModelLen)
+		row.ServerMaxNumSeqs = firstNonZeroInt(row.ServerMaxNumSeqs, profile.MaxNumSeqs)
 		break
 	}
+}
+
+func enrichRowFromWorkload(row *ReportRow, event Event, spec *Spec) {
 	for _, workload := range spec.Workloads {
 		if workload.Name != event.Workload {
 			continue
 		}
-		if row.DatasetName == "" {
-			row.DatasetName = workload.DatasetName
-		}
-		if workload.DatasetName == "random" {
-			if row.RandomInputLen == 0 {
-				row.RandomInputLen = workload.RandomInputLen
-			}
-			if row.RandomOutputLen == 0 {
-				row.RandomOutputLen = workload.RandomOutputLen
-			}
-		}
-		if row.InputLen == 0 {
-			row.InputLen = trafficInputLen(workload.BenchmarkTrafficConfig)
-		}
-		if row.OutputLen == 0 {
-			row.OutputLen = trafficOutputLen(workload.BenchmarkTrafficConfig)
-		}
+		applyWorkloadFields(row, workload)
 		break
 	}
+}
+
+func applyWorkloadFields(row *ReportRow, workload Workload) {
+	if row.DatasetName == "" {
+		row.DatasetName = workload.DatasetName
+	}
+	if workload.DatasetName == "random" {
+		row.RandomInputLen = firstNonZeroInt(row.RandomInputLen, workload.RandomInputLen)
+		row.RandomOutputLen = firstNonZeroInt(row.RandomOutputLen, workload.RandomOutputLen)
+	}
+	row.InputLen = firstNonZeroInt(row.InputLen, trafficInputLen(workload.BenchmarkTrafficConfig))
+	row.OutputLen = firstNonZeroInt(row.OutputLen, trafficOutputLen(workload.BenchmarkTrafficConfig))
 }
 
 func RenderMarkdown(report Report) string {
@@ -212,7 +257,7 @@ func RenderMarkdown(report Report) string {
 		out.WriteString("## Event Summary\n\n")
 		out.WriteString("| Event | Count |\n")
 		out.WriteString("| --- | ---: |\n")
-		for _, key := range sortedEventKeys(report.Events.ByType) {
+		for _, key := range collections.SortedKeys(report.Events.ByType) {
 			out.WriteString(fmt.Sprintf("| `%s` | %d |\n", key, report.Events.ByType[key]))
 		}
 		out.WriteString("\n")
@@ -274,6 +319,7 @@ func RenderCSV(report Report) string {
 		"context",
 		"server_max_num_seqs",
 		"concurrency",
+		"repeat",
 		"input_len",
 		"output_len",
 		"random_input_len",
@@ -297,6 +343,7 @@ func RenderCSV(report Report) string {
 			intCSV(row.Context),
 			intCSV(row.ServerMaxNumSeqs),
 			intCSV(row.Concurrency),
+			intCSV(row.Repeat),
 			intCSV(row.DisplayInputLen()),
 			intCSV(row.DisplayOutputLen()),
 			intCSV(row.RandomInputLen),
@@ -327,6 +374,7 @@ func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 			Context:            intValue(raw, "max_model_len"),
 			ServerMaxNumSeqs:   intValue(raw, "server_max_num_seqs"),
 			Concurrency:        intValue(raw, "max_concurrency"),
+			Repeat:             intValue(raw, "repeat"),
 			InputLen:           firstInt(raw, "input_len", "prompt_len", "random_input_len"),
 			OutputLen:          firstInt(raw, "output_len", "max_tokens", "random_output_len"),
 			RandomInputLen:     intValue(raw, "random_input_len"),
@@ -368,18 +416,19 @@ func deriveReportRowFields(row *ReportRow) {
 	}
 }
 
-func (row ReportRow) DisplayInputLen() int {
-	if row.InputLen != 0 {
-		return row.InputLen
+func firstNonZeroInt(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
 	}
-	return row.RandomInputLen
+	return 0
 }
 
+func (row ReportRow) DisplayInputLen() int { return firstNonZeroInt(row.InputLen, row.RandomInputLen) }
+
 func (row ReportRow) DisplayOutputLen() int {
-	if row.OutputLen != 0 {
-		return row.OutputLen
-	}
-	return row.RandomOutputLen
+	return firstNonZeroInt(row.OutputLen, row.RandomOutputLen)
 }
 
 func trafficInputLen(traffic BenchmarkTrafficConfig) int {
@@ -400,13 +449,9 @@ func trafficOutputLen(traffic BenchmarkTrafficConfig) int {
 	case "random":
 		return traffic.RandomOutputLen
 	case "custom":
-		if traffic.CustomOutputLen != nil && *traffic.CustomOutputLen > 0 {
-			return *traffic.CustomOutputLen
-		}
+		return positiveIntPointer(traffic.CustomOutputLen)
 	case "sharegpt":
-		if traffic.ShareGPTOutputLen != nil {
-			return *traffic.ShareGPTOutputLen
-		}
+		return intPointerValue(traffic.ShareGPTOutputLen)
 	case "sonnet":
 		return traffic.SonnetOutputLen
 	case "prefix_repetition":
@@ -415,6 +460,20 @@ func trafficOutputLen(traffic BenchmarkTrafficConfig) int {
 		return traffic.SpeedBenchOutputLen
 	}
 	return 0
+}
+
+func positiveIntPointer(value *int) int {
+	if value != nil && *value > 0 {
+		return *value
+	}
+	return 0
+}
+
+func intPointerValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func parseResultDirectory(dir string) ([]ReportRow, error) {
@@ -483,15 +542,6 @@ func sortReportRows(rows []ReportRow) {
 	})
 }
 
-func sortedEventKeys(values map[string]int) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 func stringValue(row map[string]any, key string) string {
 	value, ok := row[key]
 	if !ok || value == nil {
@@ -506,12 +556,17 @@ func stringValue(row map[string]any, key string) string {
 }
 
 func firstInt(row map[string]any, keys ...string) int {
+	return firstByKey(keys, func(key string) int { return intValue(row, key) })
+}
+
+func firstByKey[T comparable](keys []string, lookup func(string) T) T {
+	var zero T
 	for _, key := range keys {
-		if value := intValue(row, key); value != 0 {
+		if value := lookup(key); value != zero {
 			return value
 		}
 	}
-	return 0
+	return zero
 }
 
 func intValue(row map[string]any, key string) int {
@@ -535,12 +590,7 @@ func intValue(row map[string]any, key string) int {
 }
 
 func firstFloat(row map[string]any, keys ...string) float64 {
-	for _, key := range keys {
-		if value := floatValue(row, key); value != 0 {
-			return value
-		}
-	}
-	return 0
+	return firstByKey(keys, func(key string) float64 { return floatValue(row, key) })
 }
 
 func floatValue(row map[string]any, key string) float64 {
@@ -572,15 +622,16 @@ func cell(value string) string {
 }
 
 func intCell(value int) string {
-	if value == 0 {
-		return "-"
-	}
-	return fmt.Sprint(value)
+	return formatZeroInt(value, "-")
 }
 
 func intCSV(value int) string {
+	return formatZeroInt(value, "")
+}
+
+func formatZeroInt(value int, zero string) string {
 	if value == 0 {
-		return ""
+		return zero
 	}
 	return fmt.Sprint(value)
 }
@@ -615,34 +666,26 @@ func resolveResultPath(runDir, path string) string {
 	}
 	cleanPath := filepath.Clean(path)
 	cleanRunDir := filepath.Clean(runDir)
-	if !filepath.IsAbs(cleanRunDir) {
-		candidate := filepath.Join(cleanRunDir, cleanPath)
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-		if stripped, ok := stripRunDirPrefix(cleanRunDir, cleanPath); ok {
-			strippedCandidate := filepath.Join(cleanRunDir, stripped)
-			if _, err := os.Stat(strippedCandidate); err == nil {
-				return strippedCandidate
-			}
-			return strippedCandidate
-		}
-		if _, err := os.Stat(cleanPath); err == nil {
-			return cleanPath
-		}
+	return resolveRunDirResultPath(cleanRunDir, cleanPath)
+}
+
+func resolveRunDirResultPath(runDir, path string) string {
+	candidate := filepath.Join(runDir, path)
+	if fileExists(candidate) {
 		return candidate
 	}
-	candidate := filepath.Join(cleanRunDir, cleanPath)
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
+	if stripped, ok := stripRunDirPrefix(runDir, path); ok {
+		return filepath.Join(runDir, stripped)
 	}
-	if stripped, ok := stripRunDirPrefix(cleanRunDir, cleanPath); ok {
-		return filepath.Join(cleanRunDir, stripped)
-	}
-	if _, err := os.Stat(cleanPath); err == nil {
-		return cleanPath
+	if fileExists(path) {
+		return path
 	}
 	return candidate
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func stripRunDirPrefix(runDir, path string) (string, bool) {
