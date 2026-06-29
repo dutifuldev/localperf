@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -273,15 +272,25 @@ func profileFromBaseURL(rawURL, model string) (vllmbench.Profile, error) {
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return vllmbench.Profile{}, fmt.Errorf("base URL must not include query or fragment")
 	}
-	host, portString, err := net.SplitHostPort(parsed.Host)
-	if err != nil {
-		return vllmbench.Profile{}, fmt.Errorf("base URL must include host and port: %w", err)
+	host := parsed.Hostname()
+	if host == "" {
+		return vllmbench.Profile{}, fmt.Errorf("base URL must include host")
 	}
-	port, err := strconv.Atoi(portString)
+	port, err := parsedBaseURLPort(parsed)
 	if err != nil {
 		return vllmbench.Profile{}, err
 	}
 	return vllmbench.Profile{Name: "http-load", Host: host, Port: port, Model: model, EndpointBaseURL: normalizedBaseURL(parsed)}, nil
+}
+
+func parsedBaseURLPort(parsed *url.URL) (int, error) {
+	if portString := parsed.Port(); portString != "" {
+		return strconv.Atoi(portString)
+	}
+	if parsed.Scheme == "https" {
+		return 443, nil
+	}
+	return 80, nil
 }
 
 func normalizedBaseURL(parsed *url.URL) string {

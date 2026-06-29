@@ -979,10 +979,14 @@ func TestLocalPerfHTTPCommandUsesDirectDatasetPath(t *testing.T) {
 	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
 	spec.Workloads[0].BenchmarkTrafficConfig.DatasetName = "custom"
 	spec.Workloads[0].BenchmarkTrafficConfig.DatasetPath = "/tmp/direct.canonical.jsonl"
+	spec.Safety.WorkloadTimeoutSec = 7
 	ApplyDefaults(&spec)
 	command := ShellQuote(LoadCommand(spec, BuildPlan(spec, t.TempDir())[0]).Args)
 	if !strings.Contains(command, "--dataset-path /tmp/direct.canonical.jsonl") {
 		t.Fatalf("command %q missing direct dataset path", command)
+	}
+	if !strings.Contains(command, "--timeout 7s") {
+		t.Fatalf("command %q missing workload timeout", command)
 	}
 }
 

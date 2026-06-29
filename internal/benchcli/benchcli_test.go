@@ -42,6 +42,22 @@ func TestProfileFromBaseURLStripsAPIRootV1(t *testing.T) {
 	}
 }
 
+func TestProfileFromBaseURLUsesDefaultPorts(t *testing.T) {
+	cases := map[string]int{
+		"https://api.example.test/v1": 443,
+		"http://localhost/v1":         80,
+	}
+	for raw, wantPort := range cases {
+		profile, err := profileFromBaseURL(raw, "model")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if profile.Port != wantPort {
+			t.Fatalf("profile port for %q = %d, want %d", raw, profile.Port, wantPort)
+		}
+	}
+}
+
 func TestTimeoutSecondsRoundsUp(t *testing.T) {
 	if got := timeoutSeconds(500 * time.Millisecond); got != 1 {
 		t.Fatalf("timeoutSeconds(500ms) = %d, want 1", got)

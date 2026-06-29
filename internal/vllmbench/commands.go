@@ -122,6 +122,9 @@ func LocalPerfHTTPCommand(spec Spec, run PlannedRun) CommandSpec {
 }
 
 func appendLocalPerfHTTPSafetyArgs(builder *argBuilder, spec Spec) {
+	if spec.Safety.WorkloadTimeoutSec > 0 {
+		*builder = append(*builder, "--timeout", strconv.Itoa(spec.Safety.WorkloadTimeoutSec)+"s")
+	}
 	if spec.Safety.MinMemAvailableGiB > 0 {
 		*builder = append(*builder, "--min-mem-available-gib", trimFloat(spec.Safety.MinMemAvailableGiB))
 	}
