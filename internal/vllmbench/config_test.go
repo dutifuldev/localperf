@@ -1484,6 +1484,50 @@ func TestExecuteLocalPerfHTTPRecordsRequestSamples(t *testing.T) {
 	}
 }
 
+func TestExecuteLocalPerfHTTPChecksMemoryBeforeRun(t *testing.T) {
+	original := checkMemoryFloor
+	defer func() { checkMemoryFloor = original }()
+	var calls atomic.Int64
+	checkMemoryFloor = func(minGiB float64) (MemorySnapshot, error) {
+		calls.Add(1)
+		snapshot := MemorySnapshot{MemTotalGiB: 128, MemAvailableGiB: 1}
+		return snapshot, &MemoryFloorError{Snapshot: snapshot, MinGiB: minGiB}
+	}
+
+	dir := t.TempDir()
+	spec := testSpec()
+	spec.Safety.MinMemAvailableGiB = 40
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.PollIntervalMillis = 1000
+	planned := PlannedRun{
+		Profile:     Profile{Name: "http-load", Host: "127.0.0.1", Port: 1, Model: "model"},
+		Workload:    testRandomWorkload("localperf-http", []string{"http-load"}, 64, 8, 1, []int{1}),
+		Concurrency: 1,
+		ResultFile:  filepath.Join(dir, "result.json"),
+	}
+	logPath := filepath.Join(dir, "result.log")
+	result, err := executeLocalPerfHTTPBench(context.Background(), spec, planned, logPath)
+	if err == nil || !IsMemoryFloorError(err) {
+		t.Fatalf("executeLocalPerfHTTPBench error = %v, want memory floor", err)
+	}
+	if result.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", result.ExitCode)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("memory checks = %d, want only the preflight check", calls.Load())
+	}
+	if _, err := os.Stat(planned.ResultFile); !os.IsNotExist(err) {
+		t.Fatalf("result file exists or stat failed unexpectedly: %v", err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "MemAvailable") {
+		t.Fatalf("log did not include memory error:\n%s", logData)
+	}
+}
+
 func TestExecuteFailedRepeatsAttachToCorrectMeasurements(t *testing.T) {
 	spec := testSpec()
 	spec.Name = "fake-vllm-repeat-failures"

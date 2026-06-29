@@ -139,6 +139,10 @@ func executeLocalPerfHTTPBench(ctx context.Context, spec Spec, planned PlannedRu
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second)
 	defer cancel()
+	if _, err := checkMemoryFloor(spec.Safety.MinMemAvailableGiB); err != nil {
+		_ = writeLocalPerfHTTPLog(logPath, nil, 0, nil, err)
+		return commandResult{ExitCode: 1}, err
+	}
 	memoryMonitor := monitorMemoryFloor(runCtx, cancel, spec.Safety.MinMemAvailableGiB, time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond)
 	start := time.Now()
 	result, runErr := runLocalPerfHTTPBenchmark(runCtx, planned)
