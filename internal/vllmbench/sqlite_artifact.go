@@ -827,7 +827,7 @@ func insertMeasurements(tx *sql.Tx, runID, runDir string, plan []PlannedRun, eve
 			return nil, err
 		}
 		measurementIDs[key] = id
-		if err := insertMeasurementDetails(tx, runDir, id, row); err != nil {
+		if err := insertMeasurementDetails(tx, runDir, id, row, measurementResultFile(row, events, planned)); err != nil {
 			return nil, err
 		}
 	}
@@ -879,10 +879,20 @@ func measurementRawArtifactID(row ReportRow, events []Event, planned PlannedRun,
 	return 0
 }
 
-func insertMeasurementDetails(tx *sql.Tx, runDir string, measurementID int64, row ReportRow) error {
-	samples, err := requestSamplesForResult(runDir, row.ResultFile)
+func measurementResultFile(row ReportRow, events []Event, planned PlannedRun) string {
+	if row.ResultFile != "" {
+		return row.ResultFile
+	}
+	return finishEvent(events, planned).ResultFile
+}
+
+func insertMeasurementDetails(tx *sql.Tx, runDir string, measurementID int64, row ReportRow, resultFile string) error {
+	samples, err := requestSamplesForResult(runDir, resultFile)
 	if err != nil {
-		return err
+		if !os.IsNotExist(err) {
+			return err
+		}
+		samples = nil
 	}
 	if err := insertRequestSamples(tx, measurementID, samples); err != nil {
 		return err

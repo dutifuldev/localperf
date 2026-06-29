@@ -1573,6 +1573,46 @@ func TestInsertMeasurementPreservesUnknownTokenNulls(t *testing.T) {
 	}
 }
 
+func TestInsertMeasurementDetailsReadsFallbackResultFile(t *testing.T) {
+	runDir := t.TempDir()
+	resultFile := filepath.Join("results", "failed.json")
+	writeFile(t, filepath.Join(runDir, resultFile), `{
+  "request_samples": [
+    {"request_index":0,"status":"failed","started_at":"2026-01-01T00:00:00Z","error_type":"http_status"}
+  ]
+}`)
+	db, err := createSQLiteArtifact(filepath.Join(t.TempDir(), "artifact.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := withSQLiteTx(db, func(tx *sql.Tx) error {
+		seedMeasurementParents(t, tx)
+		id, err := insertMeasurement(tx, measurementInsert{
+			runID: "run",
+			planned: PlannedRun{
+				Profile:     Profile{Name: "profile"},
+				Workload:    Workload{Name: "workload", NumPrompts: 1},
+				Concurrency: 1,
+			},
+			status: "failed",
+		})
+		if err != nil {
+			return err
+		}
+		return insertMeasurementDetails(tx, runDir, id, ReportRow{}, resultFile)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var requestRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&requestRows); err != nil {
+		t.Fatal(err)
+	}
+	if requestRows != 1 {
+		t.Fatalf("request rows = %d, want fallback result sample imported", requestRows)
+	}
+}
+
 func seedMeasurementParents(t *testing.T, tx *sql.Tx) {
 	t.Helper()
 	for _, statement := range []string{
