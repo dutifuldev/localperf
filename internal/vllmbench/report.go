@@ -556,15 +556,6 @@ func firstNonZeroInt(values ...int) int {
 	return 0
 }
 
-func firstNonZeroFloat(values ...float64) float64 {
-	for _, value := range values {
-		if value != 0 {
-			return value
-		}
-	}
-	return 0
-}
-
 func (row ReportRow) DisplayInputLen() int { return firstNonZeroInt(row.InputLen, row.RandomInputLen) }
 
 func (row ReportRow) DisplayOutputLen() int {
