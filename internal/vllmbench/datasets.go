@@ -156,7 +156,10 @@ func materializeWorkloadDataset(ctx context.Context, runDir string, workload *Wo
 
 func validateVLLMBenchRendererSupport(workload Workload) error {
 	if normalizeDatasetType(workload.Dataset.Type) != "raw-payload" {
-		return nil
+		if _, ok := requestModeBackend(workload.Request.Mode); ok {
+			return nil
+		}
+		return fmt.Errorf("request.mode %q cannot be rendered by vLLM bench custom datasets", workload.Request.Mode)
 	}
 	return fmt.Errorf("dataset.type raw_payload cannot be rendered by vLLM bench without altering raw request bodies")
 }
@@ -236,10 +239,16 @@ func applyMaterializedDatasetToWorkload(workload *Workload, requestCount int, vl
 	workload.BenchmarkTrafficConfig.DatasetPath = vllmPath
 	workload.BenchmarkTrafficConfig.CustomOutputLen = intPointer(-1)
 	workload.BenchmarkTrafficConfig.DisableShuffle = true
-	workload.BenchmarkTrafficConfig.Backend = firstNonEmpty(workload.BenchmarkTrafficConfig.Backend, "openai-chat")
-	workload.BenchmarkTrafficConfig.Endpoint = firstNonEmpty(workload.BenchmarkTrafficConfig.Endpoint, defaultEndpoint(workload.BenchmarkTrafficConfig.Backend))
+	previousBackend := workload.BenchmarkTrafficConfig.Backend
+	backend, _ := requestModeBackend(workload.Request.Mode)
+	workload.BenchmarkTrafficConfig.Backend = firstNonEmpty(backend, workload.BenchmarkTrafficConfig.Backend, "openai-chat")
+	if endpointShouldFollowBackend(workload.BenchmarkTrafficConfig.Endpoint, previousBackend) {
+		workload.BenchmarkTrafficConfig.Endpoint = defaultEndpoint(workload.BenchmarkTrafficConfig.Backend)
+	}
 	if workload.BenchmarkTrafficConfig.Backend == "openai-chat" {
 		workload.BenchmarkTrafficConfig.SkipChatTemplate = true
+	} else {
+		workload.BenchmarkTrafficConfig.SkipChatTemplate = false
 	}
 	workload.BenchmarkTrafficConfig.RequestRate = firstNonEmpty(workload.BenchmarkTrafficConfig.RequestRate, workload.Load.RequestRate, "inf")
 	if len(workload.MaxConcurrency) == 0 && len(workload.Load.MaxConcurrency) > 0 {
@@ -251,6 +260,29 @@ func applyMaterializedDatasetToWorkload(workload *Workload, requestCount int, vl
 	if workload.Request.Temperature != nil {
 		workload.Temperature = workload.Request.Temperature
 	}
+}
+
+func requestModeBackend(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "chat", "openai-chat":
+		return "openai-chat", true
+	case "completion", "completions", "prompt", "openai":
+		return "openai", true
+	default:
+		return "", false
+	}
+}
+
+func endpointShouldFollowBackend(endpoint, previousBackend string) bool {
+	if strings.TrimSpace(endpoint) == "" {
+		return true
+	}
+	for _, backend := range []string{previousBackend, "openai-chat", "openai"} {
+		if defaultEndpoint(backend) != "" && endpoint == defaultEndpoint(backend) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeCanonicalRequests(path string, requests []CanonicalRequest) error {

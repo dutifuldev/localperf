@@ -940,6 +940,49 @@ func TestPrepareDatasetsKeepsExplicitTrafficRequestRate(t *testing.T) {
 	}
 }
 
+func TestPrepareDatasetsHonorsCompletionRequestMode(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	spec.Workloads[0].Request.Mode = "completion"
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+	command := ShellQuote(BenchCommand(spec, BuildPlan(spec, runDir)[0]).Args)
+	for _, want := range []string{"--backend openai", "--endpoint /v1/completions"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command %q missing %q", command, want)
+		}
+	}
+	if strings.Contains(command, "--skip-chat-template") {
+		t.Fatalf("completion-mode command should not skip chat template: %q", command)
+	}
+}
+
+func TestPrepareDatasetsRejectsUnsupportedRequestMode(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	spec.Workloads[0].Request.Mode = "embedding"
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	err := PrepareDatasets(context.Background(), &spec, filepath.Join(dir, "run"))
+	if err == nil || !strings.Contains(err.Error(), `request.mode "embedding"`) {
+		t.Fatalf("unsupported mode error = %v", err)
+	}
+}
+
 func TestSQLiteArtifactIgnoresStaleDatasetFiles(t *testing.T) {
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
@@ -1097,6 +1140,50 @@ func TestExecuteWithShareGPTDatasetSkipsPayloadArtifactsByDefault(t *testing.T) 
 	}
 	if datasetArtifacts != 0 {
 		t.Fatalf("dataset artifacts = %d, want 0 without payload capture", datasetArtifacts)
+	}
+}
+
+func TestExecuteStructuredSyntheticDatasetEnrichesSummaryRows(t *testing.T) {
+	dir := t.TempDir()
+	spec := testSpec()
+	spec.Name = "structured-synthetic-summary"
+	spec.OutputDir = dir
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{{
+		Name:     "structured-synthetic",
+		Profiles: []string{spec.Profiles[0].Name},
+		Dataset: DatasetSpec{
+			Type:         "synthetic",
+			SampleCount:  1,
+			InputTokens:  8192,
+			OutputTokens: 16,
+		},
+		Request: RequestSpec{Mode: "chat", MaxOutputTokens: 16},
+		Load:    LoadConfig{MaxConcurrency: []int{1}, RequestRate: "inf"},
+	}}
+	ApplyDefaults(&spec)
+
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Rows) != 1 {
+		t.Fatalf("summary rows = %d, want 1", len(summary.Rows))
+	}
+	row := summary.Rows[0]
+	if row.InputLen != 8192 || row.OutputLen != 16 || row.Phase != "prefill" {
+		t.Fatalf("summary row was not enriched from structured workload: %+v", row)
 	}
 }
 
