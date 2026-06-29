@@ -204,21 +204,7 @@ func RunLocalPerfHTTPBench(ctx context.Context, spec Spec, planned PlannedRun, l
 	if _, err := executeLocalPerfHTTPBench(ctx, spec, planned, logPath); err != nil {
 		return err
 	}
-	return validateLocalPerfHTTPResult(planned.ResultFile)
-}
-
-func validateLocalPerfHTTPResult(resultFile string) error {
-	rows, err := ParseResultFile(resultFile)
-	if err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return errors.New("localperf_http result file did not contain a parseable row")
-	}
-	if failed := failedRequestCount(rows); failed > 0 {
-		return fmt.Errorf("localperf_http result reported %d failed request(s)", failed)
-	}
-	return nil
+	return validateParsedResult(planned.ResultFile, "localperf_http")
 }
 
 func runLocalPerfHTTPBenchmark(ctx context.Context, planned PlannedRun) (*HTTPBenchmarkResult, error) {

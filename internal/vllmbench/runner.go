@@ -705,15 +705,19 @@ func runWarmup(ctx context.Context, spec Spec, profile Profile, runDir string, e
 }
 
 func validateWarmupResult(path string) error {
+	return validateParsedResult(path, "warmup")
+}
+
+func validateParsedResult(path, label string) error {
 	rows, err := ParseResultFile(path)
 	if err != nil {
 		return err
 	}
 	if len(rows) == 0 {
-		return errors.New("warmup result file did not contain a parseable row")
+		return fmt.Errorf("%s result file did not contain a parseable row", label)
 	}
 	if failed := failedRequestCount(rows); failed > 0 {
-		return fmt.Errorf("warmup result reported %d failed request(s)", failed)
+		return fmt.Errorf("%s result reported %d failed request(s)", label, failed)
 	}
 	return nil
 }
