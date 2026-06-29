@@ -103,7 +103,7 @@ func LoadCommand(spec Spec, run PlannedRun) CommandSpec {
 }
 
 func LocalPerfHTTPCommand(spec Spec, run PlannedRun) CommandSpec {
-	args := []string{
+	builder := argBuilder{
 		"localperf", "bench", "http-load",
 		"--backend", run.Workload.Backend,
 		"--base-url", baseURL(run.Profile),
@@ -114,33 +114,49 @@ func LocalPerfHTTPCommand(spec Spec, run PlannedRun) CommandSpec {
 		"--request-rate", run.Workload.RequestRate,
 		"--result-filename", run.ResultFile,
 	}
+	appendLocalPerfHTTPSafetyArgs(&builder, spec)
+	appendLocalPerfHTTPDatasetArgs(&builder, run.Workload)
+	appendLocalPerfHTTPRandomArgs(&builder, run.Workload)
+	appendLocalPerfHTTPOptionalArgs(&builder, run.Workload)
+	return CommandSpec{Args: builder}
+}
+
+func appendLocalPerfHTTPSafetyArgs(builder *argBuilder, spec Spec) {
 	if spec.Safety.MinMemAvailableGiB > 0 {
-		args = append(args, "--min-mem-available-gib", trimFloat(spec.Safety.MinMemAvailableGiB))
+		*builder = append(*builder, "--min-mem-available-gib", trimFloat(spec.Safety.MinMemAvailableGiB))
 	}
-	if datasetPath := localPerfHTTPDatasetPath(run.Workload); datasetPath != "" {
-		args = append(args, "--dataset-path", datasetPath)
+}
+
+func appendLocalPerfHTTPDatasetArgs(builder *argBuilder, workload Workload) {
+	if datasetPath := localPerfHTTPDatasetPath(workload); datasetPath != "" {
+		*builder = append(*builder, "--dataset-path", datasetPath)
 	}
-	if run.Workload.DatasetName == "random" {
-		if run.Workload.RandomInputLen > 0 {
-			args = append(args, "--random-input-len", strconv.Itoa(run.Workload.RandomInputLen))
+}
+
+func appendLocalPerfHTTPRandomArgs(builder *argBuilder, workload Workload) {
+	if workload.DatasetName == "random" {
+		if workload.RandomInputLen > 0 {
+			*builder = append(*builder, "--random-input-len", strconv.Itoa(workload.RandomInputLen))
 		}
-		if run.Workload.RandomOutputLen > 0 {
-			args = append(args, "--random-output-len", strconv.Itoa(run.Workload.RandomOutputLen))
+		if workload.RandomOutputLen > 0 {
+			*builder = append(*builder, "--random-output-len", strconv.Itoa(workload.RandomOutputLen))
 		}
 	}
-	if strings.TrimSpace(run.Workload.Endpoint) != "" {
-		args = append(args, "--endpoint", run.Workload.Endpoint)
+}
+
+func appendLocalPerfHTTPOptionalArgs(builder *argBuilder, workload Workload) {
+	if strings.TrimSpace(workload.Endpoint) != "" {
+		*builder = append(*builder, "--endpoint", workload.Endpoint)
 	}
-	if strings.TrimSpace(run.Workload.ExtraBody) != "" {
-		args = append(args, "--extra-body", run.Workload.ExtraBody)
+	if strings.TrimSpace(workload.ExtraBody) != "" {
+		*builder = append(*builder, "--extra-body", workload.ExtraBody)
 	}
-	if run.Workload.IgnoreEOS {
-		args = append(args, "--ignore-eos")
+	if workload.IgnoreEOS {
+		*builder = append(*builder, "--ignore-eos")
 	}
-	if run.Workload.Temperature != nil {
-		args = append(args, "--temperature", trimFloat(*run.Workload.Temperature))
+	if workload.Temperature != nil {
+		*builder = append(*builder, "--temperature", trimFloat(*workload.Temperature))
 	}
-	return CommandSpec{Args: args}
 }
 
 func localPerfHTTPDatasetPath(workload Workload) string {

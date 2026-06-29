@@ -139,45 +139,76 @@ func executeLocalPerfHTTPBench(ctx context.Context, spec Spec, planned PlannedRu
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second)
 	defer cancel()
-	if _, err := checkMemoryFloor(spec.Safety.MinMemAvailableGiB); err != nil {
-		_ = writeLocalPerfHTTPLog(logPath, nil, 0, nil, err)
+	if err := preflightLocalPerfHTTPMemory(spec, logPath); err != nil {
 		return commandResult{ExitCode: 1}, err
 	}
 	memoryMonitor := monitorMemoryFloor(runCtx, cancel, spec.Safety.MinMemAvailableGiB, time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond)
 	start := time.Now()
 	result, runErr := runLocalPerfHTTPBenchmark(runCtx, planned)
 	duration := time.Since(start)
+	memoryErr := stopLocalPerfHTTPMemoryMonitor(cancel, memoryMonitor)
+	runErr = persistLocalPerfHTTPResult(planned.ResultFile, logPath, result, duration, runErr, memoryErr)
+	commandResult := commandResult{Duration: duration, ExitCode: localPerfHTTPExitCode(runCtx, runErr, memoryErr)}
+	return commandResult, localPerfHTTPRunError(runCtx, spec, runErr, memoryErr)
+}
+
+func preflightLocalPerfHTTPMemory(spec Spec, logPath string) error {
+	if _, err := checkMemoryFloor(spec.Safety.MinMemAvailableGiB); err != nil {
+		_ = writeLocalPerfHTTPLog(logPath, nil, 0, nil, err)
+		return err
+	}
+	return nil
+}
+
+func stopLocalPerfHTTPMemoryMonitor(cancel context.CancelFunc, memoryMonitor <-chan error) error {
 	cancel()
-	memoryErr := <-memoryMonitor
-	exitCode := 0
-	if runErr != nil || memoryErr != nil || runCtx.Err() == context.DeadlineExceeded {
-		exitCode = 1
-	}
-	if result != nil {
-		if err := writeJSONFile(planned.ResultFile, result); err != nil && runErr == nil {
-			runErr = err
-			exitCode = 1
-		}
-	}
+	return <-memoryMonitor
+}
+
+func persistLocalPerfHTTPResult(resultFile, logPath string, result *HTTPBenchmarkResult, duration time.Duration, runErr, memoryErr error) error {
+	runErr = writeLocalPerfHTTPResultFile(resultFile, result, runErr)
 	if err := writeLocalPerfHTTPLog(logPath, result, duration, runErr, memoryErr); err != nil && runErr == nil {
-		runErr = err
-		exitCode = 1
+		return err
 	}
-	commandResult := commandResult{Duration: duration, ExitCode: exitCode}
+	return runErr
+}
+
+func writeLocalPerfHTTPResultFile(resultFile string, result *HTTPBenchmarkResult, runErr error) error {
+	if result == nil {
+		return runErr
+	}
+	if err := writeJSONFile(resultFile, result); err != nil && runErr == nil {
+		return err
+	}
+	return runErr
+}
+
+func localPerfHTTPExitCode(runCtx context.Context, runErr, memoryErr error) int {
+	if runErr != nil || memoryErr != nil || runCtx.Err() == context.DeadlineExceeded {
+		return 1
+	}
+	return 0
+}
+
+func localPerfHTTPRunError(runCtx context.Context, spec Spec, runErr, memoryErr error) error {
 	if runCtx.Err() == context.DeadlineExceeded {
-		return commandResult, fmt.Errorf("localperf_http benchmark timed out after %s", time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second)
+		return fmt.Errorf("localperf_http benchmark timed out after %s", time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second)
 	}
 	if memoryErr != nil {
-		return commandResult, memoryErr
+		return memoryErr
 	}
-	return commandResult, runErr
+	return runErr
 }
 
 func RunLocalPerfHTTPBench(ctx context.Context, spec Spec, planned PlannedRun, logPath string) error {
 	if _, err := executeLocalPerfHTTPBench(ctx, spec, planned, logPath); err != nil {
 		return err
 	}
-	rows, err := ParseResultFile(planned.ResultFile)
+	return validateLocalPerfHTTPResult(planned.ResultFile)
+}
+
+func validateLocalPerfHTTPResult(resultFile string) error {
+	rows, err := ParseResultFile(resultFile)
 	if err != nil {
 		return err
 	}
@@ -347,23 +378,58 @@ func sleepContext(ctx context.Context, delay time.Duration) error {
 }
 
 func (client openAIHTTPClient) Invoke(ctx context.Context, index int, request CanonicalRequest) RequestSample {
-	started := time.Now().UTC()
-	sample := RequestSample{
+	sample := newRequestSample(index, request)
+	payload, endpoint, err := client.requestPayload(request)
+	if err != nil {
+		return sample.withError("request_render", "", err.Error(), time.Now().UTC(), nil)
+	}
+	response, failure := client.sendRequest(ctx, endpoint, payload)
+	if failure != nil {
+		return sample.withError(failure.errorType, failure.errorCode, failure.message, failure.completedAt, failure.firstByteAt)
+	}
+	sample.HTTPStatusCode = response.statusCode
+	return response.applyToSample(sample, request)
+}
+
+func newRequestSample(index int, request CanonicalRequest) RequestSample {
+	return RequestSample{
 		RequestIndex: index,
 		RequestID:    request.ID,
 		Status:       "failed",
 		Streamed:     false,
-		StartedAt:    started,
+		StartedAt:    time.Now().UTC(),
 		PromptSHA256: sha256Maybe(requestPromptText(request)),
 	}
+}
+
+func (client openAIHTTPClient) requestPayload(request CanonicalRequest) ([]byte, string, error) {
 	body, endpoint, err := client.requestBody(request)
 	if err != nil {
-		return sample.withError("request_render", "", err.Error(), time.Now().UTC(), nil)
+		return nil, "", err
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return sample.withError("request_encode", "", err.Error(), time.Now().UTC(), nil)
+		return nil, "", err
 	}
+	return payload, endpoint, nil
+}
+
+type httpLoadResponse struct {
+	statusCode  int
+	data        []byte
+	completedAt time.Time
+	firstByteAt *time.Time
+}
+
+type httpLoadFailure struct {
+	errorType   string
+	errorCode   string
+	message     string
+	completedAt time.Time
+	firstByteAt *time.Time
+}
+
+func (client openAIHTTPClient) sendRequest(ctx context.Context, endpoint string, payload []byte) (httpLoadResponse, *httpLoadFailure) {
 	var firstByteAt *time.Time
 	trace := &httptrace.ClientTrace{GotFirstResponseByte: func() {
 		now := time.Now().UTC()
@@ -371,43 +437,79 @@ func (client openAIHTTPClient) Invoke(ctx context.Context, index int, request Ca
 	}}
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodPost, client.baseURL+endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return sample.withError("request_create", "", err.Error(), time.Now().UTC(), firstByteAt)
+		return httpLoadResponse{}, newHTTPLoadFailure("request_create", "", err.Error(), time.Now().UTC(), firstByteAt)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.client.Do(req)
 	if err != nil {
-		return sample.withError("request_send", "", err.Error(), time.Now().UTC(), firstByteAt)
+		return httpLoadResponse{}, newHTTPLoadFailure("request_send", "", err.Error(), time.Now().UTC(), firstByteAt)
 	}
 	defer resp.Body.Close()
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024*1024))
 	completed := time.Now().UTC()
-	sample.HTTPStatusCode = resp.StatusCode
 	if readErr != nil {
-		return sample.withError("response_read", "", readErr.Error(), completed, firstByteAt)
+		return httpLoadResponse{}, newHTTPLoadFailure("response_read", "", readErr.Error(), completed, firstByteAt)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return sample.withError("http_status", fmt.Sprint(resp.StatusCode), strings.TrimSpace(string(data)), completed, firstByteAt)
+	return httpLoadResponse{statusCode: resp.StatusCode, data: data, completedAt: completed, firstByteAt: firstByteAt}, nil
+}
+
+func newHTTPLoadFailure(errorType, errorCode, message string, completedAt time.Time, firstByteAt *time.Time) *httpLoadFailure {
+	return &httpLoadFailure{
+		errorType:   errorType,
+		errorCode:   errorCode,
+		message:     message,
+		completedAt: completedAt,
+		firstByteAt: firstByteAt,
 	}
+}
+
+func (response httpLoadResponse) applyToSample(sample RequestSample, request CanonicalRequest) RequestSample {
 	var decoded openAIResponse
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return sample.withError("response_decode", "", err.Error(), completed, firstByteAt)
+	if failure := response.decode(&decoded); failure != nil {
+		return sample.withError(failure.errorType, failure.errorCode, failure.message, failure.completedAt, failure.firstByteAt)
+	}
+	return sample.withSuccess(request, decoded, response.data, response.completedAt, response.firstByteAt)
+}
+
+func (response httpLoadResponse) decode(decoded *openAIResponse) *httpLoadFailure {
+	if response.statusCode < 200 || response.statusCode >= 300 {
+		return newHTTPLoadFailure("http_status", fmt.Sprint(response.statusCode), strings.TrimSpace(string(response.data)), response.completedAt, response.firstByteAt)
+	}
+	if err := json.Unmarshal(response.data, decoded); err != nil {
+		return newHTTPLoadFailure("response_decode", "", err.Error(), response.completedAt, response.firstByteAt)
 	}
 	if decoded.Error != nil {
-		return sample.withError(firstNonEmpty(decoded.Error.Type, "api_error"), fmt.Sprint(decoded.Error.Code), decoded.Error.Message, completed, firstByteAt)
+		return newHTTPLoadFailure(firstNonEmpty(decoded.Error.Type, "api_error"), fmt.Sprint(decoded.Error.Code), decoded.Error.Message, response.completedAt, response.firstByteAt)
 	}
-	return sample.withSuccess(request, decoded, data, completed, firstByteAt)
+	return nil
 }
 
 func (client openAIHTTPClient) requestBody(request CanonicalRequest) (map[string]any, string, error) {
+	body, err := client.baseRequestBody(request)
+	if err != nil {
+		return nil, "", err
+	}
+	if client.requestBackend(request) == "openai" {
+		return client.completionRequestBody(body, request)
+	}
+	return client.chatRequestBody(body, request)
+}
+
+func (client openAIHTTPClient) baseRequestBody(request CanonicalRequest) (map[string]any, error) {
 	maxTokens := firstNonZeroInt(request.MaxOutputTokens, request.OutputTokensExpected, client.workload.RandomOutputLen)
 	if maxTokens <= 0 {
-		return nil, "", fmt.Errorf("request %s missing max output tokens", request.ID)
+		return nil, fmt.Errorf("request %s missing max output tokens", request.ID)
 	}
 	body := map[string]any{
 		"model":      client.profile.Model,
 		"max_tokens": maxTokens,
 		"stream":     false,
 	}
+	client.applyRequestOptions(body, request)
+	return body, nil
+}
+
+func (client openAIHTTPClient) applyRequestOptions(body map[string]any, request CanonicalRequest) {
 	if request.Temperature != nil {
 		body["temperature"] = *request.Temperature
 	} else if client.workload.Temperature != nil {
@@ -416,18 +518,22 @@ func (client openAIHTTPClient) requestBody(request CanonicalRequest) (map[string
 	if request.IgnoreEOS || client.workload.IgnoreEOS {
 		body["ignore_eos"] = true
 	}
-	backend := client.requestBackend(request)
+}
+
+func (client openAIHTTPClient) completionRequestBody(body map[string]any, request CanonicalRequest) (map[string]any, string, error) {
 	endpoint := strings.TrimSpace(client.workload.Endpoint)
-	if backend == "openai" {
-		body["prompt"] = firstNonEmpty(request.Prompt, messagesPrompt(request.Messages))
-		if endpoint == "" {
-			endpoint = defaultEndpoint("openai")
-		}
-		if err := mergeExtraBody(body, client.workload.ExtraBody); err != nil {
-			return nil, "", err
-		}
-		return body, endpoint, nil
+	body["prompt"] = firstNonEmpty(request.Prompt, messagesPrompt(request.Messages))
+	if endpoint == "" {
+		endpoint = defaultEndpoint("openai")
 	}
+	if err := mergeExtraBody(body, client.workload.ExtraBody); err != nil {
+		return nil, "", err
+	}
+	return body, endpoint, nil
+}
+
+func (client openAIHTTPClient) chatRequestBody(body map[string]any, request CanonicalRequest) (map[string]any, string, error) {
+	endpoint := strings.TrimSpace(client.workload.Endpoint)
 	messages := request.Messages
 	if len(messages) == 0 {
 		prompt := firstNonEmpty(request.Prompt, messagesPrompt(request.Messages))

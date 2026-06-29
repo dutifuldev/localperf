@@ -295,6 +295,15 @@ func applyWorkloadDefaults(workloads []Workload) {
 }
 
 func applyWorkloadDefault(workload *Workload) {
+	applyWorkloadCompatibilityDefaults(workload)
+	applyStructuredWorkloadDefaults(workload)
+	applyWorkloadExecutionDefaults(workload)
+	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
+	applyLoadGeneratorDefault(workload)
+	workload.Phase = workloadPhase(*workload)
+}
+
+func applyWorkloadCompatibilityDefaults(workload *Workload) {
 	if !trafficConfigEmpty(workload.Traffic) {
 		workload.BenchmarkTrafficConfig = overlayTrafficConfig(workload.BenchmarkTrafficConfig, workload.Traffic)
 	}
@@ -304,16 +313,15 @@ func applyWorkloadDefault(workload *Workload) {
 	if workload.NumPrompts <= 0 && workload.Samples > 0 {
 		workload.NumPrompts = workload.Samples
 	}
-	applyStructuredWorkloadDefaults(workload)
+}
+
+func applyWorkloadExecutionDefaults(workload *Workload) {
 	if len(workload.MaxConcurrency) == 0 && len(workload.Concurrency) > 0 {
 		workload.MaxConcurrency = append([]int(nil), workload.Concurrency...)
 	}
 	if workload.Repeats <= 0 {
 		workload.Repeats = 1
 	}
-	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
-	applyLoadGeneratorDefault(workload)
-	workload.Phase = workloadPhase(*workload)
 }
 
 func applyStructuredWorkloadDefaults(workload *Workload) {
