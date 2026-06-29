@@ -91,6 +91,10 @@ type Profile struct {
 type Workload struct {
 	BenchmarkTrafficConfig
 	Name                    string                 `json:"name"`
+	Phase                   string                 `json:"phase,omitempty"`
+	Dataset                 DatasetSpec            `json:"dataset,omitempty"`
+	Request                 RequestSpec            `json:"request,omitempty"`
+	Load                    LoadConfig             `json:"load,omitempty"`
 	Profiles                []string               `json:"profiles,omitempty"`
 	NumPrompts              int                    `json:"num_prompts"`
 	Samples                 int                    `json:"samples,omitempty"`
@@ -291,6 +295,7 @@ func applyWorkloadDefault(workload *Workload) {
 	if workload.NumPrompts <= 0 && workload.Samples > 0 {
 		workload.NumPrompts = workload.Samples
 	}
+	applyStructuredWorkloadDefaults(workload)
 	if len(workload.MaxConcurrency) == 0 && len(workload.Concurrency) > 0 {
 		workload.MaxConcurrency = append([]int(nil), workload.Concurrency...)
 	}
@@ -298,6 +303,104 @@ func applyWorkloadDefault(workload *Workload) {
 		workload.Repeats = 1
 	}
 	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
+	workload.Phase = workloadPhase(*workload)
+}
+
+func applyStructuredWorkloadDefaults(workload *Workload) {
+	if !hasStructuredDataset(*workload) {
+		return
+	}
+	workload.Dataset.Type = normalizeDatasetType(workload.Dataset.Type)
+	applyDatasetDefaults(workload)
+	applyLoadDefaults(workload)
+	applyRequestDefaults(workload)
+}
+
+func applyDatasetDefaults(workload *Workload) {
+	if strings.TrimSpace(workload.Dataset.Selection) == "" {
+		workload.Dataset.Selection = "first_n"
+	}
+	if workload.Dataset.SampleCount <= 0 && workload.NumPrompts > 0 {
+		workload.Dataset.SampleCount = workload.NumPrompts
+	}
+	if workload.NumPrompts <= 0 && workload.Dataset.SampleCount > 0 {
+		workload.NumPrompts = workload.Dataset.SampleCount
+	}
+}
+
+func applyLoadDefaults(workload *Workload) {
+	if len(workload.MaxConcurrency) == 0 && len(workload.Load.MaxConcurrency) > 0 {
+		workload.MaxConcurrency = append([]int(nil), workload.Load.MaxConcurrency...)
+	}
+	if strings.TrimSpace(workload.BenchmarkTrafficConfig.RequestRate) == "" && strings.TrimSpace(workload.Load.RequestRate) != "" {
+		workload.BenchmarkTrafficConfig.RequestRate = workload.Load.RequestRate
+	}
+}
+
+func applyRequestDefaults(workload *Workload) {
+	applyRequestModeDefault(workload)
+	applyRequestTurnPolicyDefault(workload)
+	applyRequestOutputDefault(workload)
+}
+
+func applyRequestModeDefault(workload *Workload) {
+	if strings.TrimSpace(workload.Request.Mode) == "" {
+		workload.Request.Mode = "chat"
+	}
+}
+
+func applyRequestTurnPolicyDefault(workload *Workload) {
+	if strings.TrimSpace(workload.Request.TurnPolicy) == "" && workload.Dataset.Type == "sharegpt" {
+		workload.Request.TurnPolicy = "first_user_turn"
+	}
+}
+
+func applyRequestOutputDefault(workload *Workload) {
+	if workload.Request.MaxOutputTokens <= 0 && workload.Dataset.OutputTokens > 0 {
+		workload.Request.MaxOutputTokens = workload.Dataset.OutputTokens
+	}
+}
+
+func workloadPhase(workload Workload) string {
+	if phase := normalizeWorkloadPhase(workload.Phase); phase != "" {
+		return phase
+	}
+	return inferWorkloadPhase(
+		workload.Name,
+		firstNonZeroInt(trafficInputLen(workload.BenchmarkTrafficConfig), structuredInputLen(workload)),
+		firstNonZeroInt(trafficOutputLen(workload.BenchmarkTrafficConfig), structuredOutputLen(workload)),
+	)
+}
+
+func normalizeWorkloadPhase(phase string) string {
+	return Slug(strings.ToLower(strings.TrimSpace(phase)))
+}
+
+func inferWorkloadPhase(name string, inputLen, outputLen int) string {
+	lowerName := strings.ToLower(name)
+	if phase := matchContains(lowerName, []containsMapping{
+		{Pattern: "prefill", Value: "prefill"},
+		{Pattern: "decode", Value: "decode"},
+	}, ""); phase != "" {
+		return phase
+	}
+	if phase := phaseFromTokenShape(inputLen, outputLen); phase != "" {
+		return phase
+	}
+	return "mixed"
+}
+
+func phaseFromTokenShape(inputLen, outputLen int) string {
+	if inputLen <= 0 || outputLen <= 0 {
+		return ""
+	}
+	if outputLen <= 64 && inputLen >= 1024 && inputLen >= 4*outputLen {
+		return "prefill"
+	}
+	if outputLen >= 256 {
+		return "decode"
+	}
+	return ""
 }
 
 func trafficConfigEmpty(traffic BenchmarkTrafficConfig) bool {
@@ -586,9 +689,21 @@ func validateWorkload(prefix string, workload Workload, profileNames, names map[
 
 func validateWorkloadFields(prefix string, workload Workload) []string {
 	var issues []string
-	if strings.TrimSpace(workload.DatasetName) == "" {
-		issues = append(issues, prefix+": dataset_name is required")
+	issues = append(issues, validateWorkloadDatasetName(prefix, workload)...)
+	issues = append(issues, validateWorkloadPositiveFields(prefix, workload)...)
+	issues = append(issues, validateWorkloadPhase(prefix, workload)...)
+	return append(issues, validateStructuredDataset(prefix, workload)...)
+}
+
+func validateWorkloadDatasetName(prefix string, workload Workload) []string {
+	if strings.TrimSpace(workload.DatasetName) == "" && !hasStructuredDataset(workload) {
+		return []string{prefix + ": dataset_name is required"}
 	}
+	return nil
+}
+
+func validateWorkloadPositiveFields(prefix string, workload Workload) []string {
+	var issues []string
 	if workload.NumPrompts <= 0 {
 		issues = append(issues, prefix+": num_prompts must be positive")
 	}
@@ -599,6 +714,94 @@ func validateWorkloadFields(prefix string, workload Workload) []string {
 		issues = append(issues, prefix+": max_concurrency must not be empty")
 	}
 	return issues
+}
+
+func validateWorkloadPhase(prefix string, workload Workload) []string {
+	if strings.TrimSpace(workload.Phase) != "" && Slug(workload.Phase) == "" {
+		return []string{prefix + ": phase must contain at least one ASCII letter or digit"}
+	}
+	return nil
+}
+
+func validateStructuredDataset(prefix string, workload Workload) []string {
+	if !hasStructuredDataset(workload) {
+		return nil
+	}
+	var issues []string
+	issues = append(issues, validateStructuredDatasetType(prefix, workload)...)
+	issues = append(issues, validateStructuredDatasetCounts(prefix, workload)...)
+	issues = append(issues, validateStructuredDatasetSelection(prefix, workload)...)
+	issues = append(issues, validateStructuredDatasetRequest(prefix, workload)...)
+	issues = append(issues, validateStructuredDatasetLocation(prefix, workload)...)
+	return issues
+}
+
+func validateStructuredDatasetType(prefix string, workload Workload) []string {
+	if _, ok := datasetAdapter(workload.Dataset.Type); !ok {
+		return []string{prefix + ": unsupported dataset.type " + workload.Dataset.Type}
+	}
+	return nil
+}
+
+func validateStructuredDatasetCounts(prefix string, workload Workload) []string {
+	var issues []string
+	if workload.Dataset.SampleCount <= 0 {
+		issues = append(issues, prefix+": dataset.sample_count must be positive")
+	}
+	if workload.Dataset.Seed != nil && *workload.Dataset.Seed < 0 {
+		issues = append(issues, prefix+": dataset.seed must be non-negative")
+	}
+	return append(issues, validateStructuredDatasetTokenCounts(prefix, workload)...)
+}
+
+func validateStructuredDatasetSelection(prefix string, workload Workload) []string {
+	switch strings.TrimSpace(workload.Dataset.Selection) {
+	case "first_n", "random", "shuffle":
+		return nil
+	default:
+		return []string{prefix + ": unsupported dataset.selection " + workload.Dataset.Selection}
+	}
+}
+
+func validateStructuredDatasetTokenCounts(prefix string, workload Workload) []string {
+	var issues []string
+	if workload.Dataset.InputTokens < 0 {
+		issues = append(issues, prefix+": dataset.input_tokens must not be negative")
+	}
+	if workload.Dataset.OutputTokens < 0 {
+		issues = append(issues, prefix+": dataset.output_tokens must not be negative")
+	}
+	return issues
+}
+
+func validateStructuredDatasetRequest(prefix string, workload Workload) []string {
+	var issues []string
+	if structuredDatasetNeedsDefaultOutput(workload.Dataset.Type) && workload.Request.MaxOutputTokens <= 0 && workload.Dataset.OutputTokens <= 0 {
+		issues = append(issues, prefix+": request.max_output_tokens or dataset.output_tokens must be positive")
+	}
+	if strings.TrimSpace(workload.Request.Mode) == "" {
+		issues = append(issues, prefix+": request.mode is required")
+	}
+	if workload.Dataset.Type == "sharegpt" && strings.TrimSpace(workload.Request.TurnPolicy) != "first_user_turn" {
+		issues = append(issues, prefix+": unsupported request.turn_policy "+workload.Request.TurnPolicy)
+	}
+	return issues
+}
+
+func structuredDatasetNeedsDefaultOutput(datasetType string) bool {
+	switch normalizeDatasetType(datasetType) {
+	case "custom-jsonl", "raw-payload":
+		return false
+	default:
+		return true
+	}
+}
+
+func validateStructuredDatasetLocation(prefix string, workload Workload) []string {
+	if workload.Dataset.Type != "synthetic" && strings.TrimSpace(datasetLocalPath(workload.Dataset)) == "" {
+		return []string{prefix + ": dataset.path or file:// dataset.uri is required"}
+	}
+	return nil
 }
 
 func validateConcurrencyValues(prefix string, values []int) []string {

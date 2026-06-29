@@ -34,6 +34,7 @@ type EventCounts struct {
 type ReportRow struct {
 	Profile             string  `json:"profile,omitempty"`
 	Workload            string  `json:"workload,omitempty"`
+	Phase               string  `json:"phase,omitempty"`
 	DatasetName         string  `json:"dataset_name,omitempty"`
 	Context             int     `json:"context,omitempty"`
 	ServerMaxNumSeqs    int     `json:"server_max_num_seqs,omitempty"`
@@ -237,6 +238,9 @@ func enrichRowFromWorkload(row *ReportRow, event Event, spec *Spec) {
 }
 
 func applyWorkloadFields(row *ReportRow, workload Workload) {
+	if phase := normalizeWorkloadPhase(workload.Phase); phase != "" && (row.Phase == "" || row.Phase == "mixed") {
+		row.Phase = workload.Phase
+	}
 	if row.DatasetName == "" {
 		row.DatasetName = workload.DatasetName
 	}
@@ -244,8 +248,16 @@ func applyWorkloadFields(row *ReportRow, workload Workload) {
 		row.RandomInputLen = firstNonZeroInt(row.RandomInputLen, workload.RandomInputLen)
 		row.RandomOutputLen = firstNonZeroInt(row.RandomOutputLen, workload.RandomOutputLen)
 	}
-	row.InputLen = firstNonZeroInt(row.InputLen, trafficInputLen(workload.BenchmarkTrafficConfig))
-	row.OutputLen = firstNonZeroInt(row.OutputLen, trafficOutputLen(workload.BenchmarkTrafficConfig))
+	row.InputLen = firstNonZeroInt(row.InputLen, trafficInputLen(workload.BenchmarkTrafficConfig), structuredInputLen(workload))
+	row.OutputLen = firstNonZeroInt(row.OutputLen, trafficOutputLen(workload.BenchmarkTrafficConfig), structuredOutputLen(workload))
+}
+
+func structuredInputLen(workload Workload) int {
+	return workload.Dataset.InputTokens
+}
+
+func structuredOutputLen(workload Workload) int {
+	return firstNonZeroInt(workload.Request.MaxOutputTokens, workload.Dataset.OutputTokens)
 }
 
 func RenderMarkdown(report Report) string {
@@ -267,9 +279,18 @@ func RenderMarkdown(report Report) string {
 		out.WriteString("No parseable benchmark result rows were found.\n")
 		return out.String()
 	}
+	for _, phase := range reportPhases(report.Rows) {
+		out.WriteString(fmt.Sprintf("### %s\n\n", phaseTitle(phase)))
+		renderThroughputTable(&out, report.RunDir, rowsForPhase(report.Rows, phase))
+		out.WriteString("\n")
+	}
+	return out.String()
+}
+
+func renderThroughputTable(out *strings.Builder, runDir string, rows []ReportRow) {
 	out.WriteString("| Profile | Workload | Dataset | Context | Concurrency | Input | Output | Completed | Failed | Output tok/s | Per-user tok/s | Total tok/s | TTFT mean ms | Result |\n")
 	out.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
-	for _, row := range report.Rows {
+	for _, row := range rows {
 		out.WriteString(fmt.Sprintf(
 			"| %s | %s | %s | %s | %s | %s | %s | %d | %d | %s | %s | %s | %s | `%s` |\n",
 			cell(row.Profile),
@@ -285,10 +306,74 @@ func RenderMarkdown(report Report) string {
 			floatCell(row.PerUserOutputTokSec),
 			floatCell(row.TotalTokensPerSec),
 			floatCell(row.MeanTTFTMillis),
-			fileCell(report.RunDir, row.ResultFile),
+			fileCell(runDir, row.ResultFile),
 		))
 	}
-	return out.String()
+}
+
+func reportPhases(rows []ReportRow) []string {
+	seen := map[string]bool{}
+	for _, row := range rows {
+		seen[reportRowPhase(row)] = true
+	}
+	phases := collections.SortedKeys(seen)
+	sort.SliceStable(phases, func(i, j int) bool {
+		left, right := phaseRank(phases[i]), phaseRank(phases[j])
+		if left != right {
+			return left < right
+		}
+		return phases[i] < phases[j]
+	})
+	return phases
+}
+
+func rowsForPhase(rows []ReportRow, phase string) []ReportRow {
+	out := make([]ReportRow, 0, len(rows))
+	for _, row := range rows {
+		if reportRowPhase(row) == phase {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func reportRowPhase(row ReportRow) string {
+	if phase := normalizeWorkloadPhase(row.Phase); phase != "" && phase != "mixed" {
+		return phase
+	}
+	return inferWorkloadPhase(row.Workload, row.DisplayInputLen(), row.DisplayOutputLen())
+}
+
+func normalizeReportPhase(phase string) string {
+	if phase = normalizeWorkloadPhase(phase); phase != "" {
+		return phase
+	}
+	return "mixed"
+}
+
+func phaseRank(phase string) int {
+	switch phase {
+	case "decode":
+		return 0
+	case "prefill":
+		return 1
+	case "mixed":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func phaseTitle(phase string) string {
+	phase = normalizeReportPhase(phase)
+	parts := strings.Split(phase, "-")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
 }
 
 func WriteReportFiles(report Report, outputPath string) error {
@@ -315,6 +400,7 @@ func RenderCSV(report Report) string {
 	_ = writer.Write([]string{
 		"profile",
 		"workload",
+		"phase",
 		"dataset_name",
 		"context",
 		"server_max_num_seqs",
@@ -339,6 +425,7 @@ func RenderCSV(report Report) string {
 		_ = writer.Write([]string{
 			row.Profile,
 			row.Workload,
+			reportRowPhase(row),
 			row.DatasetName,
 			intCSV(row.Context),
 			intCSV(row.ServerMaxNumSeqs),
@@ -370,6 +457,7 @@ func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 		row := ReportRow{
 			Profile:            stringValue(raw, "profile"),
 			Workload:           stringValue(raw, "workload"),
+			Phase:              stringValue(raw, "phase"),
 			DatasetName:        stringValue(raw, "dataset_name"),
 			Context:            intValue(raw, "max_model_len"),
 			ServerMaxNumSeqs:   intValue(raw, "server_max_num_seqs"),
@@ -410,6 +498,11 @@ func deriveReportRowFields(row *ReportRow) {
 	}
 	if row.OutputLen == 0 {
 		row.OutputLen = row.RandomOutputLen
+	}
+	if row.Phase == "" || row.Phase == "mixed" {
+		row.Phase = reportRowPhase(*row)
+	} else {
+		row.Phase = normalizeReportPhase(row.Phase)
 	}
 	if row.Concurrency > 0 && row.OutputTokensPerSec > 0 {
 		row.PerUserOutputTokSec = row.OutputTokensPerSec / float64(row.Concurrency)
@@ -526,6 +619,14 @@ func readEvents(path string) ([]Event, error) {
 func sortReportRows(rows []ReportRow) {
 	sort.Slice(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
+		aPhase := reportRowPhase(a)
+		bPhase := reportRowPhase(b)
+		if phaseRank(aPhase) != phaseRank(bPhase) {
+			return phaseRank(aPhase) < phaseRank(bPhase)
+		}
+		if aPhase != bPhase {
+			return aPhase < bPhase
+		}
 		if a.Profile != b.Profile {
 			return a.Profile < b.Profile
 		}

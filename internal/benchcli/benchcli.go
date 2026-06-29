@@ -61,6 +61,10 @@ func runPlan(args []string) {
 	spec := mustLoadSpec(*specPath, filterFlags.Filter())
 	applyOverrides(&spec, overrides)
 	dir := vllmbench.RunDir(*runDir, spec, time.Now())
+	if err := vllmbench.PrepareDatasets(context.Background(), &spec, dir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	plan := vllmbench.BuildPlan(spec, dir)
 	if *jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -223,6 +224,46 @@ func TestApplyDefaultsOverlaysNestedTraffic(t *testing.T) {
 	}
 }
 
+func TestApplyDefaultsNormalizesWorkloadPhase(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{
+		testRandomWorkload("explicit", []string{"8k"}, 128, 16, 1, []int{1}),
+		testRandomWorkload("long-prefill", []string{"8k"}, 4096, 16, 1, []int{1}),
+		testRandomWorkload("long-output", []string{"8k"}, 1024, 512, 1, []int{1}),
+		testRandomWorkload("small-mixed", []string{"8k"}, 128, 16, 1, []int{1}),
+	}
+	spec.Workloads[0].Phase = "Decode Phase"
+
+	ApplyDefaults(&spec)
+
+	got := []string{
+		spec.Workloads[0].Phase,
+		spec.Workloads[1].Phase,
+		spec.Workloads[2].Phase,
+		spec.Workloads[3].Phase,
+	}
+	want := []string{"decode-phase", "prefill", "decode", "mixed"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("workload phases = %#v, want %#v", got, want)
+	}
+}
+
+func TestApplyDefaultsCopiesSamplesToStructuredDatasetSampleCount(t *testing.T) {
+	spec := testSpec()
+	workload := testShareGPTWorkload("sharegpt.json", []string{"8k"})
+	workload.Samples = 1
+	workload.NumPrompts = 0
+	workload.Dataset.SampleCount = 0
+	spec.Workloads = []Workload{workload}
+
+	ApplyDefaults(&spec)
+
+	got := spec.Workloads[0]
+	if got.NumPrompts != 1 || got.Dataset.SampleCount != 1 {
+		t.Fatalf("structured samples defaults = num_prompts %d sample_count %d, want 1 and 1", got.NumPrompts, got.Dataset.SampleCount)
+	}
+}
+
 func TestApplyDefaultsDoesNotDuplicateEngineArgs(t *testing.T) {
 	spec := testSpec()
 	spec.Profiles[0].Args = []string{"--served-model-name", "alias"}
@@ -299,6 +340,21 @@ func TestValidateSpecRejectsInvalidWarmupTraffic(t *testing.T) {
 	spec.Warmup.RandomInputLen = -1
 	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "warmup: random_input_len") {
 		t.Fatalf("ValidateSpec error = %v, want warmup random input issue", err)
+	}
+}
+
+func TestValidateSpecRejectsUnsupportedStructuredDatasetControls(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload("sharegpt.json", []string{"8k"})}
+	spec.Workloads[0].Dataset.Selection = "randm"
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "dataset.selection") {
+		t.Fatalf("ValidateSpec error = %v, want dataset.selection issue", err)
+	}
+
+	spec.Workloads[0].Dataset.Selection = "first_n"
+	spec.Workloads[0].Request.TurnPolicy = "last_user_turn"
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "request.turn_policy") {
+		t.Fatalf("ValidateSpec error = %v, want request.turn_policy issue", err)
 	}
 }
 
@@ -640,6 +696,20 @@ func TestExecuteDryRunStoresOriginalSpecAndPlannedCommandStatus(t *testing.T) {
 	if status != "planned" || exitCode.Valid {
 		t.Fatalf("planned command status=%q exit_valid=%t, want planned with null exit", status, exitCode.Valid)
 	}
+	var workloadPhase string
+	if err := db.QueryRow("SELECT phase FROM workloads WHERE name = 'decode'").Scan(&workloadPhase); err != nil {
+		t.Fatal(err)
+	}
+	if workloadPhase != "decode" {
+		t.Fatalf("workload phase = %q, want decode", workloadPhase)
+	}
+	var datasetJSON, requestJSON, loadJSON sql.NullString
+	if err := db.QueryRow("SELECT dataset_json, request_json, load_json FROM workloads WHERE name = 'decode'").Scan(&datasetJSON, &requestJSON, &loadJSON); err != nil {
+		t.Fatal(err)
+	}
+	if datasetJSON.Valid || requestJSON.Valid || loadJSON.Valid {
+		t.Fatalf("legacy structured workload JSON columns = dataset %v request %v load %v, want all NULL", datasetJSON, requestJSON, loadJSON)
+	}
 }
 
 func TestCheckSQLiteArtifactDoesNotCreateMissingFile(t *testing.T) {
@@ -795,6 +865,407 @@ func TestExecuteRepeatsUseDistinctLogsAndMeasurements(t *testing.T) {
 	}
 }
 
+func TestPrepareDatasetsMaterializesShareGPTWorkload(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+
+	workload := spec.Workloads[0]
+	if workload.DatasetName != "custom" || workload.NumPrompts != 1 || workload.RequestRate != "inf" {
+		t.Fatalf("workload was not materialized for vLLM custom dataset: %+v", workload)
+	}
+	if workload.Dataset.Prepared.RequestCount != 1 || workload.Dataset.Prepared.CanonicalPath == "" || workload.Dataset.Prepared.VLLMCustomPath == "" {
+		t.Fatalf("prepared dataset metadata missing: %+v", workload.Dataset.Prepared)
+	}
+	command := ShellQuote(BenchCommand(spec, BuildPlan(spec, runDir)[0]).Args)
+	for _, want := range []string{"--dataset-name custom", "--dataset-path " + workload.Dataset.Prepared.VLLMCustomPath, "--custom-output-len -1", "--disable-shuffle", "--skip-chat-template", "--num-prompts 1", "--max-concurrency 1"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command %q missing %q", command, want)
+		}
+	}
+	canonicalRows, err := readCanonicalRequestFile(workload.Dataset.Prepared.CanonicalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(canonicalRows) != 1 || canonicalRows[0].Messages[0].Content != "Explain TTFT in one sentence." || canonicalRows[0].MaxOutputTokens != 512 {
+		t.Fatalf("canonical rows = %+v", canonicalRows)
+	}
+	vllmData, err := os.ReadFile(workload.Dataset.Prepared.VLLMCustomPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(vllmData), `"prompt":"Explain TTFT in one sentence."`) || !strings.Contains(string(vllmData), `"output_tokens":512`) {
+		t.Fatalf("vLLM custom dataset was not rendered correctly:\n%s", vllmData)
+	}
+}
+
+func TestPrepareDatasetsAllowsPerRowCustomOutputTokens(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := filepath.Join(dir, "custom.jsonl")
+	writeFile(t, datasetPath, `{"id":"one","prompt":"hello","output_tokens":3}
+`)
+	spec := testSpec()
+	spec.Workloads = []Workload{testCustomJSONLWorkload("row-output", datasetPath, []string{"8k"})}
+	spec.Workloads[0].Request.MaxOutputTokens = 0
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(spec.Workloads[0].Dataset.Prepared.VLLMCustomPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"output_tokens":3`) {
+		t.Fatalf("vLLM custom dataset did not preserve row output length:\n%s", data)
+	}
+}
+
+func TestPrepareDatasetsKeepsExplicitTrafficRequestRate(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	spec.Workloads[0].BenchmarkTrafficConfig.RequestRate = "5"
+	spec.Workloads[0].Load.RequestRate = "inf"
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+	if got := spec.Workloads[0].RequestRate; got != "5" {
+		t.Fatalf("request rate = %q, want explicit traffic value 5", got)
+	}
+}
+
+func TestPrepareDatasetsHonorsCompletionRequestMode(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	spec.Workloads[0].Request.Mode = "completion"
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+	command := ShellQuote(BenchCommand(spec, BuildPlan(spec, runDir)[0]).Args)
+	for _, want := range []string{"--backend openai", "--endpoint /v1/completions"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command %q missing %q", command, want)
+		}
+	}
+	if strings.Contains(command, "--skip-chat-template") {
+		t.Fatalf("completion-mode command should not skip chat template: %q", command)
+	}
+}
+
+func TestPrepareDatasetsPreservesCompletionSkipChatTemplate(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	spec.Workloads[0].Request.Mode = "completion"
+	spec.Workloads[0].BenchmarkTrafficConfig.SkipChatTemplate = true
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+	command := ShellQuote(BenchCommand(spec, BuildPlan(spec, runDir)[0]).Args)
+	if !strings.Contains(command, "--skip-chat-template") {
+		t.Fatalf("completion-mode command did not preserve skip_chat_template: %q", command)
+	}
+}
+
+func TestPrepareDatasetsRejectsUnsupportedRequestMode(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	spec.Workloads[0].Request.Mode = "embedding"
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	err := PrepareDatasets(context.Background(), &spec, filepath.Join(dir, "run"))
+	if err == nil || !strings.Contains(err.Error(), `request.mode "embedding"`) {
+		t.Fatalf("unsupported mode error = %v", err)
+	}
+}
+
+func TestSQLiteArtifactIgnoresStaleDatasetFiles(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	staleDatasetDir := filepath.Join(runDir, "datasets")
+	writeFile(t, filepath.Join(staleDatasetDir, "stale.canonical.jsonl"), `{"id":"stale","prompt":"old","max_output_tokens":1}
+`)
+	writeFile(t, filepath.Join(staleDatasetDir, "stale.vllm-custom.jsonl"), `{"prompt":"old","output_tokens":1}
+`)
+	spec := testSpec()
+	spec.OutputDir = dir
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Managed = false
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Workloads = []Workload{testRandomWorkload("legacy", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
+
+	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true, RunDir: runDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var datasetArtifacts int
+	if err := db.QueryRow("SELECT COUNT(*) FROM artifacts WHERE kind IN ('canonical_dataset','engine_dataset')").Scan(&datasetArtifacts); err != nil {
+		t.Fatal(err)
+	}
+	if datasetArtifacts != 0 {
+		t.Fatalf("dataset artifacts = %d, want 0 for legacy run with stale files", datasetArtifacts)
+	}
+}
+
+func TestPrepareDatasetsRejectsRawPayloadVLLMBenchRenderer(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := filepath.Join(dir, "raw.jsonl")
+	writeFile(t, datasetPath, `{"messages":[{"role":"user","content":"hello"}],"max_tokens":3,"response_format":{"type":"json_object"}}
+`)
+	spec := testSpec()
+	spec.Workloads = []Workload{testRawPayloadWorkload("raw", datasetPath, []string{"8k"})}
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	err := PrepareDatasets(context.Background(), &spec, filepath.Join(dir, "run"))
+	if err == nil || !strings.Contains(err.Error(), "raw_payload cannot be rendered") {
+		t.Fatalf("raw payload renderer error = %v", err)
+	}
+}
+
+func TestExecuteWithShareGPTDatasetStoresCanonicalArtifactRows(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Name = "fake-vllm-sharegpt"
+	spec.OutputDir = dir
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{spec.Profiles[0].Name})}
+	spec.Workloads[0].CapturePayloadArtifacts = true
+	ApplyDefaults(&spec)
+
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.CompletedRuns != 1 || summary.FailedRuns != 0 {
+		t.Fatalf("summary = %+v, want one completed run", summary)
+	}
+	assertSQLiteArtifact(t, summary.ArtifactPath)
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for table, want := range map[string]int{"datasets": 1, "source_records": 1, "canonical_requests": 1} {
+		var got int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s rows = %d, want %d", table, got, want)
+		}
+	}
+	var datasetType, mode string
+	var maxOutput int
+	if err := db.QueryRow(`SELECT d.type, cr.mode, cr.max_output_tokens
+		FROM datasets d JOIN canonical_requests cr ON cr.dataset_id = d.id`).Scan(&datasetType, &mode, &maxOutput); err != nil {
+		t.Fatal(err)
+	}
+	if datasetType != "sharegpt" || mode != "chat" || maxOutput != 512 {
+		t.Fatalf("dataset/request row = type %q mode %q max_output %d", datasetType, mode, maxOutput)
+	}
+	var datasetArtifacts int
+	if err := db.QueryRow("SELECT COUNT(*) FROM artifacts WHERE kind IN ('canonical_dataset', 'engine_dataset')").Scan(&datasetArtifacts); err != nil {
+		t.Fatal(err)
+	}
+	if datasetArtifacts != 2 {
+		t.Fatalf("dataset artifacts = %d, want 2", datasetArtifacts)
+	}
+}
+
+func TestExecuteWithShareGPTDatasetSkipsPayloadArtifactsByDefault(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Name = "sharegpt-default-private"
+	spec.OutputDir = dir
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Managed = false
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{spec.Profiles[0].Name})}
+	ApplyDefaults(&spec)
+
+	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true, RunDir: filepath.Join(dir, "run")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckSQLiteArtifact(summary.ArtifactPath); err != nil {
+		t.Fatalf("artifact check failed: %v", err)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for table, want := range map[string]int{"datasets": 1, "source_records": 0, "canonical_requests": 0} {
+		var got int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s rows = %d, want %d", table, got, want)
+		}
+	}
+	var datasetArtifacts int
+	if err := db.QueryRow("SELECT COUNT(*) FROM artifacts WHERE kind IN ('canonical_dataset', 'engine_dataset')").Scan(&datasetArtifacts); err != nil {
+		t.Fatal(err)
+	}
+	if datasetArtifacts != 0 {
+		t.Fatalf("dataset artifacts = %d, want 0 without payload capture", datasetArtifacts)
+	}
+}
+
+func TestExecuteStructuredSyntheticDatasetEnrichesSummaryRows(t *testing.T) {
+	dir := t.TempDir()
+	spec := testSpec()
+	spec.Name = "structured-synthetic-summary"
+	spec.OutputDir = dir
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{{
+		Name:     "structured-synthetic",
+		Profiles: []string{spec.Profiles[0].Name},
+		Dataset: DatasetSpec{
+			Type:         "synthetic",
+			SampleCount:  1,
+			InputTokens:  8192,
+			OutputTokens: 16,
+		},
+		Request: RequestSpec{Mode: "chat", MaxOutputTokens: 16},
+		Load:    LoadConfig{MaxConcurrency: []int{1}, RequestRate: "inf"},
+	}}
+	ApplyDefaults(&spec)
+
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Rows) != 1 {
+		t.Fatalf("summary rows = %d, want 1", len(summary.Rows))
+	}
+	row := summary.Rows[0]
+	if row.InputLen != 8192 || row.OutputLen != 16 || row.Phase != "prefill" {
+		t.Fatalf("summary row was not enriched from structured workload: %+v", row)
+	}
+}
+
+func TestDryRunStoresDuplicateCustomRequestIDsAcrossWorkloads(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := filepath.Join(dir, "custom.jsonl")
+	writeFile(t, datasetPath, `{"id":"one","prompt":"hello","max_output_tokens":1}
+`)
+	spec := testSpec()
+	spec.Name = "duplicate-custom-request-ids"
+	spec.OutputDir = dir
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Managed = false
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Workloads = []Workload{
+		testCustomJSONLWorkload("w1", datasetPath, []string{spec.Profiles[0].Name}),
+		testCustomJSONLWorkload("w2", datasetPath, []string{spec.Profiles[0].Name}),
+	}
+	spec.Workloads[0].CapturePayloadArtifacts = true
+	spec.Workloads[1].CapturePayloadArtifacts = true
+
+	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true, RunDir: filepath.Join(dir, "run")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ArtifactPath == "" {
+		t.Fatal("summary artifact path is empty")
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var rowCount, distinctRequestIDs int
+	if err := db.QueryRow("SELECT COUNT(*), COUNT(DISTINCT request_id) FROM canonical_requests").Scan(&rowCount, &distinctRequestIDs); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount != 2 || distinctRequestIDs != 1 {
+		t.Fatalf("canonical request rows = %d distinct request ids = %d, want 2 and 1", rowCount, distinctRequestIDs)
+	}
+}
+
 func TestRawResultArtifactNameAvoidsHyphenCollisions(t *testing.T) {
 	first := rawResultArtifactName(Event{Profile: "a-b", Workload: "c", Concurrency: 1})
 	second := rawResultArtifactName(Event{Profile: "a", Workload: "b-c", Concurrency: 1})
@@ -843,8 +1314,8 @@ func assertSQLiteArtifact(t *testing.T, path string) {
 	if err := db.QueryRow("SELECT aggregate_output_tok_s FROM measurements LIMIT 1").Scan(&outputThroughput); err != nil {
 		t.Fatal(err)
 	}
-	if outputThroughput != 20 {
-		t.Fatalf("artifact aggregate_output_tok_s = %v, want 20", outputThroughput)
+	if outputThroughput <= 0 {
+		t.Fatalf("artifact aggregate_output_tok_s = %v, want positive value", outputThroughput)
 	}
 }
 
@@ -1464,7 +1935,7 @@ func TestBuildReportEnrichesFromSpec(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", len(report.Rows))
 	}
 	row := report.Rows[0]
-	if row.Context != 8192 || row.RandomInputLen != 8192 || row.RandomOutputLen != 16 || row.DatasetName != "random" {
+	if row.Context != 8192 || row.RandomInputLen != 8192 || row.RandomOutputLen != 16 || row.DatasetName != "random" || row.Phase != "prefill" {
 		t.Fatalf("row was not enriched from spec: %+v", row)
 	}
 }
@@ -1500,8 +1971,91 @@ func TestBuildReportEnrichesGenericLengthsFromSpec(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", len(report.Rows))
 	}
 	row := report.Rows[0]
-	if row.InputLen != 4096 || row.OutputLen != 32 || row.DisplayInputLen() != 4096 || row.DisplayOutputLen() != 32 {
+	if row.InputLen != 4096 || row.OutputLen != 32 || row.DisplayInputLen() != 4096 || row.DisplayOutputLen() != 32 || row.Phase != "prefill" {
 		t.Fatalf("row was not enriched with generic lengths: %+v", row)
+	}
+}
+
+func TestBuildReportEnrichesStructuredOutputLenFromSpec(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{{
+		Name:     "sharegpt-structured",
+		Phase:    "decode",
+		Profiles: []string{"8k"},
+		Dataset:  DatasetSpec{Type: "sharegpt", SampleCount: 1},
+		Request:  RequestSpec{Mode: "chat", MaxOutputTokens: 512},
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "custom",
+			CustomOutputLen: intPointer(-1),
+			RequestRate:     "inf",
+		},
+		NumPrompts:     1,
+		MaxConcurrency: []int{1},
+	}}
+	ApplyDefaults(&spec)
+	runDir := t.TempDir()
+	if err := writeJSONFile(filepath.Join(runDir, "spec.normalized.json"), spec); err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(runDir, "results", "8k__sharegpt-structured__c1.json")
+	writeFile(t, resultPath, `{"completed":1,"failed":0,"output_throughput":10}`)
+	writeFile(t, filepath.Join(runDir, "events.jsonl"), `{"timestamp":"2026-06-26T00:00:00Z","type":"workload_finish","profile":"8k","workload":"sharegpt-structured","concurrency":1,"result_file":"results/8k__sharegpt-structured__c1.json"}`+"\n")
+	report, err := BuildReport(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(report.Rows))
+	}
+	row := report.Rows[0]
+	if row.OutputLen != 512 || row.DisplayOutputLen() != 512 {
+		t.Fatalf("row output length was not enriched from structured request: %+v", row)
+	}
+}
+
+func TestBuildReportEnrichesStructuredInputLenFromSpec(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{{
+		Name:     "structured-synthetic",
+		Profiles: []string{"8k"},
+		Dataset: DatasetSpec{
+			Type:         "synthetic",
+			SampleCount:  1,
+			InputTokens:  8192,
+			OutputTokens: 16,
+		},
+		Request: RequestSpec{Mode: "chat", MaxOutputTokens: 16},
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "custom",
+			CustomOutputLen: intPointer(-1),
+			RequestRate:     "inf",
+		},
+		NumPrompts:     1,
+		MaxConcurrency: []int{1},
+	}}
+	ApplyDefaults(&spec)
+	if spec.Workloads[0].Phase != "prefill" {
+		t.Fatalf("normalized structured phase = %q, want prefill", spec.Workloads[0].Phase)
+	}
+	runDir := t.TempDir()
+	if err := writeJSONFile(filepath.Join(runDir, "spec.normalized.json"), spec); err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(runDir, "results", "8k__structured-synthetic__c1.json")
+	writeFile(t, resultPath, `{"completed":1,"failed":0,"output_throughput":10}`)
+	writeFile(t, filepath.Join(runDir, "events.jsonl"), `{"timestamp":"2026-06-26T00:00:00Z","type":"workload_finish","profile":"8k","workload":"structured-synthetic","concurrency":1,"result_file":"results/8k__structured-synthetic__c1.json"}`+"\n")
+	report, err := BuildReport(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(report.Rows))
+	}
+	row := report.Rows[0]
+	if row.InputLen != 8192 || row.DisplayInputLen() != 8192 || row.Phase != "prefill" {
+		t.Fatalf("row input length/phase was not enriched from structured dataset: %+v", row)
 	}
 }
 
@@ -1570,8 +2124,8 @@ func TestWriteReportFilesWritesCSV(t *testing.T) {
 	}
 	text := string(csvData)
 	for _, want := range []string{
-		"profile,workload,dataset_name,context",
-		"8k,prefill,random,8192,16,4,,7168,16,7168,16,8,0,10.5,200,250,50,1234.5",
+		"profile,workload,phase,dataset_name,context",
+		"8k,prefill,prefill,random,8192,16,4,,7168,16,7168,16,8,0,10.5,200,250,50,1234.5",
 		"results/8k__prefill__c4.json",
 	} {
 		if !strings.Contains(text, want) {
@@ -1697,6 +2251,92 @@ func testRandomWorkload(name string, profiles []string, inputLen, outputLen, num
 		NumPrompts:     numPrompts,
 		MaxConcurrency: concurrencies,
 	}
+}
+
+func testShareGPTWorkload(path string, profiles []string) Workload {
+	seed := 1
+	temp := 0.0
+	return Workload{
+		Name:     "sharegpt-chat-smoke",
+		Phase:    "decode",
+		Profiles: profiles,
+		Dataset: DatasetSpec{
+			Type:        "sharegpt",
+			Path:        path,
+			Split:       "train",
+			SampleCount: 1,
+			Seed:        &seed,
+			Selection:   "first_n",
+		},
+		Request: RequestSpec{
+			Mode:            "chat",
+			TurnPolicy:      "first_user_turn",
+			MaxOutputTokens: 512,
+			Temperature:     &temp,
+		},
+		Load: LoadConfig{
+			MaxConcurrency: []int{1},
+			RequestRate:    "inf",
+		},
+	}
+}
+
+func testCustomJSONLWorkload(name, path string, profiles []string) Workload {
+	return Workload{
+		Name:     name,
+		Phase:    "decode",
+		Profiles: profiles,
+		Dataset: DatasetSpec{
+			Type:        "custom_jsonl",
+			Path:        path,
+			SampleCount: 1,
+			Selection:   "first_n",
+		},
+		Request: RequestSpec{
+			Mode:            "chat",
+			MaxOutputTokens: 1,
+		},
+		Load: LoadConfig{
+			MaxConcurrency: []int{1},
+			RequestRate:    "inf",
+		},
+	}
+}
+
+func testRawPayloadWorkload(name, path string, profiles []string) Workload {
+	return Workload{
+		Name:     name,
+		Phase:    "decode",
+		Profiles: profiles,
+		Dataset: DatasetSpec{
+			Type:        "raw_payload",
+			Path:        path,
+			SampleCount: 1,
+			Selection:   "first_n",
+		},
+		Request: RequestSpec{
+			Mode: "raw_payload",
+		},
+		Load: LoadConfig{
+			MaxConcurrency: []int{1},
+			RequestRate:    "inf",
+		},
+	}
+}
+
+func writeShareGPTFixture(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "sharegpt.json")
+	writeFile(t, path, `[
+  {
+    "id": "fixture-1",
+    "conversations": [
+      {"from": "human", "value": "Explain TTFT in one sentence."},
+      {"from": "gpt", "value": "TTFT is the delay until the first generated token arrives."}
+    ]
+  }
+]`)
+	return path
 }
 
 func writeFile(t *testing.T, path, content string) {

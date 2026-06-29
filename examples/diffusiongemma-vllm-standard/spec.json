@@ -120,6 +120,7 @@
   "workloads": [
     {
       "name": "claim-repro-1k-out1024",
+      "phase": "decode",
       "profiles": ["4k-reference"],
       "backend": "openai-chat",
       "dataset_name": "random",
@@ -135,6 +136,7 @@
     },
     {
       "name": "decode-1k-out512-fixed",
+      "phase": "decode",
       "profiles": ["8k", "16k", "32k"],
       "backend": "openai-chat",
       "dataset_name": "random",
@@ -150,6 +152,7 @@
     },
     {
       "name": "prefill-8k-out16-fixed",
+      "phase": "prefill",
       "profiles": ["8k", "16k", "32k"],
       "backend": "openai-chat",
       "dataset_name": "random",
@@ -165,6 +168,7 @@
     },
     {
       "name": "prefill-16k-out16-fixed",
+      "phase": "prefill",
       "profiles": ["16k", "32k"],
       "backend": "openai-chat",
       "dataset_name": "random",
@@ -180,6 +184,7 @@
     },
     {
       "name": "prefill-32k-out16-fixed",
+      "phase": "prefill",
       "profiles": ["32k"],
       "backend": "openai-chat",
       "dataset_name": "random",

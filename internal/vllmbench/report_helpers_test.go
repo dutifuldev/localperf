@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/dutifuldev/localperf/internal/collections"
 )
@@ -37,7 +39,7 @@ func TestParseResultFileVariants(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
 	row := rows[0]
-	if row.DatasetName != "random" || row.InputLen != 1024 || row.OutputLen != 256 {
+	if row.DatasetName != "random" || row.InputLen != 1024 || row.OutputLen != 256 || row.Phase != "decode" {
 		t.Fatalf("row lengths were not derived: %+v", row)
 	}
 	if row.PerUserOutputTokSec != 10 {
@@ -225,6 +227,31 @@ func TestReportPathHelpers(t *testing.T) {
 	}
 	if stripped, ok := stripRunDirPrefix(runDir, filepath.Join(filepath.Base(runDir), "results", "one.json")); !ok || stripped != filepath.Join("results", "one.json") {
 		t.Fatalf("stripRunDirPrefix = %q, %t", stripped, ok)
+	}
+}
+
+func TestReportPhasesGroupRowsByExplicitAndInferredPhase(t *testing.T) {
+	report := Report{
+		RunDir:    t.TempDir(),
+		Generated: time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC),
+		Rows: []ReportRow{
+			{Profile: "p", Workload: "long-input", InputLen: 4096, OutputLen: 16},
+			{Profile: "p", Workload: "explicit decode", Phase: "decode", InputLen: 1024, OutputLen: 16},
+			{Profile: "p", Workload: "mixed", InputLen: 128, OutputLen: 16},
+		},
+	}
+
+	got := RenderMarkdown(report)
+	for _, want := range []string{"### Decode", "### Prefill", "### Mixed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("markdown report missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "### Decode") > strings.Index(got, "### Prefill") {
+		t.Fatalf("phase sections were not ranked decode before prefill:\n%s", got)
+	}
+	if phase := reportRowPhase(ReportRow{Profile: "p", Workload: "default-mixed", Phase: "mixed", InputLen: 4096, OutputLen: 16}); phase != "prefill" {
+		t.Fatalf("default mixed row phase = %q, want prefill", phase)
 	}
 }
 

@@ -255,24 +255,24 @@ func normalizedSpecBytes(runDir string, fallback []byte) []byte {
 }
 
 func insertRunData(tx *sql.Tx, runID, runDir string, spec Spec, _ RunSummary, plan []PlannedRun, now time.Time) error {
-	if err := insertRunDimensions(tx, runID, spec); err != nil {
+	if err := insertRunDimensions(tx, runID, runDir, spec); err != nil {
 		return err
 	}
 	events, _ := readEvents(filepath.Join(runDir, "events.jsonl"))
-	return insertRunExecutionData(tx, runID, runDir, plan, events, now)
+	return insertRunExecutionData(tx, runID, runDir, spec, plan, events, now)
 }
 
-func insertRunDimensions(tx *sql.Tx, runID string, spec Spec) error {
+func insertRunDimensions(tx *sql.Tx, runID, runDir string, spec Spec) error {
 	for _, insert := range []func(*sql.Tx, string, Spec) error{insertEngines, insertProfiles, insertWorkloads} {
 		if err := insert(tx, runID, spec); err != nil {
 			return err
 		}
 	}
-	return nil
+	return insertCanonicalDatasets(tx, runID, runDir, spec)
 }
 
-func insertRunExecutionData(tx *sql.Tx, runID, runDir string, plan []PlannedRun, events []Event, now time.Time) error {
-	artifactIDs, err := insertRunArtifacts(tx, runID, runDir, events)
+func insertRunExecutionData(tx *sql.Tx, runID, runDir string, spec Spec, plan []PlannedRun, events []Event, now time.Time) error {
+	artifactIDs, err := insertRunArtifacts(tx, runID, runDir, spec, events)
 	if err != nil {
 		return err
 	}
@@ -450,21 +450,139 @@ func insertWorkloads(tx *sql.Tx, runID string, spec Spec) error {
 		trafficJSON := mustJSONString(workload.BenchmarkTrafficConfig)
 		concurrencyJSON := mustJSONString(workload.MaxConcurrency)
 		if _, err := tx.Exec(`INSERT INTO workloads (
-			id, run_id, name, traffic_json, concurrency_json, samples, repeats,
-			save_detailed, capture_payload_artifacts
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			workload.Name, runID, workload.Name, trafficJSON, concurrencyJSON, workload.NumPrompts,
+			id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
+			save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			workload.Name, runID, workload.Name, workload.Phase, trafficJSON, concurrencyJSON, workload.NumPrompts,
 			workload.Repeats, boolToInt(workload.BenchmarkTrafficConfig.SaveDetailed),
-			boolToInt(workload.CapturePayloadArtifacts)); err != nil {
+			boolToInt(workload.CapturePayloadArtifacts), structuredWorkloadJSON(workload, workload.Dataset),
+			structuredWorkloadJSON(workload, workload.Request), structuredWorkloadJSON(workload, workload.Load)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func insertRunArtifacts(tx *sql.Tx, runID, runDir string, events []Event) (map[string]int64, error) {
+func structuredWorkloadJSON(workload Workload, value any) any {
+	if !hasStructuredDataset(workload) {
+		return nil
+	}
+	return nullableJSON(value)
+}
+
+func insertCanonicalDatasets(tx *sql.Tx, runID, runDir string, spec Spec) error {
+	for _, workload := range spec.Workloads {
+		if !hasStructuredDataset(workload) || strings.TrimSpace(workload.Dataset.Prepared.CanonicalPath) == "" {
+			continue
+		}
+		if err := insertCanonicalDataset(tx, runID, runDir, workload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertCanonicalDataset(tx *sql.Tx, runID, runDir string, workload Workload) error {
+	datasetID := firstNonEmpty(workload.Dataset.Prepared.DatasetID, datasetIDForWorkload(workload.Name))
+	requests, err := readCanonicalRequestFile(resolveResultPath(runDir, workload.Dataset.Prepared.CanonicalPath))
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO datasets (
+		id, run_id, workload_id, type, uri, path, split, selection, sample_count,
+		seed, config_json, canonical_path, rendered_path, request_count, sha256
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		datasetID, runID, workload.Name, workload.Dataset.Type, emptyNull(workload.Dataset.URI),
+		emptyNull(workload.Dataset.Path), emptyNull(workload.Dataset.Split), emptyNull(workload.Dataset.Selection),
+		workload.Dataset.SampleCount, intPointerNull(workload.Dataset.Seed), mustJSONString(workload.Dataset),
+		workload.Dataset.Prepared.CanonicalPath, emptyNull(workload.Dataset.Prepared.VLLMCustomPath),
+		len(requests), workload.Dataset.Prepared.SHA256)
+	if err != nil {
+		return err
+	}
+	if !workload.CapturePayloadArtifacts {
+		return nil
+	}
+	sourceIDs := map[string]int64{}
+	for _, request := range requests {
+		sourceID, err := insertSourceRecord(tx, runID, datasetID, request, sourceIDs)
+		if err != nil {
+			return err
+		}
+		if err := insertCanonicalRequest(tx, runID, datasetID, workload.Name, sourceID, request); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readCanonicalRequestFile(path string) ([]CanonicalRequest, error) {
+	rawRows, err := readJSONLines(path)
+	if err != nil {
+		return nil, err
+	}
+	requests := make([]CanonicalRequest, 0, len(rawRows))
+	for _, raw := range rawRows {
+		var request CanonicalRequest
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return nil, err
+		}
+		requests = append(requests, request)
+	}
+	return requests, nil
+}
+
+func insertSourceRecord(tx *sql.Tx, runID, datasetID string, request CanonicalRequest, seen map[string]int64) (int64, error) {
+	sourceRecordID := firstNonEmpty(request.SourceRecordID, request.ID)
+	if id := seen[sourceRecordID]; id != 0 {
+		return id, nil
+	}
+	content := request.Raw
+	if len(content) == 0 {
+		content = mustJSON(request)
+	}
+	result, err := tx.Exec(`INSERT INTO source_records (
+		run_id, dataset_id, source_record_id, ordinal, content_json, sha256, metadata_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		runID, datasetID, sourceRecordID, request.Ordinal, string(content),
+		sha256Hex(content), nullableJSON(request.Metadata))
+	if err != nil {
+		return 0, err
+	}
+	id, _ := result.LastInsertId()
+	seen[sourceRecordID] = id
+	return id, nil
+}
+
+func insertCanonicalRequest(tx *sql.Tx, runID, datasetID, workloadID string, sourceRecordRowID int64, request CanonicalRequest) error {
+	prompt := request.Prompt
+	if strings.TrimSpace(prompt) == "" {
+		prompt = messagesPrompt(request.Messages)
+	}
+	_, err := tx.Exec(`INSERT INTO canonical_requests (
+		id, run_id, dataset_id, source_record_row_id, workload_id, request_id, ordinal,
+		conversation_id, turn_index, mode, prompt_sha256, max_output_tokens,
+		input_tokens_expected, output_tokens_expected, arrival_offset_ms,
+		messages_json, attachments_json, metadata_json, canonical_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		canonicalRequestRowID(datasetID, request), runID, datasetID, sourceRecordRowID, workloadID, request.ID, request.Ordinal,
+		emptyNull(request.ConversationID), request.TurnIndex, request.Mode, emptyNull(sha256Maybe(prompt)),
+		intNull(request.MaxOutputTokens), intNull(request.InputTokensExpected), intNull(request.OutputTokensExpected),
+		request.ArrivalOffsetMillis, nullableJSON(request.Messages), nullableJSON(request.Attachments),
+		nullableJSON(request.Metadata), mustJSONString(request))
+	return err
+}
+
+func canonicalRequestRowID(datasetID string, request CanonicalRequest) string {
+	return fmt.Sprintf("%s:%06d:%s", datasetID, request.Ordinal, firstNonEmpty(request.ID, "request"))
+}
+
+func insertRunArtifacts(tx *sql.Tx, runID, runDir string, spec Spec, events []Event) (map[string]int64, error) {
 	inserter := artifactInserter{tx: tx, runID: runID, runDir: runDir, ids: map[string]int64{}}
 	if err := inserter.addDefaultArtifacts(); err != nil {
+		return nil, err
+	}
+	if err := inserter.addDatasetArtifacts(spec); err != nil {
 		return nil, err
 	}
 	if err := inserter.addEventArtifacts(events); err != nil {
@@ -500,6 +618,44 @@ func (inserter artifactInserter) addDefaultArtifacts() error {
 		}
 	}
 	return nil
+}
+
+func (inserter artifactInserter) addDatasetArtifacts(spec Spec) error {
+	for _, workload := range spec.Workloads {
+		for _, artifact := range datasetArtifactsForWorkload(workload) {
+			if err := inserter.add(artifact); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func datasetArtifactsForWorkload(workload Workload) []artifactSpec {
+	if !workload.CapturePayloadArtifacts {
+		return nil
+	}
+	prepared := workload.Dataset.Prepared
+	rows := []struct {
+		kind string
+		path string
+	}{
+		{"canonical_dataset", prepared.CanonicalPath},
+		{"engine_dataset", prepared.VLLMCustomPath},
+	}
+	artifacts := make([]artifactSpec, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.path) == "" {
+			continue
+		}
+		artifacts = append(artifacts, artifactSpec{
+			kind:      row.kind,
+			name:      filepath.Base(row.path),
+			path:      row.path,
+			mediaType: "application/x-ndjson",
+		})
+	}
+	return artifacts
 }
 
 func (inserter artifactInserter) addEventArtifacts(events []Event) error {
@@ -1058,6 +1214,13 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func sha256Maybe(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return sha256Hex([]byte(value))
+}
+
 func nullableJSON(value any) any {
 	data, err := json.Marshal(value)
 	if err != nil || string(data) == "null" || string(data) == "{}" {
@@ -1125,6 +1288,13 @@ func intNull(value int) any {
 		return nil
 	}
 	return value
+}
+
+func intPointerNull(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func zeroNullInt(value int64) any {
@@ -1224,14 +1394,70 @@ CREATE TABLE workloads (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
+  phase TEXT NOT NULL DEFAULT 'mixed',
   traffic_json TEXT NOT NULL CHECK (json_valid(traffic_json)),
   concurrency_json TEXT NOT NULL CHECK (json_valid(concurrency_json)),
   samples INTEGER NOT NULL CHECK (samples > 0),
   repeats INTEGER NOT NULL DEFAULT 1 CHECK (repeats > 0),
   save_detailed INTEGER NOT NULL DEFAULT 1 CHECK (save_detailed IN (0, 1)),
   capture_payload_artifacts INTEGER NOT NULL DEFAULT 0 CHECK (capture_payload_artifacts IN (0, 1)),
+  dataset_json TEXT CHECK (dataset_json IS NULL OR json_valid(dataset_json)),
+  request_json TEXT CHECK (request_json IS NULL OR json_valid(request_json)),
+  load_json TEXT CHECK (load_json IS NULL OR json_valid(load_json)),
   metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json)),
   UNIQUE (run_id, name)
+);
+CREATE TABLE datasets (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+  workload_id TEXT NOT NULL REFERENCES workloads(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  uri TEXT,
+  path TEXT,
+  split TEXT,
+  selection TEXT,
+  sample_count INTEGER NOT NULL CHECK (sample_count > 0),
+  seed INTEGER,
+  config_json TEXT NOT NULL CHECK (json_valid(config_json)),
+  canonical_path TEXT,
+  rendered_path TEXT,
+  request_count INTEGER NOT NULL CHECK (request_count >= 0),
+  sha256 TEXT,
+  metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json)),
+  UNIQUE (run_id, workload_id)
+);
+CREATE TABLE source_records (
+  id INTEGER PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+  dataset_id TEXT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
+  source_record_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  content_json TEXT NOT NULL CHECK (json_valid(content_json)),
+  sha256 TEXT NOT NULL,
+  metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json)),
+  UNIQUE (dataset_id, source_record_id)
+);
+CREATE TABLE canonical_requests (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+  dataset_id TEXT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
+  source_record_row_id INTEGER REFERENCES source_records(id) ON DELETE SET NULL,
+  workload_id TEXT NOT NULL REFERENCES workloads(id) ON DELETE CASCADE,
+  request_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  conversation_id TEXT,
+  turn_index INTEGER,
+  mode TEXT NOT NULL,
+  prompt_sha256 TEXT,
+  max_output_tokens INTEGER CHECK (max_output_tokens IS NULL OR max_output_tokens >= 0),
+  input_tokens_expected INTEGER CHECK (input_tokens_expected IS NULL OR input_tokens_expected >= 0),
+  output_tokens_expected INTEGER CHECK (output_tokens_expected IS NULL OR output_tokens_expected >= 0),
+  arrival_offset_ms INTEGER NOT NULL DEFAULT 0,
+  messages_json TEXT CHECK (messages_json IS NULL OR json_valid(messages_json)),
+  attachments_json TEXT CHECK (attachments_json IS NULL OR json_valid(attachments_json)),
+  metadata_json TEXT CHECK (metadata_json IS NULL OR json_valid(metadata_json)),
+  canonical_json TEXT NOT NULL CHECK (json_valid(canonical_json)),
+  UNIQUE (dataset_id, ordinal)
 );
 CREATE TABLE phases (
   id INTEGER PRIMARY KEY,
@@ -1405,6 +1631,8 @@ CREATE TABLE reports (
 );
 CREATE INDEX idx_measurements_lookup ON measurements (run_id, profile_id, workload_id, concurrency);
 CREATE INDEX idx_metric_stats_metric ON metric_stats (metric, unit, measurement_id);
+CREATE INDEX idx_canonical_requests_dataset ON canonical_requests (dataset_id, ordinal);
+CREATE INDEX idx_source_records_dataset ON source_records (dataset_id, ordinal);
 CREATE INDEX idx_requests_measurement ON requests (measurement_id, status);
 CREATE INDEX idx_request_stream_events_request ON request_stream_events (request_row_id, event_index);
 CREATE INDEX idx_telemetry_samples_series_time ON telemetry_samples (series_id, timestamp);

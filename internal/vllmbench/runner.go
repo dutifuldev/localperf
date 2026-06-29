@@ -116,7 +116,7 @@ func newRunSession(ctx context.Context, spec Spec, opts RunOptions) (*runSession
 		return nil, err
 	}
 	session := initRunSession(ctx, spec, opts)
-	if err := prepareRunDir(session); err != nil {
+	if err := prepareSessionSpec(ctx, session); err != nil {
 		return session, err
 	}
 	events, err := newEventWriter(session.summary.EventsPath)
@@ -124,10 +124,24 @@ func newRunSession(ctx context.Context, spec Spec, opts RunOptions) (*runSession
 		return session, err
 	}
 	session.events = events
-	session.plan = BuildPlan(spec, session.runDir)
+	session.plan = BuildPlan(session.spec, session.runDir)
 	session.summary.PlannedRuns = len(session.plan)
 	writePlanEvents(session)
 	return session, nil
+}
+
+func prepareSessionSpec(ctx context.Context, session *runSession) error {
+	if err := prepareRunDirs(session); err != nil {
+		return err
+	}
+	if err := PrepareDatasets(ctx, &session.spec, session.runDir); err != nil {
+		return err
+	}
+	ApplyDefaults(&session.spec)
+	if err := ValidateSpec(session.spec); err != nil {
+		return err
+	}
+	return writeJSONFile(session.summary.SpecPath, RedactedSpec(session.spec))
 }
 
 func initRunSession(ctx context.Context, spec Spec, opts RunOptions) *runSession {
@@ -144,13 +158,13 @@ func initRunSession(ctx context.Context, spec Spec, opts RunOptions) *runSession
 	return &runSession{ctx: ctx, spec: spec, opts: opts, runDir: runDir, summary: summary, processes: map[string]*serverProcess{}}
 }
 
-func prepareRunDir(session *runSession) error {
-	for _, name := range []string{"results", "logs"} {
+func prepareRunDirs(session *runSession) error {
+	for _, name := range []string{"results", "logs", "datasets"} {
 		if err := os.MkdirAll(filepath.Join(session.runDir, name), 0o755); err != nil {
 			return err
 		}
 	}
-	return writeJSONFile(session.summary.SpecPath, RedactedSpec(session.spec))
+	return nil
 }
 
 func writePlanEvents(session *runSession) {
@@ -754,10 +768,12 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	row.ServerMaxNumSeqs = planned.Profile.MaxNumSeqs
 	row.Concurrency = planned.Concurrency
 	row.Repeat = planned.Repeat
+	row.Phase = planned.Workload.Phase
 	row.RandomInputLen = planned.Workload.RandomInputLen
 	row.RandomOutputLen = planned.Workload.RandomOutputLen
 	row.DatasetName = planned.Workload.DatasetName
 	row.ResultFile = planned.ResultFile
+	applyWorkloadFields(&row, planned.Workload)
 	deriveReportRowFields(&row)
 	if failed := failedRequestCount(rows); failed > 0 {
 		return &row, fmt.Errorf("benchmark result reported %d failed request(s)", failed)
