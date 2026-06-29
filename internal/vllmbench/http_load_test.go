@@ -252,6 +252,48 @@ func TestFeedHTTPJobsAndSleepContext(t *testing.T) {
 	}
 }
 
+func TestScheduleHTTPRequestsRecordsUndispatchedCancellation(t *testing.T) {
+	server, host, port := fakeOpenAIServer(t)
+	defer server.Close()
+	profile := Profile{Host: host, Port: port, Model: "model"}
+	workload := Workload{
+		NumPrompts: 2,
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:     "openai-chat",
+			Endpoint:    "/v1/chat/completions",
+			RequestRate: "1",
+		},
+	}
+	requests := []CanonicalRequest{
+		{ID: "one", Messages: []Message{{Role: "user", Content: "hello"}}, MaxOutputTokens: 8},
+		{ID: "two", Messages: []Message{{Role: "user", Content: "bye"}}, MaxOutputTokens: 8},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	samples, err := scheduleHTTPRequests(ctx, openAIHTTPClient{
+		baseURL:  baseURL(profile),
+		profile:  profile,
+		workload: workload,
+		client:   server.Client(),
+	}, requests, PlannedRun{Profile: profile, Workload: workload, Concurrency: 1})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("scheduleHTTPRequests error = %v, want deadline exceeded", err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("samples = %+v, want two samples including undispatched request", samples)
+	}
+	if samples[0].Status != "completed" {
+		t.Fatalf("first sample status = %q, want completed", samples[0].Status)
+	}
+	if samples[1].Status != "failed" || samples[1].ErrorType != "deadline_exceeded" {
+		t.Fatalf("second sample = %+v, want failed deadline sample", samples[1])
+	}
+	result := buildHTTPBenchmarkResult(PlannedRun{Workload: workload, Concurrency: 1}, samples, time.Now().Add(-time.Second), time.Now())
+	if result.Completed != 1 || result.Failed != 1 {
+		t.Fatalf("result completed/failed = %d/%d, want 1/1", result.Completed, result.Failed)
+	}
+}
+
 func TestRequestRateDelayValues(t *testing.T) {
 	cases := []struct {
 		value string

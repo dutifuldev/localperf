@@ -314,10 +314,10 @@ func scheduleHTTPRequests(ctx context.Context, client openAIHTTPClient, requests
 	close(results)
 	samples := collectHTTPSamples(results)
 	if feedErr != nil {
-		return samples, feedErr
+		return addUndispatchedHTTPSamples(samples, requests, feedErr, time.Now().UTC()), feedErr
 	}
 	if err := ctx.Err(); err != nil {
-		return samples, err
+		return addUndispatchedHTTPSamples(samples, requests, err, time.Now().UTC()), err
 	}
 	return samples, nil
 }
@@ -348,6 +348,53 @@ func collectHTTPSamples(results <-chan RequestSample) []RequestSample {
 		return samples[i].RequestIndex < samples[j].RequestIndex
 	})
 	return samples
+}
+
+func addUndispatchedHTTPSamples(samples []RequestSample, requests []CanonicalRequest, cause error, completed time.Time) []RequestSample {
+	if len(samples) >= len(requests) {
+		return samples
+	}
+	seen := make([]bool, len(requests))
+	for _, sample := range samples {
+		if sample.RequestIndex >= 0 && sample.RequestIndex < len(seen) {
+			seen[sample.RequestIndex] = true
+		}
+	}
+	for i, request := range requests {
+		if seen[i] {
+			continue
+		}
+		samples = append(samples, undispatchedHTTPSample(i, request, cause, completed))
+	}
+	sort.Slice(samples, func(i, j int) bool {
+		return samples[i].RequestIndex < samples[j].RequestIndex
+	})
+	return samples
+}
+
+func undispatchedHTTPSample(index int, request CanonicalRequest, cause error, completed time.Time) RequestSample {
+	return RequestSample{
+		RequestIndex: index,
+		RequestID:    request.ID,
+		Status:       "failed",
+		Streamed:     false,
+		StartedAt:    completed,
+		CompletedAt:  &completed,
+		PromptSHA256: sha256Maybe(requestPromptText(request)),
+		ErrorType:    contextErrorType(cause),
+		ErrorMessage: cause.Error(),
+	}
+}
+
+func contextErrorType(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	default:
+		return "canceled"
+	}
 }
 
 func requestRateDelay(value string) (time.Duration, error) {
