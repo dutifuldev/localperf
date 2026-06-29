@@ -981,6 +981,28 @@ func TestPrepareDatasetsHonorsCompletionRequestMode(t *testing.T) {
 	}
 }
 
+func TestPrepareDatasetsPreservesCompletionSkipChatTemplate(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	spec.Workloads[0].Request.Mode = "completion"
+	spec.Workloads[0].BenchmarkTrafficConfig.SkipChatTemplate = true
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+	command := ShellQuote(BenchCommand(spec, BuildPlan(spec, runDir)[0]).Args)
+	if !strings.Contains(command, "--skip-chat-template") {
+		t.Fatalf("completion-mode command did not preserve skip_chat_template: %q", command)
+	}
+}
+
 func TestPrepareDatasetsRejectsUnsupportedRequestMode(t *testing.T) {
 	dir := t.TempDir()
 	datasetPath := writeShareGPTFixture(t, dir)

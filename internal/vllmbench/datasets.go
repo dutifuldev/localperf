@@ -247,8 +247,6 @@ func applyMaterializedDatasetToWorkload(workload *Workload, requestCount int, vl
 	}
 	if workload.BenchmarkTrafficConfig.Backend == "openai-chat" {
 		workload.BenchmarkTrafficConfig.SkipChatTemplate = true
-	} else {
-		workload.BenchmarkTrafficConfig.SkipChatTemplate = false
 	}
 	workload.BenchmarkTrafficConfig.RequestRate = firstNonEmpty(workload.BenchmarkTrafficConfig.RequestRate, workload.Load.RequestRate, "inf")
 	if len(workload.MaxConcurrency) == 0 && len(workload.Load.MaxConcurrency) > 0 {
