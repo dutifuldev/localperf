@@ -1,7 +1,8 @@
 # LocalPerf
 
-LocalPerf benchmarks local LLM inference servers and keeps the evidence in one
-portable run artifact.
+LocalPerf is a local LLM inference benchmark CLI.
+It runs benchmark plans against local inference servers and stores the evidence
+in one portable run artifact.
 
 It is currently focused on vLLM-managed runs, with an engine-neutral benchmark
 spec and CLI shape:
