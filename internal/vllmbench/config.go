@@ -736,6 +736,7 @@ func validateWorkloadFields(prefix string, workload Workload) []string {
 	issues = append(issues, validateWorkloadPositiveFields(prefix, workload)...)
 	issues = append(issues, validateWorkloadPhase(prefix, workload)...)
 	issues = append(issues, validateLoadGenerator(prefix, workload.LoadGenerator)...)
+	issues = append(issues, validateLoadGeneratorDataset(prefix, workload)...)
 	return append(issues, validateStructuredDataset(prefix, workload)...)
 }
 
@@ -774,6 +775,16 @@ func validateLoadGenerator(prefix, generator string) []string {
 	default:
 		return []string{prefix + ": unsupported load_generator " + generator}
 	}
+}
+
+func validateLoadGeneratorDataset(prefix string, workload Workload) []string {
+	if normalizeLoadGenerator(workload.LoadGenerator) != LoadGeneratorLocalPerfHTTP {
+		return nil
+	}
+	if workload.DatasetName == "random" || hasHTTPDatasetPath(workload) || hasStructuredDataset(workload) {
+		return nil
+	}
+	return []string{prefix + ": localperf_http supports random or canonical structured datasets, not dataset_name " + workload.DatasetName}
 }
 
 func validateStructuredDataset(prefix string, workload Workload) []string {

@@ -64,6 +64,23 @@ func TestLoadGeneratorAliasesNormalize(t *testing.T) {
 	}
 }
 
+func TestValidateLocalPerfHTTPRejectsUnsupportedDatasetName(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].BenchmarkTrafficConfig.DatasetName = "sonnet"
+	spec.Workloads[0].BenchmarkTrafficConfig.RandomInputLen = 0
+	spec.Workloads[0].BenchmarkTrafficConfig.RandomOutputLen = 0
+	ApplyDefaults(&spec)
+	err := ValidateSpec(spec)
+	if err == nil || !strings.Contains(err.Error(), "localperf_http supports random or canonical structured datasets") {
+		t.Fatalf("ValidateSpec error = %v, want localperf_http dataset rejection", err)
+	}
+	spec.Workloads[0].BenchmarkTrafficConfig.DatasetPath = "/tmp/canonical.jsonl"
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec with canonical dataset path: %v", err)
+	}
+}
+
 func TestBenchCommandSupportsStandardDatasetKnobs(t *testing.T) {
 	spec := testSpec()
 	seed := 7

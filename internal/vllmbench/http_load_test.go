@@ -28,6 +28,10 @@ func TestValidateLocalPerfHTTPResult(t *testing.T) {
 	if err := validateParsedResult(empty, "localperf_http"); err == nil {
 		t.Fatal("expected empty result to fail validation")
 	}
+
+	if err := localPerfHTTPResultError(&HTTPBenchmarkResult{Failed: 1}); err == nil {
+		t.Fatal("expected failed HTTP samples to produce run error")
+	}
 }
 
 func TestStructuredHTTPRequestsReadsPreparedCanonicalDataset(t *testing.T) {
