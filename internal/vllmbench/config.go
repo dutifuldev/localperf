@@ -534,6 +534,7 @@ func ValidateSpec(spec Spec) error {
 	profileIssues, profileNames := validateProfiles(spec, engineNames)
 	issues = append(issues, engineIssues...)
 	issues = append(issues, profileIssues...)
+	issues = append(issues, validateEndpointOnlyProfileUsage(spec)...)
 	issues = append(issues, validateWarmup(spec.Warmup)...)
 	issues = append(issues, validateWorkloads(spec.Workloads, profileNames)...)
 	if len(issues) > 0 {
@@ -656,6 +657,73 @@ func validateProfileFields(prefix string, profile Profile, engineNames map[strin
 
 func profileRequiresPort(profile Profile) bool {
 	return profile.Managed || NormalizeEndpointBaseURL(profile.EndpointBaseURL) == ""
+}
+
+func validateEndpointOnlyProfileUsage(spec Spec) []string {
+	return endpointOnlyProfileIssueMessages(invalidEndpointOnlyProfiles(spec))
+}
+
+func invalidEndpointOnlyProfiles(spec Spec) map[string]bool {
+	endpointOnly := endpointOnlyProfiles(spec.Profiles)
+	if len(endpointOnly) == 0 {
+		return nil
+	}
+	invalid := map[string]bool{}
+	addWarmupEndpointOnlyProfiles(invalid, endpointOnly, spec.Warmup.Enabled)
+	addWorkloadEndpointOnlyProfiles(invalid, endpointOnly, spec.Workloads)
+	return invalid
+}
+
+func addWarmupEndpointOnlyProfiles(invalid, endpointOnly map[string]bool, warmupEnabled bool) {
+	if !warmupEnabled {
+		return
+	}
+	for name := range endpointOnly {
+		invalid[name] = true
+	}
+}
+
+func addWorkloadEndpointOnlyProfiles(invalid, endpointOnly map[string]bool, workloads []Workload) {
+	for _, workload := range workloads {
+		if normalizeLoadGenerator(workload.LoadGenerator) == LoadGeneratorLocalPerfHTTP {
+			continue
+		}
+		for name := range endpointOnly {
+			if workloadReferencesProfile(workload, name) {
+				invalid[name] = true
+			}
+		}
+	}
+}
+
+func endpointOnlyProfileIssueMessages(invalid map[string]bool) []string {
+	var issues []string
+	for _, name := range collections.SortedKeys(invalid) {
+		issues = append(issues, "profile "+name+": port must be positive unless warmup is disabled and all referenced workloads use localperf_http")
+	}
+	return issues
+}
+
+func endpointOnlyProfiles(profiles []Profile) map[string]bool {
+	out := map[string]bool{}
+	for _, profile := range profiles {
+		if profile.Port <= 0 && !profileRequiresPort(profile) {
+			out[profile.Name] = true
+		}
+	}
+	return out
+}
+
+func workloadReferencesProfile(workload Workload, profileName string) bool {
+	if len(workload.Profiles) == 0 {
+		return true
+	}
+	for _, name := range workload.Profiles {
+		if name == profileName {
+			return true
+		}
+	}
+	return false
 }
 
 func validateManagedProfile(prefix string, profile Profile, runner RunnerConfig) []string {

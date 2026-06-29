@@ -660,7 +660,7 @@ func datasetArtifactsForWorkload(workload Workload) []artifactSpec {
 
 func (inserter artifactInserter) addEventArtifacts(events []Event) error {
 	for _, event := range events {
-		if eventHasImportableResult(event) {
+		if eventHasArtifactResult(event) {
 			name := rawResultArtifactName(event)
 			if err := inserter.add(artifactSpec{"bench_raw_result", name, event.ResultFile, "application/json"}); err != nil {
 				return err
@@ -1197,6 +1197,10 @@ func importableFinishEvent(events []Event, planned PlannedRun) Event {
 
 func eventHasImportableResult(event Event) bool {
 	return event.Type == "workload_finish" && event.ResultFile != "" && (event.Error == "" || eventDetailBool(event, "result_written"))
+}
+
+func eventHasArtifactResult(event Event) bool {
+	return eventHasImportableResult(event) || (event.Type == "warmup_finish" && event.ResultFile != "")
 }
 
 func eventDetailBool(event Event, key string) bool {

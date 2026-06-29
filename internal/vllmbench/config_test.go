@@ -69,6 +69,11 @@ func TestValidateSpecAllowsUnmanagedEndpointOnlyProfile(t *testing.T) {
 	spec.Profiles[0].Managed = false
 	spec.Profiles[0].Port = 0
 	spec.Profiles[0].EndpointBaseURL = "https://api.example.com/v1"
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "all referenced workloads use localperf_http") {
+		t.Fatalf("ValidateSpec endpoint-only vllm_bench profile = %v, want port issue", err)
+	}
+
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
 	if err := ValidateSpec(spec); err != nil {
 		t.Fatalf("ValidateSpec endpoint-only profile: %v", err)
 	}
@@ -76,6 +81,23 @@ func TestValidateSpecAllowsUnmanagedEndpointOnlyProfile(t *testing.T) {
 		t.Fatalf("baseURL = %q, want normalized endpoint URL", got)
 	}
 
+	spec.Warmup = WarmupConfig{
+		Enabled:        true,
+		NumPrompts:     1,
+		MaxConcurrency: 1,
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "random",
+			RandomInputLen:  1,
+			RandomOutputLen: 1,
+			RequestRate:     "inf",
+		},
+	}
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "all referenced workloads use localperf_http") {
+		t.Fatalf("ValidateSpec endpoint-only warmup profile = %v, want port issue", err)
+	}
+
+	spec.Warmup.Enabled = false
 	spec.Profiles[0].Managed = true
 	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "port must be positive") {
 		t.Fatalf("ValidateSpec managed endpoint profile = %v, want port issue", err)
@@ -1672,6 +1694,16 @@ func TestRowsByMeasurementRequiresResultWrittenForErroredEvents(t *testing.T) {
 	row := rows[measurementKey("profile", "workload", 1, 0)]
 	if row.Completed != 1 || row.Failed != 1 {
 		t.Fatalf("row completed/failed = %d/%d, want partial result imported", row.Completed, row.Failed)
+	}
+}
+
+func TestEventHasArtifactResultIncludesWarmup(t *testing.T) {
+	event := Event{Type: "warmup_finish", ResultFile: filepath.Join("results", "warmup.json"), Error: "warmup result failed validation"}
+	if !eventHasArtifactResult(event) {
+		t.Fatal("warmup result event should be preserved as a raw artifact")
+	}
+	if eventHasImportableResult(event) {
+		t.Fatal("warmup result event should not be imported as a measurement row")
 	}
 }
 

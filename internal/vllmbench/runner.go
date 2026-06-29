@@ -755,6 +755,9 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		DurationSeconds: result.Duration.Seconds(),
 		ExitCode:        result.ExitCode,
 	}
+	if result.ResultWritten {
+		event.Details = mustJSON(map[string]any{"result_written": true})
+	}
 	if err != nil {
 		event.Error = err.Error()
 		events.Write(event)
