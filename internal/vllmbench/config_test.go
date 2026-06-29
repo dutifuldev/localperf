@@ -64,6 +64,24 @@ func TestLoadGeneratorAliasesNormalize(t *testing.T) {
 	}
 }
 
+func TestValidateSpecAllowsUnmanagedEndpointOnlyProfile(t *testing.T) {
+	spec := testSpec()
+	spec.Profiles[0].Managed = false
+	spec.Profiles[0].Port = 0
+	spec.Profiles[0].EndpointBaseURL = "https://api.example.com/v1"
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec endpoint-only profile: %v", err)
+	}
+	if got := baseURL(spec.Profiles[0]); got != "https://api.example.com" {
+		t.Fatalf("baseURL = %q, want normalized endpoint URL", got)
+	}
+
+	spec.Profiles[0].Managed = true
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "port must be positive") {
+		t.Fatalf("ValidateSpec managed endpoint profile = %v, want port issue", err)
+	}
+}
+
 func TestValidateLocalPerfHTTPRejectsUnsupportedDatasetName(t *testing.T) {
 	spec := testSpec()
 	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
@@ -1629,6 +1647,52 @@ func TestInsertMeasurementDetailsReadsFallbackResultFile(t *testing.T) {
 	}
 	if requestRows != 1 {
 		t.Fatalf("request rows = %d, want fallback result sample imported", requestRows)
+	}
+}
+
+func TestRowsByMeasurementRequiresResultWrittenForErroredEvents(t *testing.T) {
+	runDir := t.TempDir()
+	resultFile := filepath.Join("results", "partial.json")
+	writeFile(t, filepath.Join(runDir, resultFile), `{"completed":1,"failed":1}`)
+	event := Event{
+		Timestamp:   time.Now().UTC(),
+		Type:        "workload_finish",
+		Profile:     "profile",
+		Workload:    "workload",
+		Concurrency: 1,
+		ResultFile:  resultFile,
+		Error:       "failed before writing a result",
+	}
+	if rows := rowsByMeasurement(runDir, []Event{event}); len(rows) != 0 {
+		t.Fatalf("rows = %+v, want errored event without result_written ignored", rows)
+	}
+
+	event.Details = mustJSON(map[string]any{"result_written": true})
+	rows := rowsByMeasurement(runDir, []Event{event})
+	row := rows[measurementKey("profile", "workload", 1, 0)]
+	if row.Completed != 1 || row.Failed != 1 {
+		t.Fatalf("row completed/failed = %d/%d, want partial result imported", row.Completed, row.Failed)
+	}
+}
+
+func TestArtifactIDForPathVariants(t *testing.T) {
+	ids := map[string]int64{
+		"results/result.json":                  7,
+		filepath.Clean("nested/../clean.json"): 11,
+	}
+	for _, tt := range []struct {
+		path string
+		want int64
+	}{
+		{"", 0},
+		{"results/result.json", 7},
+		{"./results/result.json", 7},
+		{"nested/../clean.json", 11},
+		{"missing.json", 0},
+	} {
+		if got := artifactIDForPath(ids, tt.path); got != tt.want {
+			t.Fatalf("artifactIDForPath(%q) = %d, want %d", tt.path, got, tt.want)
+		}
 	}
 }
 

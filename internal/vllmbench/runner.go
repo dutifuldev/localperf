@@ -690,6 +690,9 @@ func runWarmup(ctx context.Context, spec Spec, profile Profile, runDir string, e
 		DurationSeconds: result.Duration.Seconds(),
 		ExitCode:        result.ExitCode,
 	}
+	if result.ResultWritten {
+		event.Details = mustJSON(map[string]any{"result_written": true})
+	}
 	if err != nil {
 		event.Error = err.Error()
 		events.Write(event)
@@ -809,8 +812,9 @@ func failedRequestCount(rows []ReportRow) int {
 }
 
 type commandResult struct {
-	Duration time.Duration
-	ExitCode int
+	Duration      time.Duration
+	ExitCode      int
+	ResultWritten bool
 }
 
 func executeCommand(ctx context.Context, command CommandSpec, logPath string, timeout time.Duration, minMemAvailableGiB float64, pollInterval time.Duration) (commandResult, error) {

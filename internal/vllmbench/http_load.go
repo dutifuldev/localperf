@@ -147,8 +147,8 @@ func executeLocalPerfHTTPBench(ctx context.Context, spec Spec, planned PlannedRu
 	result, runErr := runLocalPerfHTTPBenchmark(runCtx, planned)
 	duration := time.Since(start)
 	memoryErr := stopLocalPerfHTTPMemoryMonitor(cancel, memoryMonitor)
-	runErr = persistLocalPerfHTTPResult(planned.ResultFile, logPath, result, duration, runErr, memoryErr)
-	commandResult := commandResult{Duration: duration, ExitCode: localPerfHTTPExitCode(runCtx, runErr, memoryErr, result)}
+	resultWritten, runErr := persistLocalPerfHTTPResult(planned.ResultFile, logPath, result, duration, runErr, memoryErr)
+	commandResult := commandResult{Duration: duration, ExitCode: localPerfHTTPExitCode(runCtx, runErr, memoryErr, result), ResultWritten: resultWritten}
 	return commandResult, localPerfHTTPRunError(runCtx, spec, runErr, memoryErr)
 }
 
@@ -165,22 +165,25 @@ func stopLocalPerfHTTPMemoryMonitor(cancel context.CancelFunc, memoryMonitor <-c
 	return <-memoryMonitor
 }
 
-func persistLocalPerfHTTPResult(resultFile, logPath string, result *HTTPBenchmarkResult, duration time.Duration, runErr, memoryErr error) error {
-	runErr = writeLocalPerfHTTPResultFile(resultFile, result, runErr)
+func persistLocalPerfHTTPResult(resultFile, logPath string, result *HTTPBenchmarkResult, duration time.Duration, runErr, memoryErr error) (bool, error) {
+	resultWritten, runErr := writeLocalPerfHTTPResultFile(resultFile, result, runErr)
 	if err := writeLocalPerfHTTPLog(logPath, result, duration, runErr, memoryErr); err != nil && runErr == nil {
-		return err
+		return resultWritten, err
 	}
-	return runErr
+	return resultWritten, runErr
 }
 
-func writeLocalPerfHTTPResultFile(resultFile string, result *HTTPBenchmarkResult, runErr error) error {
+func writeLocalPerfHTTPResultFile(resultFile string, result *HTTPBenchmarkResult, runErr error) (bool, error) {
 	if result == nil {
-		return runErr
+		return false, runErr
 	}
-	if err := writeJSONFile(resultFile, result); err != nil && runErr == nil {
-		return err
+	if err := writeJSONFile(resultFile, result); err != nil {
+		if runErr == nil {
+			return false, err
+		}
+		return false, runErr
 	}
-	return runErr
+	return true, runErr
 }
 
 func localPerfHTTPExitCode(runCtx context.Context, runErr, memoryErr error, result *HTTPBenchmarkResult) int {

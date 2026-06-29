@@ -660,7 +660,7 @@ func datasetArtifactsForWorkload(workload Workload) []artifactSpec {
 
 func (inserter artifactInserter) addEventArtifacts(events []Event) error {
 	for _, event := range events {
-		if event.ResultFile != "" {
+		if eventHasImportableResult(event) {
 			name := rawResultArtifactName(event)
 			if err := inserter.add(artifactSpec{"bench_raw_result", name, event.ResultFile, "application/json"}); err != nil {
 				return err
@@ -873,7 +873,7 @@ func measurementRawArtifactID(row ReportRow, events []Event, planned PlannedRun,
 	if row.ResultFile != "" {
 		return artifactIDForPath(artifactIDs, row.ResultFile)
 	}
-	if event := finishEvent(events, planned); event.ResultFile != "" {
+	if event := importableFinishEvent(events, planned); event.ResultFile != "" {
 		return artifactIDForPath(artifactIDs, event.ResultFile)
 	}
 	return 0
@@ -883,7 +883,7 @@ func measurementResultFile(row ReportRow, events []Event, planned PlannedRun) st
 	if row.ResultFile != "" {
 		return row.ResultFile
 	}
-	return finishEvent(events, planned).ResultFile
+	return importableFinishEvent(events, planned).ResultFile
 }
 
 func insertMeasurementDetails(tx *sql.Tx, runDir string, measurementID int64, row ReportRow, resultFile string) error {
@@ -1172,7 +1172,7 @@ func insertReports(tx *sql.Tx, runID string, artifactIDs map[string]int64, creat
 func rowsByMeasurement(runDir string, events []Event) map[string]ReportRow {
 	out := map[string]ReportRow{}
 	for _, event := range events {
-		if event.Type != "workload_finish" || event.ResultFile == "" {
+		if !eventHasImportableResult(event) {
 			continue
 		}
 		rows, err := ParseResultFile(resolveResultPath(runDir, event.ResultFile))
@@ -1184,6 +1184,30 @@ func rowsByMeasurement(runDir string, events []Event) map[string]ReportRow {
 		out[eventMeasurementKey(event)] = row
 	}
 	return out
+}
+
+func importableFinishEvent(events []Event, planned PlannedRun) Event {
+	for _, event := range events {
+		if eventMatchesPlanned(event, planned) && eventHasImportableResult(event) {
+			return event
+		}
+	}
+	return Event{}
+}
+
+func eventHasImportableResult(event Event) bool {
+	return event.Type == "workload_finish" && event.ResultFile != "" && (event.Error == "" || eventDetailBool(event, "result_written"))
+}
+
+func eventDetailBool(event Event, key string) bool {
+	if len(event.Details) == 0 {
+		return false
+	}
+	var details map[string]bool
+	if err := json.Unmarshal(event.Details, &details); err != nil {
+		return false
+	}
+	return details[key]
 }
 
 func measurementStatus(events []Event, planned PlannedRun) string {
@@ -1229,15 +1253,6 @@ func measurementTimes(events []Event, planned PlannedRun) (*time.Time, *time.Tim
 		}
 	}
 	return start, end
-}
-
-func finishEvent(events []Event, planned PlannedRun) Event {
-	for _, event := range events {
-		if eventMatchesPlanned(event, planned) && event.Type == "workload_finish" {
-			return event
-		}
-	}
-	return Event{}
 }
 
 func eventMatchesPlanned(event Event, planned PlannedRun) bool {

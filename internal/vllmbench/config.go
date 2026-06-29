@@ -639,7 +639,7 @@ func validateSlug(prefix, label, name string, reserved map[string]string, slugs 
 
 func validateProfileFields(prefix string, profile Profile, engineNames map[string]bool) []string {
 	var issues []string
-	if profile.Port <= 0 {
+	if profile.Port <= 0 && profileRequiresPort(profile) {
 		issues = append(issues, prefix+": port must be positive")
 	}
 	if strings.TrimSpace(profile.Model) == "" {
@@ -652,6 +652,10 @@ func validateProfileFields(prefix string, profile Profile, engineNames map[strin
 		issues = append(issues, prefix+": unknown engine "+profile.Engine)
 	}
 	return issues
+}
+
+func profileRequiresPort(profile Profile) bool {
+	return profile.Managed || NormalizeEndpointBaseURL(profile.EndpointBaseURL) == ""
 }
 
 func validateManagedProfile(prefix string, profile Profile, runner RunnerConfig) []string {
