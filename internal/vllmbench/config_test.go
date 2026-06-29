@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -1361,6 +1363,66 @@ func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
 	}
 }
 
+func TestExecuteLocalPerfHTTPRecordsRequestSamples(t *testing.T) {
+	server, host, port := fakeOpenAIServer(t)
+	defer server.Close()
+	spec := testSpec()
+	spec.Name = "localperf-http-request-samples"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Host = host
+	spec.Profiles[0].Port = port
+	spec.Profiles[0].Managed = false
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{testRandomWorkload("localperf-http", []string{spec.Profiles[0].Name}, 64, 8, 3, []int{2})}
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	ApplyDefaults(&spec)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if summary.CompletedRuns != 1 || summary.FailedRuns != 0 {
+		t.Fatalf("summary = %+v, want one completed run", summary)
+	}
+	if len(summary.Rows) != 1 {
+		t.Fatalf("summary rows = %d, want 1", len(summary.Rows))
+	}
+	row := summary.Rows[0]
+	if row.OutputTokensPerSec <= 0 || row.OutputTokSecStdDev <= 0 {
+		t.Fatalf("row throughput = %+v, want positive aggregate and stddev", row)
+	}
+	if row.PromptTokens != 192 || row.CompletionTokens != 24 || row.TotalTokens != 216 {
+		t.Fatalf("row tokens = prompt %d completion %d total %d, want 192/24/216", row.PromptTokens, row.CompletionTokens, row.TotalTokens)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var requestRows, completionTokens int
+	if err := db.QueryRow("SELECT COUNT(*), COALESCE(SUM(completion_tokens), 0) FROM requests").Scan(&requestRows, &completionTokens); err != nil {
+		t.Fatal(err)
+	}
+	if requestRows != 3 || completionTokens != 24 {
+		t.Fatalf("requests rows = %d completion tokens = %d, want 3/24", requestRows, completionTokens)
+	}
+	var stddev float64
+	var count int
+	if err := db.QueryRow("SELECT stddev, count FROM metric_stats WHERE metric = 'request_output_throughput'").Scan(&stddev, &count); err != nil {
+		t.Fatal(err)
+	}
+	if stddev <= 0 || count != 3 {
+		t.Fatalf("request_output_throughput stddev/count = %v/%d, want positive/3", stddev, count)
+	}
+}
+
 func TestExecuteFailedRepeatsAttachToCorrectMeasurements(t *testing.T) {
 	spec := testSpec()
 	spec.Name = "fake-vllm-repeat-failures"
@@ -2125,7 +2187,7 @@ func TestWriteReportFilesWritesCSV(t *testing.T) {
 	text := string(csvData)
 	for _, want := range []string{
 		"profile,workload,phase,dataset_name,context",
-		"8k,prefill,prefill,random,8192,16,4,,7168,16,7168,16,8,0,10.5,200,250,50,1234.5",
+		"8k,prefill,prefill,random,8192,16,4,,7168,16,7168,16,8,0,,,,10.5,200,,250,,50,1234.5",
 		"results/8k__prefill__c4.json",
 	} {
 		if !strings.Contains(text, want) {
@@ -2235,6 +2297,38 @@ func testSpec() Spec {
 	}
 	ApplyDefaults(&spec)
 	return spec
+}
+
+func fakeOpenAIServer(t *testing.T) (*httptest.Server, string, int) {
+	t.Helper()
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		case "/v1/chat/completions":
+			call := calls.Add(1)
+			time.Sleep(time.Duration(call*10) * time.Millisecond)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id":"cmpl-%d","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":64,"completion_tokens":8,"total_tokens":72}}`, call)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, portString, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server, host, port
 }
 
 func testRandomWorkload(name string, profiles []string, inputLen, outputLen, numPrompts int, concurrencies []int) Workload {

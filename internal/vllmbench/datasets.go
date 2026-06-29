@@ -48,6 +48,7 @@ type RequestSpec struct {
 type LoadConfig struct {
 	MaxConcurrency []int  `json:"max_concurrency,omitempty"`
 	RequestRate    string `json:"request_rate,omitempty"`
+	Generator      string `json:"generator,omitempty"`
 }
 
 type CanonicalRequest struct {

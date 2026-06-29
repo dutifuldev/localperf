@@ -829,7 +829,8 @@ func insertMeasurements(tx *sql.Tx, runID, runDir string, plan []PlannedRun, eve
 			runID, planned.Profile.Name, planned.Workload.Name, zeroNullInt(phaseIDs[key]),
 			planned.Repeat, planned.Concurrency, planned.Workload.NumPrompts, status,
 			timePtrString(startedAt), timePtrString(completedAt), durationMillis(startedAt, completedAt),
-			row.Completed, row.Failed, nil, nil, nil, floatNull(row.OutputTokensPerSec),
+			row.Completed, row.Failed, intNull(row.PromptTokens), intNull(row.CompletionTokens),
+			intNull(row.TotalTokens), floatNull(row.OutputTokensPerSec),
 			floatNull(row.PerUserOutputTokSec), floatNull(row.TotalTokensPerSec),
 			zeroNullInt(rawID), nil, measurementError(events, planned))
 		if err != nil {
@@ -837,14 +838,21 @@ func insertMeasurements(tx *sql.Tx, runID, runDir string, plan []PlannedRun, eve
 		}
 		id, _ := result.LastInsertId()
 		measurementIDs[key] = id
-		if err := insertMetricStats(tx, id, row); err != nil {
+		samples, err := requestSamplesForResult(runDir, row.ResultFile)
+		if err != nil {
+			return nil, err
+		}
+		if err := insertRequestSamples(tx, id, samples); err != nil {
+			return nil, err
+		}
+		if err := insertMetricStats(tx, id, row, samples); err != nil {
 			return nil, err
 		}
 	}
 	return measurementIDs, nil
 }
 
-func insertMetricStats(tx *sql.Tx, measurementID int64, row ReportRow) error {
+func insertMetricStats(tx *sql.Tx, measurementID int64, row ReportRow, samples []RequestSample) error {
 	stats := []struct {
 		metric string
 		unit   string
@@ -864,6 +872,81 @@ func insertMetricStats(tx *sql.Tx, measurementID int64, row ReportRow) error {
 		if _, err := tx.Exec(`INSERT INTO metric_stats (
 			measurement_id, metric, unit, mean, p99, count
 		) VALUES (?, ?, ?, ?, ?, ?)`, measurementID, stat.metric, stat.unit, stat.mean, floatNull(stat.p99), stat.count); err != nil {
+			return err
+		}
+	}
+	distributions := []struct {
+		metric string
+		unit   string
+		stats  numericStats
+	}{
+		{"request_output_throughput", "tok/s", statsFromSamples(samples, func(sample RequestSample) float64 { return sample.OutputTokensPerSecond })},
+		{"request_total_throughput", "tok/s", statsFromSamples(samples, func(sample RequestSample) float64 { return sample.TotalTokensPerSecond })},
+		{"latency", "ms", statsFromSamples(samples, func(sample RequestSample) float64 { return sample.LatencyMillis })},
+		{"first_byte", "ms", statsFromSamples(samples, func(sample RequestSample) float64 { return sample.FirstByteMillis })},
+	}
+	for _, distribution := range distributions {
+		if distribution.stats.Count == 0 {
+			continue
+		}
+		if err := insertMetricDistribution(tx, measurementID, distribution.metric, distribution.unit, distribution.stats); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertMetricDistribution(tx *sql.Tx, measurementID int64, metric, unit string, stats numericStats) error {
+	_, err := tx.Exec(`INSERT INTO metric_stats (
+		measurement_id, metric, unit, mean, stddev, min, p50, p90, p95, p99, max, count
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		measurementID, metric, unit, stats.Mean, floatNull(stats.StdDev), stats.Min, stats.P50,
+		stats.P90, stats.P95, stats.P99, stats.Max, stats.Count)
+	return err
+}
+
+func requestSamplesForResult(runDir, resultFile string) ([]RequestSample, error) {
+	path := resolveResultPath(runDir, resultFile)
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	data, err := readTrimmedFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || data[0] != '{' {
+		return nil, nil
+	}
+	var payload struct {
+		RequestSamples []RequestSample `json:"request_samples"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	return payload.RequestSamples, nil
+}
+
+func insertRequestSamples(tx *sql.Tx, measurementID int64, samples []RequestSample) error {
+	for _, sample := range samples {
+		if _, err := tx.Exec(`INSERT INTO requests (
+			measurement_id, request_index, request_id, status, streamed,
+			http_status_code, started_at, first_byte_at, first_byte_ms,
+			first_token_at, completed_at, latency_ms, ttft_ms, tpot_ms,
+			itl_mean_ms, prompt_tokens, completion_tokens, total_tokens,
+			output_tok_s, total_tok_s, prompt_sha256, response_sha256,
+			error_type, error_code, error_message, response_metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			measurementID, sample.RequestIndex, nullString(sample.RequestID),
+			firstNonEmpty(sample.Status, "failed"), boolToInt(sample.Streamed),
+			intNull(sample.HTTPStatusCode), sample.StartedAt.Format(time.RFC3339),
+			timePtrString(sample.FirstByteAt), floatNull(sample.FirstByteMillis),
+			nil, timePtrString(sample.CompletedAt), floatNull(sample.LatencyMillis),
+			nil, nil, nil, intNull(sample.PromptTokens), intNull(sample.CompletionTokens),
+			intNull(sample.TotalTokens), floatNull(sample.OutputTokensPerSecond),
+			floatNull(sample.TotalTokensPerSecond), nullString(sample.PromptSHA256),
+			nullString(sample.ResponseSHA256), nullString(sample.ErrorType),
+			nullString(sample.ErrorCode), nullString(sample.ErrorMessage),
+			nullableJSON(sample.ResponseMetadata)); err != nil {
 			return err
 		}
 	}
@@ -1524,6 +1607,8 @@ CREATE TABLE requests (
   streamed INTEGER NOT NULL DEFAULT 0 CHECK (streamed IN (0, 1)),
   http_status_code INTEGER,
   started_at TEXT NOT NULL,
+  first_byte_at TEXT,
+  first_byte_ms REAL,
   first_token_at TEXT,
   completed_at TEXT,
   latency_ms REAL,
@@ -1533,6 +1618,8 @@ CREATE TABLE requests (
   prompt_tokens INTEGER CHECK (prompt_tokens >= 0),
   completion_tokens INTEGER CHECK (completion_tokens >= 0),
   total_tokens INTEGER CHECK (total_tokens >= 0),
+  output_tok_s REAL,
+  total_tok_s REAL,
   prompt_sha256 TEXT,
   response_sha256 TEXT,
   prompt_artifact_id INTEGER REFERENCES artifacts(id),

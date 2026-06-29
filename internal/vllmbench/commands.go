@@ -95,6 +95,45 @@ func BenchCommand(spec Spec, run PlannedRun) CommandSpec {
 	}
 }
 
+func LoadCommand(spec Spec, run PlannedRun) CommandSpec {
+	if run.Workload.LoadGenerator == LoadGeneratorLocalPerfHTTP {
+		return LocalPerfHTTPCommand(run)
+	}
+	return BenchCommand(spec, run)
+}
+
+func LocalPerfHTTPCommand(run PlannedRun) CommandSpec {
+	args := []string{
+		"localperf", "bench", "http-load",
+		"--backend", run.Workload.Backend,
+		"--base-url", baseURL(run.Profile),
+		"--model", run.Profile.Model,
+		"--dataset-name", run.Workload.DatasetName,
+		"--num-prompts", strconv.Itoa(run.Workload.NumPrompts),
+		"--max-concurrency", strconv.Itoa(run.Concurrency),
+		"--request-rate", run.Workload.RequestRate,
+		"--result-filename", run.ResultFile,
+	}
+	if run.Workload.DatasetName == "random" {
+		if run.Workload.RandomInputLen > 0 {
+			args = append(args, "--random-input-len", strconv.Itoa(run.Workload.RandomInputLen))
+		}
+		if run.Workload.RandomOutputLen > 0 {
+			args = append(args, "--random-output-len", strconv.Itoa(run.Workload.RandomOutputLen))
+		}
+	}
+	if strings.TrimSpace(run.Workload.Endpoint) != "" {
+		args = append(args, "--endpoint", run.Workload.Endpoint)
+	}
+	if run.Workload.IgnoreEOS {
+		args = append(args, "--ignore-eos")
+	}
+	if run.Workload.Temperature != nil {
+		args = append(args, "--temperature", trimFloat(*run.Workload.Temperature))
+	}
+	return CommandSpec{Args: args}
+}
+
 func WarmupCommand(spec Spec, profile Profile, runDir string) CommandSpec {
 	warmup := spec.Warmup
 	engine := EngineForProfile(spec, profile)

@@ -15,6 +15,11 @@ import (
 
 const DefaultHealthPath = "/v1/models"
 
+const (
+	LoadGeneratorVLLMBench     = "vllm_bench"
+	LoadGeneratorLocalPerfHTTP = "localperf_http"
+)
+
 type Spec struct {
 	Version     string            `json:"version"`
 	Name        string            `json:"name"`
@@ -92,6 +97,7 @@ type Workload struct {
 	BenchmarkTrafficConfig
 	Name                    string                 `json:"name"`
 	Phase                   string                 `json:"phase,omitempty"`
+	LoadGenerator           string                 `json:"load_generator,omitempty"`
 	Dataset                 DatasetSpec            `json:"dataset,omitempty"`
 	Request                 RequestSpec            `json:"request,omitempty"`
 	Load                    LoadConfig             `json:"load,omitempty"`
@@ -292,6 +298,9 @@ func applyWorkloadDefault(workload *Workload) {
 	if !trafficConfigEmpty(workload.Traffic) {
 		workload.BenchmarkTrafficConfig = overlayTrafficConfig(workload.BenchmarkTrafficConfig, workload.Traffic)
 	}
+	if strings.TrimSpace(workload.LoadGenerator) == "" && strings.TrimSpace(workload.Load.Generator) != "" {
+		workload.LoadGenerator = workload.Load.Generator
+	}
 	if workload.NumPrompts <= 0 && workload.Samples > 0 {
 		workload.NumPrompts = workload.Samples
 	}
@@ -303,6 +312,7 @@ func applyWorkloadDefault(workload *Workload) {
 		workload.Repeats = 1
 	}
 	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
+	applyLoadGeneratorDefault(workload)
 	workload.Phase = workloadPhase(*workload)
 }
 
@@ -334,6 +344,9 @@ func applyLoadDefaults(workload *Workload) {
 	}
 	if strings.TrimSpace(workload.BenchmarkTrafficConfig.RequestRate) == "" && strings.TrimSpace(workload.Load.RequestRate) != "" {
 		workload.BenchmarkTrafficConfig.RequestRate = workload.Load.RequestRate
+	}
+	if strings.TrimSpace(workload.LoadGenerator) == "" && strings.TrimSpace(workload.Load.Generator) != "" {
+		workload.LoadGenerator = workload.Load.Generator
 	}
 }
 
@@ -457,6 +470,25 @@ func applyTrafficDefaults(traffic *BenchmarkTrafficConfig, defaultDataset string
 	}
 	if strings.TrimSpace(traffic.RequestRate) == "" {
 		traffic.RequestRate = "inf"
+	}
+}
+
+func applyLoadGeneratorDefault(workload *Workload) {
+	workload.LoadGenerator = normalizeLoadGenerator(workload.LoadGenerator)
+	if workload.LoadGenerator == "" {
+		workload.LoadGenerator = LoadGeneratorVLLMBench
+	}
+}
+
+func normalizeLoadGenerator(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	switch value {
+	case "", LoadGeneratorVLLMBench, "vllm-bench", "vllmbench":
+		return value
+	case LoadGeneratorLocalPerfHTTP, "localperf-http", "http", "openai-http":
+		return LoadGeneratorLocalPerfHTTP
+	default:
+		return value
 	}
 }
 
@@ -692,6 +724,7 @@ func validateWorkloadFields(prefix string, workload Workload) []string {
 	issues = append(issues, validateWorkloadDatasetName(prefix, workload)...)
 	issues = append(issues, validateWorkloadPositiveFields(prefix, workload)...)
 	issues = append(issues, validateWorkloadPhase(prefix, workload)...)
+	issues = append(issues, validateLoadGenerator(prefix, workload.LoadGenerator)...)
 	return append(issues, validateStructuredDataset(prefix, workload)...)
 }
 
@@ -721,6 +754,15 @@ func validateWorkloadPhase(prefix string, workload Workload) []string {
 		return []string{prefix + ": phase must contain at least one ASCII letter or digit"}
 	}
 	return nil
+}
+
+func validateLoadGenerator(prefix, generator string) []string {
+	switch normalizeLoadGenerator(generator) {
+	case "", LoadGeneratorVLLMBench, LoadGeneratorLocalPerfHTTP:
+		return nil
+	default:
+		return []string{prefix + ": unsupported load_generator " + generator}
+	}
 }
 
 func validateStructuredDataset(prefix string, workload Workload) []string {

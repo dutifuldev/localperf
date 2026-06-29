@@ -179,7 +179,7 @@ func writePlanEvents(session *runSession) {
 }
 
 func writePlannedRunEvent(session *runSession, planned PlannedRun) {
-	command := BenchCommand(session.spec, planned)
+	command := LoadCommand(session.spec, planned)
 	session.events.Write(Event{
 		Timestamp:   time.Now().UTC(),
 		Type:        "planned_run",
@@ -719,7 +719,7 @@ func validateWarmupResult(path string) error {
 }
 
 func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir string, events *eventWriter) (*ReportRow, error) {
-	command := BenchCommand(spec, planned)
+	command := LoadCommand(spec, planned)
 	logPath := benchmarkLogPath(runDir, planned)
 	events.Write(Event{
 		Timestamp:   time.Now().UTC(),
@@ -733,7 +733,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		ResultFile:  planned.ResultFile,
 		LogFile:     logPath,
 	})
-	result, err := executeCommand(ctx, command, logPath, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second, spec.Safety.MinMemAvailableGiB, time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond)
+	result, err := executeLoadCommand(ctx, spec, planned, command, logPath)
 	event := Event{
 		Timestamp:       time.Now().UTC(),
 		Type:            "workload_finish",
@@ -779,6 +779,13 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		return &row, fmt.Errorf("benchmark result reported %d failed request(s)", failed)
 	}
 	return &row, nil
+}
+
+func executeLoadCommand(ctx context.Context, spec Spec, planned PlannedRun, command CommandSpec, logPath string) (commandResult, error) {
+	if planned.Workload.LoadGenerator == LoadGeneratorLocalPerfHTTP {
+		return executeLocalPerfHTTPBench(ctx, spec, planned, logPath)
+	}
+	return executeCommand(ctx, command, logPath, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second, spec.Safety.MinMemAvailableGiB, time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond)
 }
 
 func benchmarkLogPath(runDir string, planned PlannedRun) string {

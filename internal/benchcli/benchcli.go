@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +27,8 @@ func Main(args []string) {
 		runPlan(args[1:])
 	case "run":
 		runBench(args[1:])
+	case "http-load":
+		runHTTPLoad(args[1:])
 	case "report":
 		runReport(args[1:])
 	case "artifact":
@@ -86,7 +91,7 @@ func runPlan(args []string) {
 	}
 	fmt.Println("workloads:")
 	for _, planned := range plan {
-		command := vllmbench.BenchCommand(spec, planned)
+		command := vllmbench.LoadCommand(spec, planned)
 		fmt.Printf("- profile=%s workload=%s concurrency=%d result=%s\n", planned.Profile.Name, planned.Workload.Name, planned.Concurrency, planned.ResultFile)
 		fmt.Printf("  %s\n", vllmbench.ShellQuote(command.Args))
 	}
@@ -126,6 +131,53 @@ func runBench(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func runHTTPLoad(args []string) {
+	flags := flag.NewFlagSet("http-load", flag.ExitOnError)
+	backend := flags.String("backend", "openai-chat", "OpenAI-compatible backend type")
+	baseURL := flags.String("base-url", "", "OpenAI-compatible endpoint base URL")
+	model := flags.String("model", "", "served model name")
+	datasetName := flags.String("dataset-name", "random", "dataset name")
+	numPrompts := flags.Int("num-prompts", 0, "number of prompts")
+	maxConcurrency := flags.Int("max-concurrency", 1, "maximum concurrent requests")
+	requestRate := flags.String("request-rate", "inf", "request rate")
+	resultFilename := flags.String("result-filename", "", "result JSON path")
+	randomInputLen := flags.Int("random-input-len", 0, "random dataset input tokens")
+	randomOutputLen := flags.Int("random-output-len", 0, "random dataset output tokens")
+	endpoint := flags.String("endpoint", "", "endpoint path")
+	ignoreEOS := flags.Bool("ignore-eos", false, "ask the engine to ignore EOS")
+	temperature := flags.String("temperature", "", "temperature")
+	timeout := flags.Duration("timeout", 0, "optional timeout")
+	minMemAvailableGiB := flags.Float64("min-mem-available-gib", 0.1, "memory floor")
+	logPath := flags.String("log", "", "log path")
+	_ = flags.Parse(args)
+	profile, err := profileFromBaseURL(*baseURL, *model)
+	exitOnError(err)
+	workload, err := httpLoadWorkload(*backend, *datasetName, *requestRate, *endpoint, *temperature, *ignoreEOS, *numPrompts, *randomInputLen, *randomOutputLen)
+	exitOnError(err)
+	if strings.TrimSpace(*resultFilename) == "" {
+		exitOnError(fmt.Errorf("missing --result-filename"))
+	}
+	spec := vllmbench.Spec{Model: *model, Safety: vllmbench.SafetyConfig{MinMemAvailableGiB: *minMemAvailableGiB}}
+	vllmbench.ApplyDefaults(&spec)
+	if *timeout > 0 {
+		spec.Safety.WorkloadTimeoutSec = int(timeout.Seconds())
+	}
+	planned := vllmbench.PlannedRun{Profile: profile, Workload: workload, Concurrency: *maxConcurrency, ResultFile: *resultFilename}
+	if strings.TrimSpace(*logPath) == "" {
+		*logPath = strings.TrimSuffix(*resultFilename, filepath.Ext(*resultFilename)) + ".log"
+	}
+	if err := vllmbench.RunLocalPerfHTTPBench(context.Background(), spec, planned, *logPath); err != nil {
+		exitOnError(err)
+	}
+	rows, err := vllmbench.ParseResultFile(*resultFilename)
+	exitOnError(err)
+	if len(rows) == 0 {
+		exitOnError(fmt.Errorf("no result rows"))
+	}
+	row := rows[0]
+	fmt.Printf("completed: %d failed: %d output_tok_s: %.3f request_output_tok_s_stddev: %.3f\n", row.Completed, row.Failed, row.OutputTokensPerSec, row.OutputTokSecStdDev)
 }
 
 func runReport(args []string) {
@@ -197,6 +249,75 @@ func runArtifactCheck(args []string) {
 	fmt.Printf("artifact ok: %s\n", *path)
 }
 
+func profileFromBaseURL(rawURL, model string) (vllmbench.Profile, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return vllmbench.Profile{}, fmt.Errorf("missing --base-url")
+	}
+	if strings.TrimSpace(model) == "" {
+		return vllmbench.Profile{}, fmt.Errorf("missing --model")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return vllmbench.Profile{}, err
+	}
+	if parsed.Scheme != "http" {
+		return vllmbench.Profile{}, fmt.Errorf("only http base URLs are supported")
+	}
+	host, portString, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		return vllmbench.Profile{}, fmt.Errorf("base URL must include host and port: %w", err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		return vllmbench.Profile{}, err
+	}
+	return vllmbench.Profile{Name: "http-load", Host: host, Port: port, Model: model}, nil
+}
+
+func httpLoadWorkload(backend, datasetName, requestRate, endpoint, temperature string, ignoreEOS bool, numPrompts, randomInputLen, randomOutputLen int) (vllmbench.Workload, error) {
+	if numPrompts <= 0 {
+		return vllmbench.Workload{}, fmt.Errorf("--num-prompts must be positive")
+	}
+	var temp *float64
+	if strings.TrimSpace(temperature) != "" {
+		parsed, err := strconv.ParseFloat(temperature, 64)
+		if err != nil {
+			return vllmbench.Workload{}, err
+		}
+		temp = &parsed
+	}
+	workload := vllmbench.Workload{
+		Name:          "http-load",
+		Profiles:      []string{"http-load"},
+		LoadGenerator: vllmbench.LoadGeneratorLocalPerfHTTP,
+		BenchmarkTrafficConfig: vllmbench.BenchmarkTrafficConfig{
+			Backend:         backend,
+			DatasetName:     datasetName,
+			RequestRate:     requestRate,
+			Endpoint:        endpoint,
+			RandomInputLen:  randomInputLen,
+			RandomOutputLen: randomOutputLen,
+		},
+		NumPrompts:  numPrompts,
+		Temperature: temp,
+		IgnoreEOS:   ignoreEOS,
+	}
+	spec := vllmbench.Spec{
+		Name:     "http-load",
+		Model:    "model",
+		Safety:   vllmbench.SafetyConfig{MinMemAvailableGiB: 0.1},
+		Profiles: []vllmbench.Profile{{Name: "http-load", Model: "model", Port: 1}},
+		Workloads: []vllmbench.Workload{
+			workload,
+		},
+	}
+	vllmbench.ApplyDefaults(&spec)
+	if err := vllmbench.ValidateSpec(spec); err != nil {
+		return vllmbench.Workload{}, err
+	}
+	return spec.Workloads[0], nil
+}
+
 func mustLoadSpec(path string, filter vllmbench.Filter) vllmbench.Spec {
 	if strings.TrimSpace(path) == "" {
 		fmt.Fprintln(os.Stderr, "missing --spec")
@@ -218,6 +339,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   localperf-vllm-bench plan   --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--json]
   localperf-vllm-bench run    --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--dry-run] [--timeout 2h]
+  localperf-vllm-bench http-load --base-url http://127.0.0.1:8000 --model model --dataset-name random --random-input-len 1024 --random-output-len 128 --num-prompts 8 --max-concurrency 4 --result-filename result.json
   localperf-vllm-bench report --run-dir runs/example [--output runs/example/report.md] [--json]
   localperf-vllm-bench artifact check runs/example.sqlite`)
 }
@@ -226,6 +348,7 @@ func usageLocalPerf() {
 	fmt.Fprintln(os.Stderr, `usage:
   localperf bench plan   --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--json]
   localperf bench run    --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--dry-run] [--timeout 2h]
+  localperf bench http-load --base-url http://127.0.0.1:8000 --model model --dataset-name random --random-input-len 1024 --random-output-len 128 --num-prompts 8 --max-concurrency 4 --result-filename result.json
   localperf bench report --run-dir runs/example [--output runs/example/report.md] [--json]
   localperf artifact check runs/example.sqlite`)
 }
@@ -274,6 +397,14 @@ func applyOverrides(spec *vllmbench.Spec, overrides *overrideFlags) {
 	if overrides.minMemAvailableGiB > 0 {
 		spec.Safety.MinMemAvailableGiB = overrides.minMemAvailableGiB
 	}
+}
+
+func exitOnError(err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
 }
 
 func addFilterFlags(flags *flag.FlagSet) *filterFlags {

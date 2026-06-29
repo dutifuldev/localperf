@@ -46,13 +46,22 @@ type ReportRow struct {
 	RandomOutputLen     int     `json:"random_output_len,omitempty"`
 	Completed           int     `json:"completed,omitempty"`
 	Failed              int     `json:"failed,omitempty"`
+	PromptTokens        int     `json:"prompt_tokens,omitempty"`
+	CompletionTokens    int     `json:"completion_tokens,omitempty"`
+	TotalTokens         int     `json:"total_tokens,omitempty"`
 	DurationSeconds     float64 `json:"duration_seconds,omitempty"`
 	OutputTokensPerSec  float64 `json:"output_tokens_per_second,omitempty"`
 	TotalTokensPerSec   float64 `json:"total_tokens_per_second,omitempty"`
 	PerUserOutputTokSec float64 `json:"per_user_output_tokens_per_second,omitempty"`
+	OutputTokSecStdDev  float64 `json:"output_tokens_per_second_stddev,omitempty"`
+	TotalTokSecStdDev   float64 `json:"total_tokens_per_second_stddev,omitempty"`
 	MeanTTFTMillis      float64 `json:"mean_ttft_ms,omitempty"`
 	P99TTFTMillis       float64 `json:"p99_ttft_ms,omitempty"`
 	MeanTPOTMillis      float64 `json:"mean_tpot_ms,omitempty"`
+	MeanLatencyMillis   float64 `json:"mean_latency_ms,omitempty"`
+	StdLatencyMillis    float64 `json:"std_latency_ms,omitempty"`
+	P95LatencyMillis    float64 `json:"p95_latency_ms,omitempty"`
+	P99LatencyMillis    float64 `json:"p99_latency_ms,omitempty"`
 	ResultFile          string  `json:"result_file,omitempty"`
 }
 
@@ -288,11 +297,11 @@ func RenderMarkdown(report Report) string {
 }
 
 func renderThroughputTable(out *strings.Builder, runDir string, rows []ReportRow) {
-	out.WriteString("| Profile | Workload | Dataset | Context | Concurrency | Input | Output | Completed | Failed | Output tok/s | Per-user tok/s | Total tok/s | TTFT mean ms | Result |\n")
-	out.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
+	out.WriteString("| Profile | Workload | Dataset | Context | Concurrency | Input | Output | Completed | Failed | Output tok/s | Output tok/s sd | Per-user tok/s | Total tok/s | Latency mean ms | Result |\n")
+	out.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
 	for _, row := range rows {
 		out.WriteString(fmt.Sprintf(
-			"| %s | %s | %s | %s | %s | %s | %s | %d | %d | %s | %s | %s | %s | `%s` |\n",
+			"| %s | %s | %s | %s | %s | %s | %s | %d | %d | %s | %s | %s | %s | %s | `%s` |\n",
 			cell(row.Profile),
 			cell(row.Workload),
 			cell(row.DatasetName),
@@ -303,9 +312,10 @@ func renderThroughputTable(out *strings.Builder, runDir string, rows []ReportRow
 			row.Completed,
 			row.Failed,
 			floatCell(row.OutputTokensPerSec),
+			floatCell(row.OutputTokSecStdDev),
 			floatCell(row.PerUserOutputTokSec),
 			floatCell(row.TotalTokensPerSec),
-			floatCell(row.MeanTTFTMillis),
+			floatCell(firstNonZeroFloat(row.MeanLatencyMillis, row.MeanTTFTMillis)),
 			fileCell(runDir, row.ResultFile),
 		))
 	}
@@ -412,13 +422,22 @@ func RenderCSV(report Report) string {
 		"random_output_len",
 		"completed",
 		"failed",
+		"prompt_tokens",
+		"completion_tokens",
+		"total_tokens",
 		"duration_seconds",
 		"output_tokens_per_second",
+		"output_tokens_per_second_stddev",
 		"total_tokens_per_second",
+		"total_tokens_per_second_stddev",
 		"per_user_output_tokens_per_second",
 		"mean_ttft_ms",
 		"p99_ttft_ms",
 		"mean_tpot_ms",
+		"mean_latency_ms",
+		"std_latency_ms",
+		"p95_latency_ms",
+		"p99_latency_ms",
 		"result_file",
 	})
 	for _, row := range report.Rows {
@@ -437,13 +456,22 @@ func RenderCSV(report Report) string {
 			intCSV(row.RandomOutputLen),
 			fmt.Sprint(row.Completed),
 			fmt.Sprint(row.Failed),
+			intCSV(row.PromptTokens),
+			intCSV(row.CompletionTokens),
+			intCSV(row.TotalTokens),
 			floatCSV(row.DurationSeconds),
 			floatCSV(row.OutputTokensPerSec),
+			floatCSV(row.OutputTokSecStdDev),
 			floatCSV(row.TotalTokensPerSec),
+			floatCSV(row.TotalTokSecStdDev),
 			floatCSV(row.PerUserOutputTokSec),
 			floatCSV(row.MeanTTFTMillis),
 			floatCSV(row.P99TTFTMillis),
 			floatCSV(row.MeanTPOTMillis),
+			floatCSV(row.MeanLatencyMillis),
+			floatCSV(row.StdLatencyMillis),
+			floatCSV(row.P95LatencyMillis),
+			floatCSV(row.P99LatencyMillis),
 			fileCell(report.RunDir, row.ResultFile),
 		})
 	}
@@ -469,12 +497,21 @@ func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 			RandomOutputLen:    intValue(raw, "random_output_len"),
 			Completed:          firstInt(raw, "completed", "ok", "successes"),
 			Failed:             firstInt(raw, "failed", "errors"),
+			PromptTokens:       firstInt(raw, "total_input_tokens", "prompt_tokens"),
+			CompletionTokens:   firstInt(raw, "total_output_tokens", "completion_tokens"),
+			TotalTokens:        intValue(raw, "total_tokens"),
 			DurationSeconds:    firstFloat(raw, "duration", "wall_seconds"),
 			OutputTokensPerSec: firstFloat(raw, "output_throughput", "aggregate_completion_tokens_per_second", "completion_tokens_per_second", "diffusion_committed_throughput"),
 			TotalTokensPerSec:  firstFloat(raw, "total_token_throughput", "aggregate_total_tokens_per_second", "total_tokens_per_second"),
+			OutputTokSecStdDev: firstFloat(raw, "request_output_throughput_stddev", "output_tokens_per_second_stddev"),
+			TotalTokSecStdDev:  firstFloat(raw, "request_total_throughput_stddev", "total_tokens_per_second_stddev"),
 			MeanTTFTMillis:     firstFloat(raw, "mean_ttft_ms"),
 			P99TTFTMillis:      firstFloat(raw, "p99_ttft_ms"),
 			MeanTPOTMillis:     firstFloat(raw, "mean_tpot_ms"),
+			MeanLatencyMillis:  firstFloat(raw, "mean_latency_ms"),
+			StdLatencyMillis:   firstFloat(raw, "std_latency_ms"),
+			P95LatencyMillis:   firstFloat(raw, "p95_latency_ms"),
+			P99LatencyMillis:   firstFloat(raw, "p99_latency_ms"),
 			ResultFile:         path,
 		}
 		if row.Context == 0 {
@@ -510,6 +547,15 @@ func deriveReportRowFields(row *ReportRow) {
 }
 
 func firstNonZeroInt(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func firstNonZeroFloat(values ...float64) float64 {
 	for _, value := range values {
 		if value != 0 {
 			return value
