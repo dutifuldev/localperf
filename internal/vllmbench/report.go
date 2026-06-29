@@ -36,6 +36,7 @@ type ReportRow struct {
 	Context             int     `json:"context,omitempty"`
 	ServerMaxNumSeqs    int     `json:"server_max_num_seqs,omitempty"`
 	Concurrency         int     `json:"concurrency,omitempty"`
+	Repeat              int     `json:"repeat,omitempty"`
 	InputLen            int     `json:"input_len,omitempty"`
 	OutputLen           int     `json:"output_len,omitempty"`
 	RandomInputLen      int     `json:"random_input_len,omitempty"`
@@ -162,6 +163,7 @@ func enrichRowFromEvent(row *ReportRow, event Event, spec *Spec) {
 	row.Profile = event.Profile
 	row.Workload = event.Workload
 	row.Concurrency = event.Concurrency
+	row.Repeat = event.Repeat
 	row.ResultFile = event.ResultFile
 	if spec == nil {
 		return
@@ -274,6 +276,7 @@ func RenderCSV(report Report) string {
 		"context",
 		"server_max_num_seqs",
 		"concurrency",
+		"repeat",
 		"input_len",
 		"output_len",
 		"random_input_len",
@@ -297,6 +300,7 @@ func RenderCSV(report Report) string {
 			intCSV(row.Context),
 			intCSV(row.ServerMaxNumSeqs),
 			intCSV(row.Concurrency),
+			intCSV(row.Repeat),
 			intCSV(row.DisplayInputLen()),
 			intCSV(row.DisplayOutputLen()),
 			intCSV(row.RandomInputLen),
@@ -327,6 +331,7 @@ func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 			Context:            intValue(raw, "max_model_len"),
 			ServerMaxNumSeqs:   intValue(raw, "server_max_num_seqs"),
 			Concurrency:        intValue(raw, "max_concurrency"),
+			Repeat:             intValue(raw, "repeat"),
 			InputLen:           firstInt(raw, "input_len", "prompt_len", "random_input_len"),
 			OutputLen:          firstInt(raw, "output_len", "max_tokens", "random_output_len"),
 			RandomInputLen:     intValue(raw, "random_input_len"),

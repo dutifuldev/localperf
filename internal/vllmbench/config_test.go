@@ -2,6 +2,7 @@ package vllmbench
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -117,6 +118,70 @@ func TestBenchCommandSupportsStandardDatasetKnobs(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("command %q missing %q", got, want)
+		}
+	}
+}
+
+func TestLoadSpecSupportsEngineNeutralShape(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spec.json")
+	writeFile(t, path, `{
+  "version": "localperf.bench/v1",
+  "name": "engine-neutral",
+  "model": "example/model",
+  "safety": {"min_mem_available_gib": 1},
+  "engines": [
+    {"name": "vllm", "type": "vllm-managed", "command": "vllm-custom"}
+  ],
+  "profiles": [
+    {
+      "name": "4k",
+      "engine": "vllm",
+      "managed": true,
+      "port": 8104,
+      "serve": {
+        "max_model_len": 4096,
+        "max_num_seqs": 8,
+        "max_num_batched_tokens": 4096,
+        "gpu_memory_utilization": 0.25
+      },
+      "engine_args": ["--disable-log-requests"]
+    }
+  ],
+  "workloads": [
+    {
+      "name": "decode",
+      "profiles": ["4k"],
+      "traffic": {
+        "backend": "openai-chat",
+        "dataset_name": "random",
+        "random_input_len": 128,
+        "random_output_len": 16,
+        "request_rate": "inf"
+      },
+      "samples": 3,
+      "repeats": 2,
+      "concurrency": [1, 2]
+    }
+  ]
+}`)
+	spec, err := LoadSpec(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Profiles[0].MaxModelLen != 4096 || spec.Profiles[0].MaxNumSeqs != 8 {
+		t.Fatalf("serve fields were not lifted into profile: %+v", spec.Profiles[0])
+	}
+	if spec.Workloads[0].NumPrompts != 3 || spec.Workloads[0].Repeats != 2 {
+		t.Fatalf("samples/repeats not normalized: %+v", spec.Workloads[0])
+	}
+	if got := len(BuildPlan(spec, "runs/example")); got != 4 {
+		t.Fatalf("plan length = %d, want 4", got)
+	}
+	command := ServeCommand(spec, spec.Profiles[0])
+	got := ShellQuote(command.Args)
+	for _, want := range []string{"vllm-custom serve", "--max-model-len 4096", "--disable-log-requests"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("serve command %q missing %q", got, want)
 		}
 	}
 }
@@ -459,6 +524,49 @@ func TestExecuteWithFakeVLLMEndToEnd(t *testing.T) {
 	}
 	if report.Rows[0].OutputTokensPerSec != 20 {
 		t.Fatalf("output throughput = %v, want 20", report.Rows[0].OutputTokensPerSec)
+	}
+	assertSQLiteArtifact(t, summary.ArtifactPath)
+}
+
+func assertSQLiteArtifact(t *testing.T, path string) {
+	t.Helper()
+	if path == "" {
+		t.Fatal("summary artifact path is empty")
+	}
+	if err := CheckSQLiteArtifact(path); err != nil {
+		t.Fatalf("artifact check failed: %v", err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for table, want := range map[string]int{
+		"run":              1,
+		"specs":            2,
+		"engines":          1,
+		"profiles":         1,
+		"workloads":        1,
+		"measurements":     1,
+		"metric_stats":     2,
+		"artifacts":        1,
+		"events":           1,
+		"telemetry_series": 1,
+	} {
+		var got int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if got < want {
+			t.Fatalf("%s rows = %d, want at least %d", table, got, want)
+		}
+	}
+	var outputThroughput float64
+	if err := db.QueryRow("SELECT aggregate_output_tok_s FROM measurements LIMIT 1").Scan(&outputThroughput); err != nil {
+		t.Fatal(err)
+	}
+	if outputThroughput != 20 {
+		t.Fatalf("artifact aggregate_output_tok_s = %v, want 20", outputThroughput)
 	}
 }
 
@@ -1114,7 +1222,7 @@ func TestWriteReportFilesWritesCSV(t *testing.T) {
 	text := string(csvData)
 	for _, want := range []string{
 		"profile,workload,dataset_name,context",
-		"8k,prefill,random,8192,16,4,7168,16,7168,16,8,0,10.5,200,250,50,1234.5",
+		"8k,prefill,random,8192,16,4,,7168,16,7168,16,8,0,10.5,200,250,50,1234.5",
 		"results/8k__prefill__c4.json",
 	} {
 		if !strings.Contains(text, want) {

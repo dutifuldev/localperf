@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -20,11 +21,23 @@ type Spec struct {
 	Model       string            `json:"model"`
 	OutputDir   string            `json:"output_dir,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
+	Engines     []EngineConfig    `json:"engines,omitempty"`
 	Runner      RunnerConfig      `json:"runner"`
 	Safety      SafetyConfig      `json:"safety"`
 	Warmup      WarmupConfig      `json:"warmup,omitempty"`
 	Profiles    []Profile         `json:"profiles"`
 	Workloads   []Workload        `json:"workloads"`
+}
+
+type EngineConfig struct {
+	Name            string            `json:"name"`
+	Type            string            `json:"type"`
+	Command         string            `json:"command,omitempty"`
+	BenchCommand    string            `json:"bench_command,omitempty"`
+	Managed         *bool             `json:"managed,omitempty"`
+	EndpointBaseURL string            `json:"endpoint_base_url,omitempty"`
+	Env             map[string]string `json:"env,omitempty"`
+	Metadata        map[string]any    `json:"metadata,omitempty"`
 }
 
 type RunnerConfig struct {
@@ -53,6 +66,7 @@ type WarmupConfig struct {
 
 type Profile struct {
 	Name                 string            `json:"name"`
+	Engine               string            `json:"engine,omitempty"`
 	Model                string            `json:"model,omitempty"`
 	Host                 string            `json:"host,omitempty"`
 	Port                 int               `json:"port"`
@@ -60,6 +74,7 @@ type Profile struct {
 	EnableSleepMode      bool              `json:"enable_sleep_mode,omitempty"`
 	SleepLevel           *int              `json:"sleep_level,omitempty"`
 	HealthPath           string            `json:"health_path,omitempty"`
+	Serve                ServeConfig       `json:"serve,omitempty"`
 	MaxModelLen          int               `json:"max_model_len,omitempty"`
 	MaxNumSeqs           int               `json:"max_num_seqs,omitempty"`
 	MaxNumBatchedTokens  int               `json:"max_num_batched_tokens,omitempty"`
@@ -69,16 +84,32 @@ type Profile struct {
 	MoEBackend           string            `json:"moe_backend,omitempty"`
 	Env                  map[string]string `json:"env,omitempty"`
 	Args                 []string          `json:"args,omitempty"`
+	EngineArgs           []string          `json:"engine_args,omitempty"`
 }
 
 type Workload struct {
 	BenchmarkTrafficConfig
-	Name           string   `json:"name"`
-	Profiles       []string `json:"profiles,omitempty"`
-	NumPrompts     int      `json:"num_prompts"`
-	MaxConcurrency []int    `json:"max_concurrency"`
-	IgnoreEOS      bool     `json:"ignore_eos,omitempty"`
-	Temperature    *float64 `json:"temperature,omitempty"`
+	Name                    string                 `json:"name"`
+	Profiles                []string               `json:"profiles,omitempty"`
+	NumPrompts              int                    `json:"num_prompts"`
+	Samples                 int                    `json:"samples,omitempty"`
+	Repeats                 int                    `json:"repeats,omitempty"`
+	MaxConcurrency          []int                  `json:"max_concurrency"`
+	Concurrency             []int                  `json:"concurrency,omitempty"`
+	Traffic                 BenchmarkTrafficConfig `json:"traffic,omitempty"`
+	IgnoreEOS               bool                   `json:"ignore_eos,omitempty"`
+	Temperature             *float64               `json:"temperature,omitempty"`
+	CapturePayloadArtifacts bool                   `json:"capture_payload_artifacts,omitempty"`
+}
+
+type ServeConfig struct {
+	MaxModelLen          int     `json:"max_model_len,omitempty"`
+	MaxNumSeqs           int     `json:"max_num_seqs,omitempty"`
+	MaxNumBatchedTokens  int     `json:"max_num_batched_tokens,omitempty"`
+	GPUMemoryUtilization float64 `json:"gpu_memory_utilization,omitempty"`
+	KVCacheDType         string  `json:"kv_cache_dtype,omitempty"`
+	AttentionBackend     string  `json:"attention_backend,omitempty"`
+	MoEBackend           string  `json:"moe_backend,omitempty"`
 }
 
 type BenchmarkTrafficConfig struct {
@@ -119,6 +150,7 @@ type PlannedRun struct {
 	Profile     Profile  `json:"profile"`
 	Workload    Workload `json:"workload"`
 	Concurrency int      `json:"concurrency"`
+	Repeat      int      `json:"repeat,omitempty"`
 	ResultFile  string   `json:"result_file"`
 }
 
@@ -144,6 +176,26 @@ func ApplyDefaults(spec *Spec) {
 	}
 	if strings.TrimSpace(spec.Runner.VLLMBenchCommand) == "" {
 		spec.Runner.VLLMBenchCommand = "vllm"
+	}
+	if len(spec.Engines) == 0 {
+		spec.Engines = []EngineConfig{{
+			Name:         "vllm",
+			Type:         "vllm-managed",
+			Command:      spec.Runner.VLLMCommand,
+			BenchCommand: spec.Runner.VLLMBenchCommand,
+		}}
+	}
+	for i := range spec.Engines {
+		engine := &spec.Engines[i]
+		if strings.TrimSpace(engine.Type) == "" {
+			engine.Type = "vllm-managed"
+		}
+		if strings.TrimSpace(engine.Command) == "" && engine.Type == "vllm-managed" {
+			engine.Command = spec.Runner.VLLMCommand
+		}
+		if strings.TrimSpace(engine.BenchCommand) == "" && engine.Type == "vllm-managed" {
+			engine.BenchCommand = spec.Runner.VLLMBenchCommand
+		}
 	}
 	if spec.Runner.OneAwakeProfile == nil {
 		yes := true
@@ -171,6 +223,9 @@ func ApplyDefaults(spec *Spec) {
 	}
 	for i := range spec.Profiles {
 		profile := &spec.Profiles[i]
+		if strings.TrimSpace(profile.Engine) == "" {
+			profile.Engine = spec.Engines[0].Name
+		}
 		if strings.TrimSpace(profile.Model) == "" {
 			profile.Model = spec.Model
 		}
@@ -179,6 +234,10 @@ func ApplyDefaults(spec *Spec) {
 		}
 		if strings.TrimSpace(profile.HealthPath) == "" {
 			profile.HealthPath = DefaultHealthPath
+		}
+		applyServeDefaults(profile)
+		if len(profile.EngineArgs) > 0 {
+			profile.Args = append(profile.Args, profile.EngineArgs...)
 		}
 		if profile.EnableSleepMode && profile.SleepLevel == nil {
 			profile.SleepLevel = intPointer(2)
@@ -200,7 +259,48 @@ func ApplyDefaults(spec *Spec) {
 		}
 	}
 	for i := range spec.Workloads {
-		applyTrafficDefaults(&spec.Workloads[i].BenchmarkTrafficConfig, "")
+		workload := &spec.Workloads[i]
+		if !trafficConfigEmpty(workload.Traffic) {
+			workload.BenchmarkTrafficConfig = workload.Traffic
+		}
+		if workload.NumPrompts <= 0 && workload.Samples > 0 {
+			workload.NumPrompts = workload.Samples
+		}
+		if len(workload.MaxConcurrency) == 0 && len(workload.Concurrency) > 0 {
+			workload.MaxConcurrency = append([]int(nil), workload.Concurrency...)
+		}
+		if workload.Repeats <= 0 {
+			workload.Repeats = 1
+		}
+		applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
+	}
+}
+
+func trafficConfigEmpty(traffic BenchmarkTrafficConfig) bool {
+	return reflect.DeepEqual(traffic, BenchmarkTrafficConfig{})
+}
+
+func applyServeDefaults(profile *Profile) {
+	if profile.MaxModelLen == 0 {
+		profile.MaxModelLen = profile.Serve.MaxModelLen
+	}
+	if profile.MaxNumSeqs == 0 {
+		profile.MaxNumSeqs = profile.Serve.MaxNumSeqs
+	}
+	if profile.MaxNumBatchedTokens == 0 {
+		profile.MaxNumBatchedTokens = profile.Serve.MaxNumBatchedTokens
+	}
+	if profile.GPUMemoryUtilization == 0 {
+		profile.GPUMemoryUtilization = profile.Serve.GPUMemoryUtilization
+	}
+	if strings.TrimSpace(profile.KVCacheDType) == "" {
+		profile.KVCacheDType = profile.Serve.KVCacheDType
+	}
+	if strings.TrimSpace(profile.AttentionBackend) == "" {
+		profile.AttentionBackend = profile.Serve.AttentionBackend
+	}
+	if strings.TrimSpace(profile.MoEBackend) == "" {
+		profile.MoEBackend = profile.Serve.MoEBackend
 	}
 }
 
@@ -222,6 +322,10 @@ func applyTrafficDefaults(traffic *BenchmarkTrafficConfig, defaultDataset string
 func RedactedSpec(spec Spec) Spec {
 	out := spec
 	out.Env = redactedEnv(spec.Env)
+	out.Engines = append([]EngineConfig(nil), spec.Engines...)
+	for i := range out.Engines {
+		out.Engines[i].Env = redactedEnv(spec.Engines[i].Env)
+	}
 	out.Profiles = append([]Profile(nil), spec.Profiles...)
 	for i := range out.Profiles {
 		out.Profiles[i].Env = redactedEnv(spec.Profiles[i].Env)
@@ -250,6 +354,24 @@ func ValidateSpec(spec Spec) error {
 	}
 	if spec.Safety.MinMemAvailableGiB <= 0 {
 		issues = append(issues, "safety.min_mem_available_gib must be positive")
+	}
+	engineNames := map[string]bool{}
+	if len(spec.Engines) == 0 {
+		issues = append(issues, "at least one engine is required")
+	}
+	for i, engine := range spec.Engines {
+		prefix := fmt.Sprintf("engines[%d]", i)
+		name := strings.TrimSpace(engine.Name)
+		if name == "" {
+			issues = append(issues, prefix+": name is required")
+		}
+		if engineNames[engine.Name] {
+			issues = append(issues, prefix+": duplicate engine name "+engine.Name)
+		}
+		engineNames[engine.Name] = true
+		if strings.TrimSpace(engine.Type) == "" {
+			issues = append(issues, prefix+": type is required")
+		}
 	}
 	profileNames := map[string]bool{}
 	profileSlugs := map[string]string{}
@@ -282,6 +404,11 @@ func ValidateSpec(spec Spec) error {
 		}
 		if strings.TrimSpace(profile.Model) == "" {
 			issues = append(issues, prefix+": model is required")
+		}
+		if strings.TrimSpace(profile.Engine) == "" {
+			issues = append(issues, prefix+": engine is required")
+		} else if !engineNames[profile.Engine] {
+			issues = append(issues, prefix+": unknown engine "+profile.Engine)
 		}
 		if profile.Managed {
 			if profile.MaxModelLen <= 0 {
@@ -342,6 +469,9 @@ func ValidateSpec(spec Spec) error {
 		}
 		if workload.NumPrompts <= 0 {
 			issues = append(issues, prefix+": num_prompts must be positive")
+		}
+		if workload.Repeats <= 0 {
+			issues = append(issues, prefix+": repeats must be positive")
 		}
 		if len(workload.MaxConcurrency) == 0 {
 			issues = append(issues, prefix+": max_concurrency must not be empty")
@@ -435,12 +565,19 @@ func BuildPlan(spec Spec, runDir string) []PlannedRun {
 		for _, profileName := range names {
 			profile := profiles[profileName]
 			for _, concurrency := range workload.MaxConcurrency {
-				runs = append(runs, PlannedRun{
-					Profile:     profile,
-					Workload:    workload,
-					Concurrency: concurrency,
-					ResultFile:  ResultPath(runDir, profile.Name, workload.Name, concurrency),
-				})
+				repeats := workload.Repeats
+				if repeats <= 0 {
+					repeats = 1
+				}
+				for repeat := 0; repeat < repeats; repeat++ {
+					runs = append(runs, PlannedRun{
+						Profile:     profile,
+						Workload:    workload,
+						Concurrency: concurrency,
+						Repeat:      repeat,
+						ResultFile:  ResultPath(runDir, profile.Name, workload.Name, concurrency, repeat, repeats),
+					})
+				}
 			}
 		}
 	}
@@ -465,8 +602,20 @@ func RunDir(base string, spec Spec, now time.Time) string {
 	return filepath.Join(parent, name)
 }
 
-func ResultPath(runDir, profileName, workloadName string, concurrency int) string {
-	name := fmt.Sprintf("%s__%s__c%d.json", Slug(profileName), Slug(workloadName), concurrency)
+func ResultPath(runDir, profileName, workloadName string, concurrency int, repeatInfo ...int) string {
+	repeat := 0
+	repeats := 1
+	if len(repeatInfo) > 0 {
+		repeat = repeatInfo[0]
+	}
+	if len(repeatInfo) > 1 {
+		repeats = repeatInfo[1]
+	}
+	name := fmt.Sprintf("%s__%s__c%d", Slug(profileName), Slug(workloadName), concurrency)
+	if repeats > 1 {
+		name += fmt.Sprintf("__r%d", repeat+1)
+	}
+	name += ".json"
 	return filepath.Join(runDir, "results", name)
 }
 

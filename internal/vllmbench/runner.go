@@ -20,8 +20,10 @@ import (
 )
 
 type RunOptions struct {
-	RunDir string
-	DryRun bool
+	RunDir           string
+	ArtifactPath     string
+	DryRun           bool
+	OriginalSpecPath string
 }
 
 type RunSummary struct {
@@ -35,6 +37,7 @@ type RunSummary struct {
 	Rows          []ReportRow `json:"rows,omitempty"`
 	EventsPath    string      `json:"events_path"`
 	ReportPath    string      `json:"report_path,omitempty"`
+	ArtifactPath  string      `json:"artifact_path,omitempty"`
 	SpecPath      string      `json:"spec_path"`
 	MemoryFloor   float64     `json:"memory_floor_gib"`
 }
@@ -45,6 +48,7 @@ type Event struct {
 	Profile         string          `json:"profile,omitempty"`
 	Workload        string          `json:"workload,omitempty"`
 	Concurrency     int             `json:"concurrency,omitempty"`
+	Repeat          int             `json:"repeat,omitempty"`
 	Command         string          `json:"command,omitempty"`
 	Args            []string        `json:"args,omitempty"`
 	ResultFile      string          `json:"result_file,omitempty"`
@@ -81,12 +85,13 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 	}
 	runDir := RunDir(opts.RunDir, spec, time.Now())
 	summary := RunSummary{
-		RunDir:      runDir,
-		StartedAt:   time.Now().UTC(),
-		DryRun:      opts.DryRun,
-		EventsPath:  filepath.Join(runDir, "events.jsonl"),
-		SpecPath:    filepath.Join(runDir, "spec.normalized.json"),
-		MemoryFloor: spec.Safety.MinMemAvailableGiB,
+		RunDir:       runDir,
+		StartedAt:    time.Now().UTC(),
+		DryRun:       opts.DryRun,
+		EventsPath:   filepath.Join(runDir, "events.jsonl"),
+		ArtifactPath: SQLiteArtifactPath(runDir, opts.ArtifactPath),
+		SpecPath:     filepath.Join(runDir, "spec.normalized.json"),
+		MemoryFloor:  spec.Safety.MinMemAvailableGiB,
 	}
 	if err := os.MkdirAll(filepath.Join(runDir, "results"), 0o755); err != nil {
 		return summary, err
@@ -117,13 +122,14 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 			Profile:     planned.Profile.Name,
 			Workload:    planned.Workload.Name,
 			Concurrency: planned.Concurrency,
+			Repeat:      planned.Repeat,
 			Command:     CommandSummary(BenchCommand(spec, planned)),
 			Args:        BenchCommand(spec, planned).Args,
 			ResultFile:  planned.ResultFile,
 		})
 	}
 	if opts.DryRun {
-		if err := finalizeRun(runDir, &summary, events, nil); err != nil {
+		if err := finalizeRun(runDir, &summary, events, spec, nil); err != nil {
 			return summary, err
 		}
 		return summary, nil
@@ -139,7 +145,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 		if err := prebootProfiles(ctx, spec, runDir, plan, events, processes); err != nil {
 			summary.FailedRuns += remainingUnaccountedRuns(summary)
 			events.Write(Event{Timestamp: time.Now().UTC(), Type: "preboot_failed", Error: err.Error()})
-			if finishErr := finalizeRun(runDir, &summary, events, fmt.Errorf("preboot profiles failed: %w", err)); finishErr != nil {
+			if finishErr := finalizeRun(runDir, &summary, events, spec, fmt.Errorf("preboot profiles failed: %w", err)); finishErr != nil {
 				return summary, finishErr
 			}
 			return summary, err
@@ -234,7 +240,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 				}
 				summary.FailedRuns += remainingRunsAfterProfile(spec.Profiles, plan, profile.Name)
 				runErr := fmt.Errorf("profile %s sleep failed: %w", profile.Name, err)
-				if finishErr := finalizeRun(runDir, &summary, events, runErr); finishErr != nil {
+				if finishErr := finalizeRun(runDir, &summary, events, spec, runErr); finishErr != nil {
 					return summary, finishErr
 				}
 				return summary, runErr
@@ -245,13 +251,13 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 			delete(processes, profile.Name)
 		}
 	}
-	if err := finalizeRun(runDir, &summary, events, nil); err != nil {
+	if err := finalizeRun(runDir, &summary, events, spec, nil); err != nil {
 		return summary, err
 	}
 	return summary, nil
 }
 
-func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, runErr error) error {
+func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, spec Spec, runErr error) error {
 	summary.FinishedAt = time.Now().UTC()
 	event := Event{Timestamp: summary.FinishedAt, Type: "run_finish", Details: mustJSON(map[string]any{
 		"completed_runs": summary.CompletedRuns,
@@ -270,6 +276,11 @@ func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, runErr
 	}
 	if err := writeJSONFile(filepath.Join(runDir, "summary.json"), summary); err != nil {
 		return err
+	}
+	if summary.ArtifactPath != "" {
+		if err := WriteSQLiteArtifact(runDir, summary.ArtifactPath, spec, *summary, BuildPlan(spec, runDir)); err != nil && runErr == nil {
+			return err
+		}
 	}
 	if runErr != nil {
 		return runErr
@@ -489,6 +500,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		Profile:     planned.Profile.Name,
 		Workload:    planned.Workload.Name,
 		Concurrency: planned.Concurrency,
+		Repeat:      planned.Repeat,
 		Command:     CommandSummary(command),
 		Args:        command.Args,
 		ResultFile:  planned.ResultFile,
@@ -501,6 +513,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		Profile:         planned.Profile.Name,
 		Workload:        planned.Workload.Name,
 		Concurrency:     planned.Concurrency,
+		Repeat:          planned.Repeat,
 		Command:         CommandSummary(command),
 		Args:            command.Args,
 		ResultFile:      planned.ResultFile,

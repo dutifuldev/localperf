@@ -76,25 +76,34 @@ The goal is a reusable local model performance characterization harness:
 - generate human-readable reports,
 - compare local serving configurations scientifically.
 
-## Standard vLLM Benchmarks
+## Standard Benchmarks
 
-Use the reusable vLLM runner for repeatable benchmark specs, warmups, memory
-guardrails, raw result capture, and Markdown/JSON/CSV reports:
+Use the reusable benchmark runner for repeatable specs, warmups, memory
+guardrails, raw result capture, SQLite artifacts, and Markdown/JSON/CSV
+reports:
 
 ```sh
-go run ./cmd/localperf-vllm-bench plan \
+go run ./cmd/localperf bench plan \
   --spec examples/diffusiongemma-vllm-standard/spec.json
 
-go run ./cmd/localperf-vllm-bench run \
+go run ./cmd/localperf bench run \
   --spec examples/diffusiongemma-vllm-standard/spec.json \
   --timeout 4h
 
-go run ./cmd/localperf-vllm-bench report \
+go run ./cmd/localperf bench report \
   --run-dir runs/<run-id>
+
+go run ./cmd/localperf artifact check \
+  runs/<run-id>.sqlite
 ```
 
-The report command writes `report.md`, `report.json`, and `report.csv` by
-default. Use the CSV for plotting and cross-run comparisons.
+The run command writes a canonical `runs/<run-id>.sqlite` artifact and keeps
+the run directory for raw local files. The report command writes `report.md`,
+`report.json`, and `report.csv` exports by default. Use the SQLite artifact as
+the source of truth and the CSV for plotting or spreadsheet workflows.
+
+The legacy `go run ./cmd/localperf-vllm-bench ...` command still works as a
+compatibility wrapper around the same implementation.
 
 The DiffusionGemma NVFP4 example and completed 36-case known-results fixture
 live under `examples/diffusiongemma-vllm-standard/`. The benchmark policy is
