@@ -110,9 +110,9 @@ type openAIMessage struct {
 }
 
 type openAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens,omitempty"`
-	CompletionTokens int `json:"completion_tokens,omitempty"`
-	TotalTokens      int `json:"total_tokens,omitempty"`
+	PromptTokens     *int `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int `json:"completion_tokens,omitempty"`
+	TotalTokens      *int `json:"total_tokens,omitempty"`
 }
 
 type openAIError struct {
@@ -593,13 +593,20 @@ func (sample RequestSample) withSuccess(request CanonicalRequest, response openA
 	if firstByteAt != nil {
 		sample.FirstByteMillis = firstByteAt.Sub(sample.StartedAt).Seconds() * 1000
 	}
-	sample.PromptTokens = firstNonZeroInt(response.Usage.PromptTokens, request.InputTokensExpected)
-	sample.CompletionTokens = firstNonZeroInt(response.Usage.CompletionTokens, request.OutputTokensExpected)
-	sample.TotalTokens = firstNonZeroInt(response.Usage.TotalTokens, sample.PromptTokens+sample.CompletionTokens)
+	sample.PromptTokens = usageInt(response.Usage.PromptTokens, request.InputTokensExpected)
+	sample.CompletionTokens = usageInt(response.Usage.CompletionTokens, request.OutputTokensExpected)
+	sample.TotalTokens = usageInt(response.Usage.TotalTokens, sample.PromptTokens+sample.CompletionTokens)
 	sample.ResponseSHA256 = sha256Hex(data)
 	sample.ResponseMetadata = responseMetadata(response)
 	sample.deriveThroughput()
 	return sample
+}
+
+func usageInt(value *int, fallback int) int {
+	if value != nil {
+		return *value
+	}
+	return fallback
 }
 
 func (sample RequestSample) withError(errorType, errorCode, message string, completed time.Time, firstByteAt *time.Time) RequestSample {

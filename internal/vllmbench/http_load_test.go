@@ -161,6 +161,27 @@ func TestHTTPResponseRejectsMissingChoices(t *testing.T) {
 	}
 }
 
+func TestHTTPResponsePreservesZeroUsageTokens(t *testing.T) {
+	completed := time.Now().UTC()
+	request := CanonicalRequest{ID: "zero", InputTokensExpected: 512, OutputTokensExpected: 32}
+	sample := newRequestSample(0, request)
+	sample.StartedAt = completed.Add(-time.Second)
+	sample = httpLoadResponse{
+		statusCode:  200,
+		data:        []byte(`{"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":0,"total_tokens":12}}`),
+		completedAt: completed,
+	}.applyToSample(sample, request)
+	if sample.Status != "completed" {
+		t.Fatalf("sample status = %q, want completed: %+v", sample.Status, sample)
+	}
+	if sample.PromptTokens != 12 || sample.CompletionTokens != 0 || sample.TotalTokens != 12 {
+		t.Fatalf("tokens = prompt %d completion %d total %d, want 12/0/12", sample.PromptTokens, sample.CompletionTokens, sample.TotalTokens)
+	}
+	if sample.OutputTokensPerSecond != 0 || sample.TotalTokensPerSecond != 12 {
+		t.Fatalf("throughput = output %.3f total %.3f, want 0/12", sample.OutputTokensPerSecond, sample.TotalTokensPerSecond)
+	}
+}
+
 func TestFeedHTTPJobsAndSleepContext(t *testing.T) {
 	jobs := make(chan localPerfHTTPJob)
 	done := make(chan []localPerfHTTPJob, 1)

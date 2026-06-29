@@ -267,8 +267,8 @@ func profileFromBaseURL(rawURL, model string) (vllmbench.Profile, error) {
 	if err != nil {
 		return vllmbench.Profile{}, err
 	}
-	if parsed.Scheme != "http" {
-		return vllmbench.Profile{}, fmt.Errorf("only http base URLs are supported")
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return vllmbench.Profile{}, fmt.Errorf("only http and https base URLs are supported")
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return vllmbench.Profile{}, fmt.Errorf("base URL must not include query or fragment")

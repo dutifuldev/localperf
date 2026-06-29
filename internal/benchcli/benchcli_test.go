@@ -16,6 +16,16 @@ func TestProfileFromBaseURLPreservesPathPrefix(t *testing.T) {
 	}
 }
 
+func TestProfileFromBaseURLAcceptsHTTPS(t *testing.T) {
+	profile, err := profileFromBaseURL("https://example.test:443/proxy/", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.EndpointBaseURL != "https://example.test:443/proxy" {
+		t.Fatalf("endpoint base URL = %q, want HTTPS URL preserved", profile.EndpointBaseURL)
+	}
+}
+
 func TestTimeoutSecondsRoundsUp(t *testing.T) {
 	if got := timeoutSeconds(500 * time.Millisecond); got != 1 {
 		t.Fatalf("timeoutSeconds(500ms) = %d, want 1", got)
