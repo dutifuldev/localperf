@@ -103,6 +103,14 @@ func TestBaseURLPrefersEndpointBaseURL(t *testing.T) {
 	if got := baseURL(profile); got != "http://127.0.0.1:8000/proxy" {
 		t.Fatalf("baseURL = %q, want endpoint base URL without trailing slash", got)
 	}
+	profile.EndpointBaseURL = "http://127.0.0.1:8000/proxy/v1/"
+	if got := baseURL(profile); got != "http://127.0.0.1:8000/proxy" {
+		t.Fatalf("baseURL = %q, want endpoint base URL without API root", got)
+	}
+	profile.EndpointBaseURL = "http://127.0.0.1:8000/v1"
+	if got := baseURL(profile); got != "http://127.0.0.1:8000" {
+		t.Fatalf("baseURL = %q, want root endpoint base URL", got)
+	}
 }
 
 func TestParseMeminfoErrorBranches(t *testing.T) {

@@ -285,10 +285,7 @@ func profileFromBaseURL(rawURL, model string) (vllmbench.Profile, error) {
 }
 
 func normalizedBaseURL(parsed *url.URL) string {
-	path := strings.TrimRight(parsed.EscapedPath(), "/")
-	path = strings.TrimSuffix(path, "/v1")
-	base := parsed.Scheme + "://" + parsed.Host + path
-	return strings.TrimRight(base, "/")
+	return vllmbench.NormalizeEndpointBaseURL(parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath())
 }
 
 func timeoutSeconds(timeout time.Duration) int {
