@@ -367,8 +367,8 @@ func workloadPhase(workload Workload) string {
 	}
 	return inferWorkloadPhase(
 		workload.Name,
-		trafficInputLen(workload.BenchmarkTrafficConfig),
-		trafficOutputLen(workload.BenchmarkTrafficConfig),
+		firstNonZeroInt(trafficInputLen(workload.BenchmarkTrafficConfig), structuredInputLen(workload)),
+		firstNonZeroInt(trafficOutputLen(workload.BenchmarkTrafficConfig), structuredOutputLen(workload)),
 	)
 }
 

@@ -2014,6 +2014,9 @@ func TestBuildReportEnrichesStructuredInputLenFromSpec(t *testing.T) {
 		MaxConcurrency: []int{1},
 	}}
 	ApplyDefaults(&spec)
+	if spec.Workloads[0].Phase != "prefill" {
+		t.Fatalf("normalized structured phase = %q, want prefill", spec.Workloads[0].Phase)
+	}
 	runDir := t.TempDir()
 	if err := writeJSONFile(filepath.Join(runDir, "spec.normalized.json"), spec); err != nil {
 		t.Fatal(err)
