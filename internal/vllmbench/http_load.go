@@ -329,7 +329,7 @@ func requestRateDelay(value string) (time.Duration, error) {
 		return 0, nil
 	}
 	rate, err := strconv.ParseFloat(value, 64)
-	if err != nil || rate <= 0 {
+	if err != nil || rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
 		return 0, fmt.Errorf("unsupported request_rate %q", value)
 	}
 	return time.Duration(float64(time.Second) / rate), nil
@@ -416,7 +416,7 @@ func (client openAIHTTPClient) requestBody(request CanonicalRequest) (map[string
 	if request.IgnoreEOS || client.workload.IgnoreEOS {
 		body["ignore_eos"] = true
 	}
-	backend := firstNonEmpty(client.workload.Backend, requestModeBackendFallback(request.Mode))
+	backend := client.requestBackend(request)
 	endpoint := strings.TrimSpace(client.workload.Endpoint)
 	if backend == "openai" {
 		body["prompt"] = firstNonEmpty(request.Prompt, messagesPrompt(request.Messages))
@@ -444,6 +444,13 @@ func (client openAIHTTPClient) requestBody(request CanonicalRequest) (map[string
 		return nil, "", err
 	}
 	return body, endpoint, nil
+}
+
+func (client openAIHTTPClient) requestBackend(request CanonicalRequest) string {
+	if strings.TrimSpace(request.Mode) != "" {
+		return requestModeBackendFallback(request.Mode)
+	}
+	return firstNonEmpty(client.workload.Backend, "openai-chat")
 }
 
 func mergeExtraBody(body map[string]any, raw string) error {

@@ -131,6 +131,9 @@ func LocalPerfHTTPCommand(spec Spec, run PlannedRun) CommandSpec {
 	if strings.TrimSpace(run.Workload.Endpoint) != "" {
 		args = append(args, "--endpoint", run.Workload.Endpoint)
 	}
+	if strings.TrimSpace(run.Workload.ExtraBody) != "" {
+		args = append(args, "--extra-body", run.Workload.ExtraBody)
+	}
 	if run.Workload.IgnoreEOS {
 		args = append(args, "--ignore-eos")
 	}

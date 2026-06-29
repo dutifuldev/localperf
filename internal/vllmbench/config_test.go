@@ -943,6 +943,7 @@ func TestLocalPerfHTTPCommandUsesPreparedCanonicalDataset(t *testing.T) {
 	spec := testSpec()
 	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
 	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].ExtraBody = `{"guided_decoding_backend":"outlines"}`
 	ApplyDefaults(&spec)
 	if err := ValidateSpec(spec); err != nil {
 		t.Fatal(err)
@@ -961,6 +962,7 @@ func TestLocalPerfHTTPCommandUsesPreparedCanonicalDataset(t *testing.T) {
 		"--min-mem-available-gib 40",
 		"--num-prompts 1",
 		"--max-concurrency 1",
+		"--extra-body '{\"guided_decoding_backend\":\"outlines\"}'",
 	} {
 		if !strings.Contains(command, want) {
 			t.Fatalf("command %q missing %q", command, want)
@@ -1513,6 +1515,42 @@ func TestLocalPerfHTTPMergesExtraBody(t *testing.T) {
 		MaxOutputTokens: 8,
 	}); err == nil {
 		t.Fatal("expected non-object extra_body to fail")
+	}
+}
+
+func TestLocalPerfHTTPUsesCanonicalRequestMode(t *testing.T) {
+	client := openAIHTTPClient{
+		profile: Profile{Model: "model"},
+		workload: Workload{BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend: "openai-chat",
+		}},
+	}
+	body, endpoint, err := client.requestBody(CanonicalRequest{
+		ID:              "request-1",
+		Mode:            "completion",
+		Prompt:          "finish this",
+		MaxOutputTokens: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "/v1/completions" {
+		t.Fatalf("endpoint = %q, want completions", endpoint)
+	}
+	if body["prompt"] != "finish this" {
+		t.Fatalf("body prompt = %v, want completion prompt body", body["prompt"])
+	}
+	if _, ok := body["messages"]; ok {
+		t.Fatalf("completion request should not carry messages: %+v", body)
+	}
+}
+
+func TestRequestRateDelayRejectsNonFiniteValues(t *testing.T) {
+	if _, err := requestRateDelay("NaN"); err == nil {
+		t.Fatal("expected NaN request_rate to fail")
+	}
+	if _, err := requestRateDelay("+Inf"); err == nil {
+		t.Fatal("expected +Inf request_rate to fail")
 	}
 }
 

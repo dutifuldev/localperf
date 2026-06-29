@@ -3,7 +3,7 @@ package benchcli
 import "testing"
 
 func TestHTTPLoadWorkloadCarriesConcurrency(t *testing.T) {
-	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "", "0", true, 3, 4, 128, 16)
+	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "", "", "0", true, 3, 4, 128, 16)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,12 +19,18 @@ func TestHTTPLoadWorkloadCarriesConcurrency(t *testing.T) {
 }
 
 func TestHTTPLoadWorkloadCarriesCanonicalDatasetPath(t *testing.T) {
-	workload, err := httpLoadWorkload("openai-chat", "custom", "inf", "", "/tmp/canonical.jsonl", "", false, 3, 2, 0, 0)
+	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "/tmp/canonical.jsonl", `{"top_p":0.95}`, "", false, 3, 2, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if workload.DatasetName != "custom" {
+		t.Fatalf("dataset_name = %q, want custom for canonical path", workload.DatasetName)
+	}
 	if workload.DatasetPath != "/tmp/canonical.jsonl" {
 		t.Fatalf("dataset_path = %q, want canonical path", workload.DatasetPath)
+	}
+	if workload.ExtraBody != `{"top_p":0.95}` {
+		t.Fatalf("extra_body = %q, want carried through", workload.ExtraBody)
 	}
 	if workload.Dataset.Prepared.CanonicalPath != "/tmp/canonical.jsonl" || workload.Dataset.Prepared.RequestCount != 3 {
 		t.Fatalf("prepared dataset = %+v, want canonical path and request count", workload.Dataset.Prepared)
