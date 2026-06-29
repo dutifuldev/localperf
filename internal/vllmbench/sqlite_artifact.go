@@ -259,7 +259,7 @@ func insertRunData(tx *sql.Tx, runID, runDir string, spec Spec, _ RunSummary, pl
 		return err
 	}
 	events, _ := readEvents(filepath.Join(runDir, "events.jsonl"))
-	return insertRunExecutionData(tx, runID, runDir, plan, events, now)
+	return insertRunExecutionData(tx, runID, runDir, spec, plan, events, now)
 }
 
 func insertRunDimensions(tx *sql.Tx, runID, runDir string, spec Spec) error {
@@ -271,8 +271,8 @@ func insertRunDimensions(tx *sql.Tx, runID, runDir string, spec Spec) error {
 	return insertCanonicalDatasets(tx, runID, runDir, spec)
 }
 
-func insertRunExecutionData(tx *sql.Tx, runID, runDir string, plan []PlannedRun, events []Event, now time.Time) error {
-	artifactIDs, err := insertRunArtifacts(tx, runID, runDir, events)
+func insertRunExecutionData(tx *sql.Tx, runID, runDir string, spec Spec, plan []PlannedRun, events []Event, now time.Time) error {
+	artifactIDs, err := insertRunArtifacts(tx, runID, runDir, spec, events)
 	if err != nil {
 		return err
 	}
@@ -455,12 +455,19 @@ func insertWorkloads(tx *sql.Tx, runID string, spec Spec) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			workload.Name, runID, workload.Name, workload.Phase, trafficJSON, concurrencyJSON, workload.NumPrompts,
 			workload.Repeats, boolToInt(workload.BenchmarkTrafficConfig.SaveDetailed),
-			boolToInt(workload.CapturePayloadArtifacts), nullableJSON(workload.Dataset),
-			nullableJSON(workload.Request), nullableJSON(workload.Load)); err != nil {
+			boolToInt(workload.CapturePayloadArtifacts), structuredWorkloadJSON(workload, workload.Dataset),
+			structuredWorkloadJSON(workload, workload.Request), structuredWorkloadJSON(workload, workload.Load)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func structuredWorkloadJSON(workload Workload, value any) any {
+	if !hasStructuredDataset(workload) {
+		return nil
+	}
+	return nullableJSON(value)
 }
 
 func insertCanonicalDatasets(tx *sql.Tx, runID, runDir string, spec Spec) error {
@@ -567,12 +574,12 @@ func canonicalRequestRowID(datasetID string, request CanonicalRequest) string {
 	return fmt.Sprintf("%s:%06d:%s", datasetID, request.Ordinal, firstNonEmpty(request.ID, "request"))
 }
 
-func insertRunArtifacts(tx *sql.Tx, runID, runDir string, events []Event) (map[string]int64, error) {
+func insertRunArtifacts(tx *sql.Tx, runID, runDir string, spec Spec, events []Event) (map[string]int64, error) {
 	inserter := artifactInserter{tx: tx, runID: runID, runDir: runDir, ids: map[string]int64{}}
 	if err := inserter.addDefaultArtifacts(); err != nil {
 		return nil, err
 	}
-	if err := inserter.addDatasetArtifacts(); err != nil {
+	if err := inserter.addDatasetArtifacts(spec); err != nil {
 		return nil, err
 	}
 	if err := inserter.addEventArtifacts(events); err != nil {
@@ -610,28 +617,39 @@ func (inserter artifactInserter) addDefaultArtifacts() error {
 	return nil
 }
 
-func (inserter artifactInserter) addDatasetArtifacts() error {
-	entries, err := os.ReadDir(filepath.Join(inserter.runDir, "datasets"))
-	if err != nil {
-		return nonMissingFileError(err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-		path := filepath.Join(inserter.runDir, "datasets", entry.Name())
-		if err := inserter.add(artifactSpec{kind: datasetArtifactKind(entry.Name()), name: entry.Name(), path: path, mediaType: "application/x-ndjson"}); err != nil {
-			return err
+func (inserter artifactInserter) addDatasetArtifacts(spec Spec) error {
+	for _, workload := range spec.Workloads {
+		for _, artifact := range datasetArtifactsForWorkload(workload) {
+			if err := inserter.add(artifact); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-func datasetArtifactKind(name string) string {
-	return matchContains(name, []containsMapping{
-		{Pattern: ".canonical.", Value: "canonical_dataset"},
-		{Pattern: ".vllm-custom.", Value: "engine_dataset"},
-	}, "dataset")
+func datasetArtifactsForWorkload(workload Workload) []artifactSpec {
+	prepared := workload.Dataset.Prepared
+	rows := []struct {
+		kind string
+		path string
+	}{
+		{"canonical_dataset", prepared.CanonicalPath},
+		{"engine_dataset", prepared.VLLMCustomPath},
+	}
+	artifacts := make([]artifactSpec, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.path) == "" {
+			continue
+		}
+		artifacts = append(artifacts, artifactSpec{
+			kind:      row.kind,
+			name:      filepath.Base(row.path),
+			path:      row.path,
+			mediaType: "application/x-ndjson",
+		})
+	}
+	return artifacts
 }
 
 func (inserter artifactInserter) addEventArtifacts(events []Event) error {

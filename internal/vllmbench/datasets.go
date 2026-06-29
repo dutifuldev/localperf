@@ -627,23 +627,46 @@ func readCanonicalJSONL(path string, requestSpec RequestSpec) ([]CanonicalReques
 	}
 	requests := make([]CanonicalRequest, 0, len(rawRows))
 	for i, raw := range rawRows {
-		var request CanonicalRequest
-		if err := json.Unmarshal(raw, &request); err != nil {
+		request, err := canonicalJSONLRequest(i, raw, requestSpec)
+		if err != nil {
 			return nil, err
 		}
-		request.Raw = append(json.RawMessage(nil), raw...)
-		request.SourceRecordID = firstNonEmpty(request.SourceRecordID, request.ID, fmt.Sprintf("custom-%06d", i+1))
-		request.Mode = firstNonEmpty(request.Mode, requestSpec.Mode, "chat")
-		if request.MaxOutputTokens <= 0 {
-			request.MaxOutputTokens = requestSpec.MaxOutputTokens
-		}
-		if request.Temperature == nil {
-			request.Temperature = requestSpec.Temperature
-		}
-		request.IgnoreEOS = request.IgnoreEOS || requestSpec.IgnoreEOS
 		requests = append(requests, request)
 	}
 	return requests, nil
+}
+
+func canonicalJSONLRequest(index int, raw json.RawMessage, requestSpec RequestSpec) (CanonicalRequest, error) {
+	var request CanonicalRequest
+	if err := json.Unmarshal(raw, &request); err != nil {
+		return CanonicalRequest{}, err
+	}
+	aliases := canonicalRequestAliases(raw)
+	request.Raw = append(json.RawMessage(nil), raw...)
+	request.SourceRecordID = firstNonEmpty(request.SourceRecordID, request.ID, fmt.Sprintf("custom-%06d", index+1))
+	request.Mode = firstNonEmpty(request.Mode, requestSpec.Mode, "chat")
+	if request.MaxOutputTokens <= 0 {
+		request.MaxOutputTokens = firstNonZeroInt(requestSpec.MaxOutputTokens, aliases.OutputTokens, aliases.MaxTokens)
+	}
+	if request.OutputTokensExpected <= 0 {
+		request.OutputTokensExpected = firstNonZeroInt(aliases.OutputTokens, aliases.MaxTokens)
+	}
+	if request.Temperature == nil {
+		request.Temperature = requestSpec.Temperature
+	}
+	request.IgnoreEOS = request.IgnoreEOS || requestSpec.IgnoreEOS
+	return request, nil
+}
+
+type canonicalRequestOutputAliases struct {
+	OutputTokens int `json:"output_tokens"`
+	MaxTokens    int `json:"max_tokens"`
+}
+
+func canonicalRequestAliases(raw json.RawMessage) canonicalRequestOutputAliases {
+	var aliases canonicalRequestOutputAliases
+	_ = json.Unmarshal(raw, &aliases)
+	return aliases
 }
 
 type rawPayloadDatasetAdapter struct{}

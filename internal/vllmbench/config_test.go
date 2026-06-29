@@ -688,6 +688,13 @@ func TestExecuteDryRunStoresOriginalSpecAndPlannedCommandStatus(t *testing.T) {
 	if workloadPhase != "decode" {
 		t.Fatalf("workload phase = %q, want decode", workloadPhase)
 	}
+	var datasetJSON, requestJSON, loadJSON sql.NullString
+	if err := db.QueryRow("SELECT dataset_json, request_json, load_json FROM workloads WHERE name = 'decode'").Scan(&datasetJSON, &requestJSON, &loadJSON); err != nil {
+		t.Fatal(err)
+	}
+	if datasetJSON.Valid || requestJSON.Valid || loadJSON.Valid {
+		t.Fatalf("legacy structured workload JSON columns = dataset %v request %v load %v, want all NULL", datasetJSON, requestJSON, loadJSON)
+	}
 }
 
 func TestCheckSQLiteArtifactDoesNotCreateMissingFile(t *testing.T) {
@@ -889,7 +896,7 @@ func TestPrepareDatasetsMaterializesShareGPTWorkload(t *testing.T) {
 func TestPrepareDatasetsAllowsPerRowCustomOutputTokens(t *testing.T) {
 	dir := t.TempDir()
 	datasetPath := filepath.Join(dir, "custom.jsonl")
-	writeFile(t, datasetPath, `{"id":"one","prompt":"hello","max_output_tokens":3}
+	writeFile(t, datasetPath, `{"id":"one","prompt":"hello","output_tokens":3}
 `)
 	spec := testSpec()
 	spec.Workloads = []Workload{testCustomJSONLWorkload("row-output", datasetPath, []string{"8k"})}
@@ -909,6 +916,42 @@ func TestPrepareDatasetsAllowsPerRowCustomOutputTokens(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"output_tokens":3`) {
 		t.Fatalf("vLLM custom dataset did not preserve row output length:\n%s", data)
+	}
+}
+
+func TestSQLiteArtifactIgnoresStaleDatasetFiles(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	staleDatasetDir := filepath.Join(runDir, "datasets")
+	writeFile(t, filepath.Join(staleDatasetDir, "stale.canonical.jsonl"), `{"id":"stale","prompt":"old","max_output_tokens":1}
+`)
+	writeFile(t, filepath.Join(staleDatasetDir, "stale.vllm-custom.jsonl"), `{"prompt":"old","output_tokens":1}
+`)
+	spec := testSpec()
+	spec.OutputDir = dir
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Managed = false
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Workloads = []Workload{testRandomWorkload("legacy", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1})}
+
+	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true, RunDir: runDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var datasetArtifacts int
+	if err := db.QueryRow("SELECT COUNT(*) FROM artifacts WHERE kind IN ('canonical_dataset','engine_dataset')").Scan(&datasetArtifacts); err != nil {
+		t.Fatal(err)
+	}
+	if datasetArtifacts != 0 {
+		t.Fatalf("dataset artifacts = %d, want 0 for legacy run with stale files", datasetArtifacts)
 	}
 }
 
