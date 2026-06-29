@@ -466,7 +466,19 @@ func (response httpLoadResponse) decode(decoded *openAIResponse) *httpLoadFailur
 	if decoded.Error != nil {
 		return newHTTPLoadFailure(firstNonEmpty(decoded.Error.Type, "api_error"), fmt.Sprint(decoded.Error.Code), decoded.Error.Message, response.completedAt, response.firstByteAt)
 	}
+	if !hasCompletionChoice(decoded.Choices) {
+		return newHTTPLoadFailure("response_shape", "", "response missing completion choices", response.completedAt, response.firstByteAt)
+	}
 	return nil
+}
+
+func hasCompletionChoice(choices []openAIChoice) bool {
+	for _, choice := range choices {
+		if choice.Message != nil || strings.TrimSpace(choice.Text) != "" || strings.TrimSpace(choice.FinishReason) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (client openAIHTTPClient) requestBody(request CanonicalRequest) (map[string]any, string, error) {

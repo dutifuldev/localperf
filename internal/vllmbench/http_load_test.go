@@ -130,6 +130,18 @@ func TestRequestEndpointFollowsRequestModeDefaults(t *testing.T) {
 	}
 }
 
+func TestHTTPResponseRejectsMissingChoices(t *testing.T) {
+	completed := time.Now().UTC()
+	sample := httpLoadResponse{
+		statusCode:  200,
+		data:        []byte(`{"object":"list","data":[]}`),
+		completedAt: completed,
+	}.applyToSample(newRequestSample(0, CanonicalRequest{ID: "bad"}), CanonicalRequest{ID: "bad"})
+	if sample.Status != "failed" || sample.ErrorType != "response_shape" {
+		t.Fatalf("sample = %+v, want response_shape failure", sample)
+	}
+}
+
 func TestFeedHTTPJobsAndSleepContext(t *testing.T) {
 	jobs := make(chan localPerfHTTPJob)
 	done := make(chan []localPerfHTTPJob, 1)
