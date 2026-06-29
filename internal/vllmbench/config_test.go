@@ -74,6 +74,13 @@ func TestValidateSpecAllowsUnmanagedEndpointOnlyProfile(t *testing.T) {
 	}
 
 	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	for _, endpoint := range []string{"api.example.com", "https://api.example.com/v1?x=1", "https://api.example.com/v1#frag"} {
+		spec.Profiles[0].EndpointBaseURL = endpoint
+		if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "endpoint_base_url") {
+			t.Fatalf("ValidateSpec endpoint %q = %v, want endpoint_base_url issue", endpoint, err)
+		}
+	}
+	spec.Profiles[0].EndpointBaseURL = "https://api.example.com/v1"
 	if err := ValidateSpec(spec); err != nil {
 		t.Fatalf("ValidateSpec endpoint-only profile: %v", err)
 	}
@@ -1694,6 +1701,20 @@ func TestRowsByMeasurementRequiresResultWrittenForErroredEvents(t *testing.T) {
 	row := rows[measurementKey("profile", "workload", 1, 0)]
 	if row.Completed != 1 || row.Failed != 1 {
 		t.Fatalf("row completed/failed = %d/%d, want partial result imported", row.Completed, row.Failed)
+	}
+}
+
+func TestBuildReportIncludesWrittenPartialErroredResult(t *testing.T) {
+	runDir := t.TempDir()
+	resultFile := filepath.Join("results", "partial.json")
+	writeFile(t, filepath.Join(runDir, resultFile), `{"completed":1,"failed":1}`)
+	writeFile(t, filepath.Join(runDir, "events.jsonl"), `{"timestamp":"2026-06-26T00:00:00Z","type":"workload_finish","profile":"profile","workload":"workload","concurrency":1,"result_file":"results/partial.json","error":"timeout","details":{"result_written":true}}`+"\n")
+	report, err := BuildReport(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].Completed != 1 || report.Rows[0].Failed != 1 {
+		t.Fatalf("report rows = %+v, want partial errored result row", report.Rows)
 	}
 }
 

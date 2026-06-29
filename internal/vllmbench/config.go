@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -640,6 +641,7 @@ func validateSlug(prefix, label, name string, reserved map[string]string, slugs 
 
 func validateProfileFields(prefix string, profile Profile, engineNames map[string]bool) []string {
 	var issues []string
+	issues = append(issues, validateProfileEndpointBaseURL(prefix, profile.EndpointBaseURL)...)
 	if profile.Port <= 0 && profileRequiresPort(profile) {
 		issues = append(issues, prefix+": port must be positive")
 	}
@@ -656,7 +658,25 @@ func validateProfileFields(prefix string, profile Profile, engineNames map[strin
 }
 
 func profileRequiresPort(profile Profile) bool {
-	return profile.Managed || NormalizeEndpointBaseURL(profile.EndpointBaseURL) == ""
+	return profile.Managed || !validEndpointBaseURL(profile.EndpointBaseURL)
+}
+
+func validateProfileEndpointBaseURL(prefix, raw string) []string {
+	if strings.TrimSpace(raw) == "" || validEndpointBaseURL(raw) {
+		return nil
+	}
+	return []string{prefix + ": endpoint_base_url must be an http(s) URL with a host and no query or fragment"}
+}
+
+func validEndpointBaseURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	return parsed.Host != "" && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
 func validateEndpointOnlyProfileUsage(spec Spec) []string {

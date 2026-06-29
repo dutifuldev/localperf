@@ -110,7 +110,7 @@ func collectResultEvents(report *Report, events []Event) map[string]Event {
 		if event.Type == "workload_failed" {
 			report.Events.FailedWorkload++
 		}
-		if event.Type == "workload_finish" && event.ResultFile != "" && event.Error == "" {
+		if eventHasImportableResult(event) {
 			resultEvents[event.ResultFile] = event
 		}
 	}
