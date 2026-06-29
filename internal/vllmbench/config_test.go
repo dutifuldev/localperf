@@ -2299,6 +2299,19 @@ func TestWriteReportFilesWritesCSV(t *testing.T) {
 			t.Fatalf("CSV %q missing %q", text, want)
 		}
 	}
+	mdData, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mdText := string(mdData)
+	for _, want := range []string{
+		"Latency mean ms | TTFT mean ms",
+		"| 250.0 | - | 1234.5 | `results/8k__prefill__c4.json` |",
+	} {
+		if !strings.Contains(mdText, want) {
+			t.Fatalf("Markdown report %q missing %q", mdText, want)
+		}
+	}
 }
 
 func TestBuildReportResolvesCWDRelativeResultPathsWithAbsoluteRunDir(t *testing.T) {

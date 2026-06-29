@@ -297,11 +297,11 @@ func RenderMarkdown(report Report) string {
 }
 
 func renderThroughputTable(out *strings.Builder, runDir string, rows []ReportRow) {
-	out.WriteString("| Profile | Workload | Dataset | Context | Concurrency | Input | Output | Completed | Failed | Output tok/s | Output tok/s sd | Per-user tok/s | Total tok/s | Latency mean ms | Result |\n")
-	out.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
+	out.WriteString("| Profile | Workload | Dataset | Context | Concurrency | Input | Output | Completed | Failed | Output tok/s | Output tok/s sd | Per-user tok/s | Total tok/s | Latency mean ms | TTFT mean ms | Result |\n")
+	out.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
 	for _, row := range rows {
 		out.WriteString(fmt.Sprintf(
-			"| %s | %s | %s | %s | %s | %s | %s | %d | %d | %s | %s | %s | %s | %s | `%s` |\n",
+			"| %s | %s | %s | %s | %s | %s | %s | %d | %d | %s | %s | %s | %s | %s | %s | `%s` |\n",
 			cell(row.Profile),
 			cell(row.Workload),
 			cell(row.DatasetName),
@@ -315,7 +315,8 @@ func renderThroughputTable(out *strings.Builder, runDir string, rows []ReportRow
 			floatCell(row.OutputTokSecStdDev),
 			floatCell(row.PerUserOutputTokSec),
 			floatCell(row.TotalTokensPerSec),
-			floatCell(firstNonZeroFloat(row.MeanLatencyMillis, row.MeanTTFTMillis)),
+			floatCell(row.MeanLatencyMillis),
+			floatCell(row.MeanTTFTMillis),
 			fileCell(runDir, row.ResultFile),
 		))
 	}
