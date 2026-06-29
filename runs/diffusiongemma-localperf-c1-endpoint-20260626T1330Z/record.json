@@ -1,0 +1,65 @@
+{
+  "run_id": "diffusiongemma-localperf-c1-endpoint-20260626T1330Z",
+  "started_at": "2026-06-26T13:23:58Z",
+  "finished_at": "2026-06-26T13:28:41Z",
+  "status": "load_complete",
+  "runner": "localperf-vllm-bench",
+  "config": {
+    "model": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
+    "backend": "vllm",
+    "vllm_version": "0.23.1rc1.dev479+gbf292b5f6",
+    "profile": "4k-reference",
+    "max_model_len": 4096,
+    "max_num_seqs": 20,
+    "max_num_batched_tokens": 8192,
+    "gpu_memory_utilization": 0.3,
+    "attention_backend": "TRITON_ATTN",
+    "moe_backend": "cutlass",
+    "sleep_mode": true,
+    "sleep_level": 2,
+    "memory_floor_gib": 40
+  },
+  "warmup": {
+    "dataset_name": "random",
+    "random_input_len": 256,
+    "random_output_len": 16,
+    "num_prompts": 4,
+    "max_concurrency": 1
+  },
+  "workload": {
+    "name": "claim-repro-1k-out1024",
+    "dataset_name": "random",
+    "random_input_len": 1000,
+    "random_output_len": 1024,
+    "num_prompts": 20,
+    "max_concurrency": 1,
+    "ignore_eos": true,
+    "temperature": 0
+  },
+  "result": {
+    "completed": 20,
+    "failed": 0,
+    "duration_seconds": 61.29383452699949,
+    "output_tokens_per_second": 334.12822281462434,
+    "total_tokens_per_second": 664.7813815931396,
+    "per_user_output_tokens_per_second": 334.12822281462434,
+    "mean_ttft_ms": 2311.5571534502124,
+    "p99_ttft_ms": 3985.9331469304184,
+    "mean_tpot_ms": 0.7357107290809886
+  },
+  "memory": {
+    "baseline_mem_available_gib": 115.25190734863281,
+    "pre_warmup_mem_available_gib": 45.82035827636719,
+    "pre_workload_mem_available_gib": 45.813194274902344,
+    "post_run_mem_available_gib": 115
+  },
+  "artifacts": {
+    "report": "report.md",
+    "result": "results/4k-reference__claim-repro-1k-out1024__c1.json"
+  },
+  "notes": [
+    "The runner used /v1/chat/completions explicitly for the openai-chat vLLM benchmark backend.",
+    "The vLLM server was slept and stopped after the run.",
+    "No machine OOM occurred."
+  ]
+}

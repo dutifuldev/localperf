@@ -75,3 +75,28 @@ The goal is a reusable local model performance characterization harness:
 - capture machine-readable telemetry,
 - generate human-readable reports,
 - compare local serving configurations scientifically.
+
+## Standard vLLM Benchmarks
+
+Use the reusable vLLM runner for repeatable benchmark specs, warmups, memory
+guardrails, raw result capture, and Markdown/JSON/CSV reports:
+
+```sh
+go run ./cmd/localperf-vllm-bench plan \
+  --spec examples/diffusiongemma-vllm-standard/spec.json
+
+go run ./cmd/localperf-vllm-bench run \
+  --spec examples/diffusiongemma-vllm-standard/spec.json \
+  --timeout 4h
+
+go run ./cmd/localperf-vllm-bench report \
+  --run-dir runs/<run-id>
+```
+
+The report command writes `report.md`, `report.json`, and `report.csv` by
+default. Use the CSV for plotting and cross-run comparisons.
+
+The DiffusionGemma NVFP4 example and completed 36-case known-results fixture
+live under `examples/diffusiongemma-vllm-standard/`. The benchmark policy is
+documented in
+[Standard vLLM Benchmarking](docs/2026-06-26-standard-vllm-benchmarking.md).

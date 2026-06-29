@@ -1,0 +1,32 @@
+{
+  "run_dir": "runs/diffusiongemma-localperf-c1-endpoint-20260626T1330Z",
+  "generated": "2026-06-26T13:32:34.560434517Z",
+  "rows": [
+    {
+      "profile": "4k-reference",
+      "workload": "claim-repro-1k-out1024",
+      "dataset_name": "random",
+      "context": 4096,
+      "server_max_num_seqs": 20,
+      "concurrency": 1,
+      "random_input_len": 1000,
+      "random_output_len": 1024,
+      "completed": 20,
+      "duration_seconds": 61.29383452699949,
+      "output_tokens_per_second": 334.12822281462434,
+      "total_tokens_per_second": 664.7813815931396,
+      "per_user_output_tokens_per_second": 334.12822281462434,
+      "mean_ttft_ms": 2311.5571534502124,
+      "p99_ttft_ms": 3985.9331469304184,
+      "mean_tpot_ms": 0.7357107290809886,
+      "result_file": "runs/diffusiongemma-localperf-c1-endpoint-20260626T1330Z/results/4k-reference__claim-repro-1k-out1024__c1.json"
+    }
+  ],
+  "events": {
+    "total": 1,
+    "by_type": {
+      "workload_finish": 1
+    },
+    "failed_workload": 0
+  }
+}
