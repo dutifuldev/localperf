@@ -147,11 +147,8 @@ func executeLocalPerfHTTPBench(ctx context.Context, spec Spec, planned PlannedRu
 	result, runErr := runLocalPerfHTTPBenchmark(runCtx, planned)
 	duration := time.Since(start)
 	memoryErr := stopLocalPerfHTTPMemoryMonitor(cancel, memoryMonitor)
-	if resultErr := localPerfHTTPResultError(result); runErr == nil {
-		runErr = resultErr
-	}
 	runErr = persistLocalPerfHTTPResult(planned.ResultFile, logPath, result, duration, runErr, memoryErr)
-	commandResult := commandResult{Duration: duration, ExitCode: localPerfHTTPExitCode(runCtx, runErr, memoryErr)}
+	commandResult := commandResult{Duration: duration, ExitCode: localPerfHTTPExitCode(runCtx, runErr, memoryErr, result)}
 	return commandResult, localPerfHTTPRunError(runCtx, spec, runErr, memoryErr)
 }
 
@@ -186,18 +183,15 @@ func writeLocalPerfHTTPResultFile(resultFile string, result *HTTPBenchmarkResult
 	return runErr
 }
 
-func localPerfHTTPResultError(result *HTTPBenchmarkResult) error {
-	if result != nil && result.Failed > 0 {
-		return fmt.Errorf("localperf_http result reported %d failed request(s)", result.Failed)
-	}
-	return nil
-}
-
-func localPerfHTTPExitCode(runCtx context.Context, runErr, memoryErr error) int {
-	if runErr != nil || memoryErr != nil || runCtx.Err() == context.DeadlineExceeded {
+func localPerfHTTPExitCode(runCtx context.Context, runErr, memoryErr error, result *HTTPBenchmarkResult) int {
+	if runErr != nil || memoryErr != nil || runCtx.Err() == context.DeadlineExceeded || hasFailedHTTPRequests(result) {
 		return 1
 	}
 	return 0
+}
+
+func hasFailedHTTPRequests(result *HTTPBenchmarkResult) bool {
+	return result != nil && result.Failed > 0
 }
 
 func localPerfHTTPRunError(runCtx context.Context, spec Spec, runErr, memoryErr error) error {

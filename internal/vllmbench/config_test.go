@@ -1463,24 +1463,7 @@ func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
 func TestExecuteLocalPerfHTTPRecordsRequestSamples(t *testing.T) {
 	server, host, port := fakeOpenAIServer(t)
 	defer server.Close()
-	spec := testSpec()
-	spec.Name = "localperf-http-request-samples"
-	spec.OutputDir = t.TempDir()
-	appendTimestamp := false
-	spec.Runner.AppendTimestampToRun = &appendTimestamp
-	spec.Safety.MinMemAvailableGiB = 0.1
-	spec.Safety.StartupTimeoutSec = 10
-	spec.Safety.WorkloadTimeoutSec = 10
-	spec.Safety.HTTPTimeoutSec = 2
-	spec.Warmup.Enabled = false
-	spec.Profiles = spec.Profiles[:1]
-	spec.Profiles[0].Host = host
-	spec.Profiles[0].Port = port
-	spec.Profiles[0].Managed = false
-	spec.Profiles[0].EnableSleepMode = false
-	spec.Workloads = []Workload{testRandomWorkload("localperf-http", []string{spec.Profiles[0].Name}, 64, 8, 3, []int{2})}
-	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
-	ApplyDefaults(&spec)
+	spec := localPerfHTTPTestSpec(t, host, port, "localperf-http-request-samples", 3, 2)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err != nil {
 		t.Fatalf("Execute error = %v", err)
@@ -1523,24 +1506,7 @@ func TestExecuteLocalPerfHTTPRecordsRequestSamples(t *testing.T) {
 func TestExecuteLocalPerfHTTPPreservesZeroTokenArtifacts(t *testing.T) {
 	server, host, port := fakeOpenAIServerWithUsage(t, 12, 0, 12)
 	defer server.Close()
-	spec := testSpec()
-	spec.Name = "localperf-http-zero-tokens"
-	spec.OutputDir = t.TempDir()
-	appendTimestamp := false
-	spec.Runner.AppendTimestampToRun = &appendTimestamp
-	spec.Safety.MinMemAvailableGiB = 0.1
-	spec.Safety.StartupTimeoutSec = 10
-	spec.Safety.WorkloadTimeoutSec = 10
-	spec.Safety.HTTPTimeoutSec = 2
-	spec.Warmup.Enabled = false
-	spec.Profiles = spec.Profiles[:1]
-	spec.Profiles[0].Host = host
-	spec.Profiles[0].Port = port
-	spec.Profiles[0].Managed = false
-	spec.Profiles[0].EnableSleepMode = false
-	spec.Workloads = []Workload{testRandomWorkload("localperf-http-zero", []string{spec.Profiles[0].Name}, 64, 8, 1, []int{1})}
-	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
-	ApplyDefaults(&spec)
+	spec := localPerfHTTPTestSpec(t, host, port, "localperf-http-zero-tokens", 1, 1)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err != nil {
 		t.Fatalf("Execute error = %v", err)
@@ -1554,6 +1520,26 @@ func TestExecuteLocalPerfHTTPPreservesZeroTokenArtifacts(t *testing.T) {
 	}
 	defer db.Close()
 	assertZeroTokenArtifactRows(t, db)
+}
+
+func TestExecuteLocalPerfHTTPFailedSamplesRemainReportable(t *testing.T) {
+	server, host, port := fakeOpenAIErrorServer(t)
+	defer server.Close()
+	spec := localPerfHTTPTestSpec(t, host, port, "localperf-http-failed-samples", 1, 1)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
+		t.Fatalf("Execute error = %v, want benchmark run failure", err)
+	}
+	if summary.FailedRuns != 1 {
+		t.Fatalf("summary = %+v, want one failed run", summary)
+	}
+	report, err := BuildReport(summary.RunDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].Failed != 1 {
+		t.Fatalf("report rows = %+v, want failed request row", report.Rows)
+	}
 }
 
 func TestInsertMeasurementPreservesUnknownTokenNulls(t *testing.T) {
@@ -1627,6 +1613,46 @@ func assertZeroTokenArtifactRows(t *testing.T, db *sql.DB) {
 	if mean != 0 || count != 1 {
 		t.Fatalf("request_output_throughput mean/count = %v/%d, want 0/1", mean, count)
 	}
+}
+
+func localPerfHTTPTestSpec(t *testing.T, host string, port int, name string, numPrompts, concurrency int) Spec {
+	t.Helper()
+	spec := testSpec()
+	spec.Name = name
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Host = host
+	spec.Profiles[0].Port = port
+	spec.Profiles[0].Managed = false
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{testRandomWorkload(name, []string{spec.Profiles[0].Name}, 64, 8, numPrompts, []int{concurrency})}
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	ApplyDefaults(&spec)
+	return spec
+}
+
+func fakeOpenAIErrorServer(t *testing.T) (*httptest.Server, string, int) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		case "/v1/chat/completions":
+			http.Error(w, `{"error":{"message":"boom","type":"server_error","code":"boom"}}`, http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	host, port := testServerHostPort(t, server)
+	return server, host, port
 }
 
 func TestLocalPerfHTTPMergesExtraBody(t *testing.T) {
@@ -2652,6 +2678,12 @@ func fakeOpenAIServerWithUsage(t *testing.T, promptTokens, completionTokens, tot
 			http.NotFound(w, r)
 		}
 	}))
+	host, port := testServerHostPort(t, server)
+	return server, host, port
+}
+
+func testServerHostPort(t *testing.T, server *httptest.Server) (string, int) {
+	t.Helper()
 	parsed, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -2664,7 +2696,7 @@ func fakeOpenAIServerWithUsage(t *testing.T, promptTokens, completionTokens, tot
 	if err != nil {
 		t.Fatal(err)
 	}
-	return server, host, port
+	return host, port
 }
 
 func testRandomWorkload(name string, profiles []string, inputLen, outputLen, numPrompts int, concurrencies []int) Workload {

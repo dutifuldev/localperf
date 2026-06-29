@@ -29,8 +29,8 @@ func TestValidateLocalPerfHTTPResult(t *testing.T) {
 		t.Fatal("expected empty result to fail validation")
 	}
 
-	if err := localPerfHTTPResultError(&HTTPBenchmarkResult{Failed: 1}); err == nil {
-		t.Fatal("expected failed HTTP samples to produce run error")
+	if got := localPerfHTTPExitCode(context.Background(), nil, nil, &HTTPBenchmarkResult{Failed: 1}); got != 1 {
+		t.Fatalf("exit code for failed HTTP samples = %d, want 1", got)
 	}
 }
 
