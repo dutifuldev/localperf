@@ -849,7 +849,7 @@ func TestPrepareDatasetsMaterializesShareGPTWorkload(t *testing.T) {
 		t.Fatalf("prepared dataset metadata missing: %+v", workload.Dataset.Prepared)
 	}
 	command := ShellQuote(BenchCommand(spec, BuildPlan(spec, runDir)[0]).Args)
-	for _, want := range []string{"--dataset-name custom", "--dataset-path " + workload.Dataset.Prepared.VLLMCustomPath, "--num-prompts 1", "--max-concurrency 1"} {
+	for _, want := range []string{"--dataset-name custom", "--dataset-path " + workload.Dataset.Prepared.VLLMCustomPath, "--custom-output-len -1", "--num-prompts 1", "--max-concurrency 1"} {
 		if !strings.Contains(command, want) {
 			t.Fatalf("command %q missing %q", command, want)
 		}
@@ -928,6 +928,46 @@ func TestExecuteWithShareGPTDatasetStoresCanonicalArtifactRows(t *testing.T) {
 	}
 	if datasetArtifacts != 2 {
 		t.Fatalf("dataset artifacts = %d, want 2", datasetArtifacts)
+	}
+}
+
+func TestDryRunStoresDuplicateCustomRequestIDsAcrossWorkloads(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := filepath.Join(dir, "custom.jsonl")
+	writeFile(t, datasetPath, `{"id":"one","prompt":"hello","max_output_tokens":1}
+`)
+	spec := testSpec()
+	spec.Name = "duplicate-custom-request-ids"
+	spec.OutputDir = dir
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Managed = false
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Workloads = []Workload{
+		testCustomJSONLWorkload("w1", datasetPath, []string{spec.Profiles[0].Name}),
+		testCustomJSONLWorkload("w2", datasetPath, []string{spec.Profiles[0].Name}),
+	}
+
+	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true, RunDir: filepath.Join(dir, "run")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ArtifactPath == "" {
+		t.Fatal("summary artifact path is empty")
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var rowCount, distinctRequestIDs int
+	if err := db.QueryRow("SELECT COUNT(*), COUNT(DISTINCT request_id) FROM canonical_requests").Scan(&rowCount, &distinctRequestIDs); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount != 2 || distinctRequestIDs != 1 {
+		t.Fatalf("canonical request rows = %d distinct request ids = %d, want 2 and 1", rowCount, distinctRequestIDs)
 	}
 }
 
@@ -1855,6 +1895,28 @@ func testShareGPTWorkload(path string, profiles []string) Workload {
 			TurnPolicy:      "first_user_turn",
 			MaxOutputTokens: 512,
 			Temperature:     &temp,
+		},
+		Load: LoadConfig{
+			MaxConcurrency: []int{1},
+			RequestRate:    "inf",
+		},
+	}
+}
+
+func testCustomJSONLWorkload(name, path string, profiles []string) Workload {
+	return Workload{
+		Name:     name,
+		Phase:    "decode",
+		Profiles: profiles,
+		Dataset: DatasetSpec{
+			Type:        "custom_jsonl",
+			Path:        path,
+			SampleCount: 1,
+			Selection:   "first_n",
+		},
+		Request: RequestSpec{
+			Mode:            "chat",
+			MaxOutputTokens: 1,
 		},
 		Load: LoadConfig{
 			MaxConcurrency: []int{1},

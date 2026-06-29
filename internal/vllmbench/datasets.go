@@ -224,6 +224,7 @@ func applyMaterializedDatasetToWorkload(workload *Workload, requestCount int, vl
 	workload.NumPrompts = requestCount
 	workload.BenchmarkTrafficConfig.DatasetName = "custom"
 	workload.BenchmarkTrafficConfig.DatasetPath = vllmPath
+	workload.BenchmarkTrafficConfig.CustomOutputLen = intPointer(-1)
 	workload.BenchmarkTrafficConfig.Backend = firstNonEmpty(workload.BenchmarkTrafficConfig.Backend, "openai-chat")
 	workload.BenchmarkTrafficConfig.Endpoint = firstNonEmpty(workload.BenchmarkTrafficConfig.Endpoint, defaultEndpoint(workload.BenchmarkTrafficConfig.Backend))
 	workload.BenchmarkTrafficConfig.RequestRate = firstNonEmpty(workload.Load.RequestRate, workload.BenchmarkTrafficConfig.RequestRate, "inf")

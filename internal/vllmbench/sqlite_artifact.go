@@ -555,12 +555,16 @@ func insertCanonicalRequest(tx *sql.Tx, runID, datasetID, workloadID string, sou
 		input_tokens_expected, output_tokens_expected, arrival_offset_ms,
 		messages_json, attachments_json, metadata_json, canonical_json
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		request.ID, runID, datasetID, sourceRecordRowID, workloadID, request.ID, request.Ordinal,
+		canonicalRequestRowID(datasetID, request), runID, datasetID, sourceRecordRowID, workloadID, request.ID, request.Ordinal,
 		emptyNull(request.ConversationID), request.TurnIndex, request.Mode, emptyNull(sha256Maybe(prompt)),
 		intNull(request.MaxOutputTokens), intNull(request.InputTokensExpected), intNull(request.OutputTokensExpected),
 		request.ArrivalOffsetMillis, nullableJSON(request.Messages), nullableJSON(request.Attachments),
 		nullableJSON(request.Metadata), mustJSONString(request))
 	return err
+}
+
+func canonicalRequestRowID(datasetID string, request CanonicalRequest) string {
+	return fmt.Sprintf("%s:%06d:%s", datasetID, request.Ordinal, firstNonEmpty(request.ID, "request"))
 }
 
 func insertRunArtifacts(tx *sql.Tx, runID, runDir string, events []Event) (map[string]int64, error) {
