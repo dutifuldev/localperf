@@ -160,6 +160,24 @@ func TestRequestBodyRejectsUnsupportedRequestMode(t *testing.T) {
 	}
 }
 
+func TestRequestBodyRejectsUnsupportedWorkloadBackend(t *testing.T) {
+	client := openAIHTTPClient{
+		profile: Profile{Model: "model"},
+		workload: Workload{
+			Name:                   "bad-backend",
+			BenchmarkTrafficConfig: BenchmarkTrafficConfig{Backend: "openai-cht"},
+		},
+	}
+	_, _, err := client.requestBody(CanonicalRequest{
+		ID:              "random",
+		Prompt:          "hello",
+		MaxOutputTokens: 8,
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported backend "openai-cht"`) {
+		t.Fatalf("requestBody error = %v, want unsupported backend error", err)
+	}
+}
+
 func TestHTTPResponseRejectsMissingChoices(t *testing.T) {
 	completed := time.Now().UTC()
 	sample := httpLoadResponse{

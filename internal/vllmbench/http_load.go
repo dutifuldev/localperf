@@ -560,7 +560,11 @@ func (client openAIHTTPClient) requestBackend(request CanonicalRequest) (string,
 		}
 		return backend, nil
 	}
-	return firstNonEmpty(client.workload.Backend, "openai-chat"), nil
+	backend, ok := requestModeBackend(firstNonEmpty(client.workload.Backend, "openai-chat"))
+	if !ok {
+		return "", fmt.Errorf("workload %s has unsupported backend %q", client.workload.Name, client.workload.Backend)
+	}
+	return backend, nil
 }
 
 func (client openAIHTTPClient) endpointForBackend(backend string) string {
