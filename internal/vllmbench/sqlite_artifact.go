@@ -847,7 +847,6 @@ type measurementInsert struct {
 }
 
 func insertMeasurement(tx *sql.Tx, insert measurementInsert) (int64, error) {
-	completedMeasurement := insert.status == "completed" && insert.row.Completed > 0
 	result, err := tx.Exec(`INSERT INTO measurements (
 		run_id, profile_id, workload_id, phase_id, repeat_index, concurrency,
 		samples_requested, status, started_at, completed_at, wall_time_ms,
@@ -858,10 +857,11 @@ func insertMeasurement(tx *sql.Tx, insert measurementInsert) (int64, error) {
 		insert.runID, insert.planned.Profile.Name, insert.planned.Workload.Name, zeroNullInt(insert.phaseID),
 		insert.planned.Repeat, insert.planned.Concurrency, insert.planned.Workload.NumPrompts, insert.status,
 		timePtrString(insert.startedAt), timePtrString(insert.completedAt), durationMillis(insert.startedAt, insert.completedAt),
-		insert.row.Completed, insert.row.Failed, knownIntNull(completedMeasurement, insert.row.PromptTokens),
-		knownIntNull(completedMeasurement, insert.row.CompletionTokens), knownIntNull(completedMeasurement, insert.row.TotalTokens),
-		knownFloatNull(completedMeasurement, insert.row.OutputTokensPerSec),
-		knownFloatNull(completedMeasurement, insert.row.PerUserOutputTokSec), knownFloatNull(completedMeasurement, insert.row.TotalTokensPerSec),
+		insert.row.Completed, insert.row.Failed, knownIntNull(insert.row.promptTokensKnown, insert.row.PromptTokens),
+		knownIntNull(insert.row.completionTokensKnown, insert.row.CompletionTokens), knownIntNull(insert.row.totalTokensKnown, insert.row.TotalTokens),
+		knownFloatNull(insert.row.outputTokensPerSecKnown, insert.row.OutputTokensPerSec),
+		knownFloatNull(insert.row.perUserOutputTokSecKnown, insert.row.PerUserOutputTokSec),
+		knownFloatNull(insert.row.totalTokensPerSecKnown, insert.row.TotalTokensPerSec),
 		zeroNullInt(insert.rawID), nil, insert.errorText)
 	if err != nil {
 		return 0, err

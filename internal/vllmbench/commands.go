@@ -128,7 +128,7 @@ func appendLocalPerfHTTPSafetyArgs(builder *argBuilder, spec Spec) {
 }
 
 func appendLocalPerfHTTPDatasetArgs(builder *argBuilder, workload Workload) {
-	if datasetPath := localPerfHTTPDatasetPath(workload); datasetPath != "" {
+	if datasetPath := httpDatasetPath(workload); datasetPath != "" {
 		*builder = append(*builder, "--dataset-path", datasetPath)
 	}
 }
@@ -157,13 +157,6 @@ func appendLocalPerfHTTPOptionalArgs(builder *argBuilder, workload Workload) {
 	if workload.Temperature != nil {
 		*builder = append(*builder, "--temperature", trimFloat(*workload.Temperature))
 	}
-}
-
-func localPerfHTTPDatasetPath(workload Workload) string {
-	if path := strings.TrimSpace(workload.Dataset.Prepared.CanonicalPath); path != "" {
-		return path
-	}
-	return ""
 }
 
 func WarmupCommand(spec Spec, profile Profile, runDir string) CommandSpec {

@@ -973,6 +973,19 @@ func TestLocalPerfHTTPCommandUsesPreparedCanonicalDataset(t *testing.T) {
 	}
 }
 
+func TestLocalPerfHTTPCommandUsesDirectDatasetPath(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{testRandomWorkload("http-custom", []string{"8k"}, 0, 8, 1, []int{1})}
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].BenchmarkTrafficConfig.DatasetName = "custom"
+	spec.Workloads[0].BenchmarkTrafficConfig.DatasetPath = "/tmp/direct.canonical.jsonl"
+	ApplyDefaults(&spec)
+	command := ShellQuote(LoadCommand(spec, BuildPlan(spec, t.TempDir())[0]).Args)
+	if !strings.Contains(command, "--dataset-path /tmp/direct.canonical.jsonl") {
+		t.Fatalf("command %q missing direct dataset path", command)
+	}
+}
+
 func TestPrepareDatasetsAllowsPerRowCustomOutputTokens(t *testing.T) {
 	dir := t.TempDir()
 	datasetPath := filepath.Join(dir, "custom.jsonl")
@@ -1520,6 +1533,51 @@ func TestExecuteLocalPerfHTTPPreservesZeroTokenArtifacts(t *testing.T) {
 	}
 	defer db.Close()
 	assertZeroTokenArtifactRows(t, db)
+}
+
+func TestInsertMeasurementPreservesUnknownTokenNulls(t *testing.T) {
+	db, err := createSQLiteArtifact(filepath.Join(t.TempDir(), "artifact.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := withSQLiteTx(db, func(tx *sql.Tx) error {
+		seedMeasurementParents(t, tx)
+		_, err := insertMeasurement(tx, measurementInsert{
+			runID: "run",
+			planned: PlannedRun{
+				Profile:     Profile{Name: "profile"},
+				Workload:    Workload{Name: "workload", NumPrompts: 1},
+				Concurrency: 1,
+			},
+			row:    ReportRow{Completed: 1},
+			status: "completed",
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var promptTokens, completionTokens, totalTokens sql.NullInt64
+	if err := db.QueryRow("SELECT prompt_tokens, completion_tokens, total_tokens FROM measurements LIMIT 1").Scan(&promptTokens, &completionTokens, &totalTokens); err != nil {
+		t.Fatal(err)
+	}
+	if promptTokens.Valid || completionTokens.Valid || totalTokens.Valid {
+		t.Fatalf("token fields = %v/%v/%v, want NULLs for unknown token totals", promptTokens, completionTokens, totalTokens)
+	}
+}
+
+func seedMeasurementParents(t *testing.T, tx *sql.Tx) {
+	t.Helper()
+	for _, statement := range []string{
+		`INSERT INTO run (id, name, status, created_at) VALUES ('run', 'run', 'completed', '2026-01-01T00:00:00Z')`,
+		`INSERT INTO engines (id, run_id, name, type, managed) VALUES ('engine', 'run', 'engine', 'test', 0)`,
+		`INSERT INTO profiles (id, run_id, engine_id, name, model, managed) VALUES ('profile', 'run', 'engine', 'profile', 'model', 0)`,
+		`INSERT INTO workloads (id, run_id, name, traffic_json, concurrency_json, samples) VALUES ('workload', 'run', 'workload', '{}', '[1]', 1)`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func assertZeroTokenArtifactRows(t *testing.T, db *sql.DB) {

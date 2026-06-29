@@ -63,6 +63,13 @@ type ReportRow struct {
 	P95LatencyMillis    float64 `json:"p95_latency_ms,omitempty"`
 	P99LatencyMillis    float64 `json:"p99_latency_ms,omitempty"`
 	ResultFile          string  `json:"result_file,omitempty"`
+
+	promptTokensKnown        bool
+	completionTokensKnown    bool
+	totalTokensKnown         bool
+	outputTokensPerSecKnown  bool
+	totalTokensPerSecKnown   bool
+	perUserOutputTokSecKnown bool
 }
 
 func BuildReport(runDir string) (Report, error) {
@@ -514,6 +521,12 @@ func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 			P95LatencyMillis:   firstFloat(raw, "p95_latency_ms"),
 			P99LatencyMillis:   firstFloat(raw, "p99_latency_ms"),
 			ResultFile:         path,
+
+			promptTokensKnown:       hasAnyKey(raw, "total_input_tokens", "prompt_tokens"),
+			completionTokensKnown:   hasAnyKey(raw, "total_output_tokens", "completion_tokens"),
+			totalTokensKnown:        hasAnyKey(raw, "total_tokens"),
+			outputTokensPerSecKnown: hasAnyKey(raw, "output_throughput", "aggregate_completion_tokens_per_second", "completion_tokens_per_second", "diffusion_committed_throughput"),
+			totalTokensPerSecKnown:  hasAnyKey(raw, "total_token_throughput", "aggregate_total_tokens_per_second", "total_tokens_per_second"),
 		}
 		if row.Context == 0 {
 			row.Context = intValue(raw, "context")
@@ -542,8 +555,9 @@ func deriveReportRowFields(row *ReportRow) {
 	} else {
 		row.Phase = normalizeReportPhase(row.Phase)
 	}
-	if row.Concurrency > 0 && row.OutputTokensPerSec > 0 {
+	if row.Concurrency > 0 && (row.OutputTokensPerSec > 0 || row.outputTokensPerSecKnown) {
 		row.PerUserOutputTokSec = row.OutputTokensPerSec / float64(row.Concurrency)
+		row.perUserOutputTokSecKnown = row.outputTokensPerSecKnown
 	}
 }
 
@@ -706,6 +720,15 @@ func firstByKey[T comparable](keys []string, lookup func(string) T) T {
 		}
 	}
 	return zero
+}
+
+func hasAnyKey(row map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if _, ok := row[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func intValue(row map[string]any, key string) int {
