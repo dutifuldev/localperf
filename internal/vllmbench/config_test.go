@@ -186,6 +186,43 @@ func TestLoadSpecSupportsEngineNeutralShape(t *testing.T) {
 	}
 }
 
+func TestApplyDefaultsOverlaysNestedTraffic(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{{
+		Name:     "mixed-traffic",
+		Profiles: []string{"8k"},
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			SaveDetailed: true,
+			Metadata:     []string{"suite=localperf"},
+			Goodput:      []string{"ttft:5000"},
+			ExtraArgs:    []string{"--request-id-prefix", "mixed"},
+		},
+		Traffic: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "random",
+			RandomInputLen:  128,
+			RandomOutputLen: 16,
+			RequestRate:     "inf",
+		},
+		Samples:     2,
+		Concurrency: []int{1},
+	}}
+	ApplyDefaults(&spec)
+	workload := spec.Workloads[0]
+	if !workload.SaveDetailed || fmt.Sprint(workload.Metadata) != "[suite=localperf]" || fmt.Sprint(workload.Goodput) != "[ttft:5000]" {
+		t.Fatalf("top-level traffic flags were not preserved: %+v", workload.BenchmarkTrafficConfig)
+	}
+	if workload.RandomInputLen != 128 || workload.RandomOutputLen != 16 || workload.NumPrompts != 2 || fmt.Sprint(workload.MaxConcurrency) != "[1]" {
+		t.Fatalf("nested traffic aliases were not applied: %+v", workload)
+	}
+	command := ShellQuote(BenchCommand(spec, BuildPlan(spec, "runs/example")[0]).Args)
+	for _, want := range []string{"--save-detailed", "--metadata suite=localperf", "--goodput ttft:5000", "--request-id-prefix mixed"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command %q missing preserved arg %q", command, want)
+		}
+	}
+}
+
 func TestApplyDefaultsDoesNotDuplicateEngineArgs(t *testing.T) {
 	spec := testSpec()
 	spec.Profiles[0].Args = []string{"--served-model-name", "alias"}
@@ -710,6 +747,9 @@ func TestExecuteRepeatsUseDistinctLogsAndMeasurements(t *testing.T) {
 	if summary.CompletedRuns != 2 || summary.FailedRuns != 0 {
 		t.Fatalf("summary = %+v, want two completed repeat runs", summary)
 	}
+	if len(summary.Rows) != 2 || summary.Rows[0].Repeat != 0 || summary.Rows[1].Repeat != 1 {
+		t.Fatalf("summary row repeats = %+v, want repeat indexes 0 and 1", summary.Rows)
+	}
 	for _, name := range []string{
 		"8k__fake-random__c1__r1.log",
 		"8k__fake-random__c1__r2.log",
@@ -752,6 +792,17 @@ func TestExecuteRepeatsUseDistinctLogsAndMeasurements(t *testing.T) {
 	}
 	if logArtifacts != 2 {
 		t.Fatalf("repeat log artifacts = %d, want 2", logArtifacts)
+	}
+}
+
+func TestRawResultArtifactNameAvoidsHyphenCollisions(t *testing.T) {
+	first := rawResultArtifactName(Event{Profile: "a-b", Workload: "c", Concurrency: 1})
+	second := rawResultArtifactName(Event{Profile: "a", Workload: "b-c", Concurrency: 1})
+	if first == second {
+		t.Fatalf("raw result artifact names collide: %s", first)
+	}
+	if !strings.Contains(first, "a-b__c") || !strings.Contains(second, "a__b-c") {
+		t.Fatalf("artifact names do not preserve component boundaries: %q %q", first, second)
 	}
 }
 
@@ -1017,6 +1068,19 @@ func TestExecuteFailsWhenWarmupReportsRequestFailures(t *testing.T) {
 	}
 	if !strings.Contains(string(events), `"type":"warmup_finish"`) || !strings.Contains(string(events), "warmup result reported") {
 		t.Fatalf("events did not record failed warmup:\n%s", events)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var status string
+	var message sql.NullString
+	if err := db.QueryRow("SELECT status, error_message FROM measurements").Scan(&status, &message); err != nil {
+		t.Fatal(err)
+	}
+	if status != "skipped" || !message.Valid || !strings.Contains(message.String, "warmup result reported") {
+		t.Fatalf("measurement status=%s message=%q, want skipped warmup failure", status, message.String)
 	}
 }
 

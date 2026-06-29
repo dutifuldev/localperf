@@ -258,7 +258,7 @@ func ApplyDefaults(spec *Spec) {
 	for i := range spec.Workloads {
 		workload := &spec.Workloads[i]
 		if !trafficConfigEmpty(workload.Traffic) {
-			workload.BenchmarkTrafficConfig = workload.Traffic
+			workload.BenchmarkTrafficConfig = overlayTrafficConfig(workload.BenchmarkTrafficConfig, workload.Traffic)
 		}
 		if workload.NumPrompts <= 0 && workload.Samples > 0 {
 			workload.NumPrompts = workload.Samples
@@ -275,6 +275,20 @@ func ApplyDefaults(spec *Spec) {
 
 func trafficConfigEmpty(traffic BenchmarkTrafficConfig) bool {
 	return reflect.DeepEqual(traffic, BenchmarkTrafficConfig{})
+}
+
+func overlayTrafficConfig(base, override BenchmarkTrafficConfig) BenchmarkTrafficConfig {
+	baseValue := reflect.ValueOf(&base).Elem()
+	overrideValue := reflect.ValueOf(override)
+	for i := 0; i < overrideValue.NumField(); i++ {
+		field := overrideValue.Field(i)
+		zero := reflect.Zero(field.Type())
+		if reflect.DeepEqual(field.Interface(), zero.Interface()) {
+			continue
+		}
+		baseValue.Field(i).Set(field)
+	}
+	return base
 }
 
 func applyServeDefaults(profile *Profile) {

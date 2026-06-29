@@ -417,7 +417,7 @@ func insertRunArtifacts(tx *sql.Tx, runID, runDir string, events []Event) (map[s
 	}
 	for _, event := range events {
 		if event.ResultFile != "" {
-			name := "result-" + Slug(event.Profile+"-"+event.Workload+fmt.Sprintf("-c%d-r%d", event.Concurrency, event.Repeat+1)) + ".json"
+			name := rawResultArtifactName(event)
 			if err := addPath("bench_raw_result", name, event.ResultFile, "application/json"); err != nil {
 				return nil, err
 			}
@@ -430,6 +430,18 @@ func insertRunArtifacts(tx *sql.Tx, runID, runDir string, events []Event) (map[s
 		}
 	}
 	return artifactIDs, nil
+}
+
+func rawResultArtifactName(event Event) string {
+	profile := Slug(event.Profile)
+	if profile == "" {
+		profile = "profile"
+	}
+	workload := Slug(event.Workload)
+	if workload == "" {
+		workload = "workload"
+	}
+	return fmt.Sprintf("result-%s__%s__c%d__r%d.json", profile, workload, event.Concurrency, event.Repeat+1)
 }
 
 func insertArtifactPath(tx *sql.Tx, runID, kind, name, path, mediaType string) (int64, error) {

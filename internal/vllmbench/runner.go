@@ -145,6 +145,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 		if err := prebootProfiles(ctx, spec, runDir, plan, events, processes); err != nil {
 			summary.FailedRuns += remainingUnaccountedRuns(summary)
 			events.Write(Event{Timestamp: time.Now().UTC(), Type: "preboot_failed", Error: err.Error()})
+			markRunsSkipped(events, plan, err.Error())
 			if finishErr := finalizeRun(runDir, &summary, events, spec, opts.OriginalSpecPath, fmt.Errorf("preboot profiles failed: %w", err)); finishErr != nil {
 				return summary, finishErr
 			}
@@ -164,6 +165,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 			if err != nil {
 				summary.FailedRuns += len(runs)
 				events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
+				markRunsSkipped(events, runs, err.Error())
 				continue
 			}
 			if proc != nil {
@@ -173,6 +175,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 			if err := wakeProfile(ctx, spec, profile, events); err != nil {
 				summary.FailedRuns += len(runs)
 				events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
+				markRunsSkipped(events, runs, err.Error())
 				if proc != nil {
 					stopProcess(proc)
 					delete(processes, profile.Name)
@@ -183,6 +186,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 				if err := runWarmup(ctx, spec, profile, runDir, events); err != nil {
 					summary.FailedRuns += len(runs)
 					events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_failed", Profile: profile.Name, Error: err.Error()})
+					markRunsSkipped(events, runs, err.Error())
 					if profile.EnableSleepMode {
 						if sleepErr := sleepProfile(ctx, spec, profile, events); sleepErr != nil {
 							events.Write(Event{Timestamp: time.Now().UTC(), Type: "profile_sleep_failed", Profile: profile.Name, Error: sleepErr.Error()})
@@ -204,6 +208,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 				if IsMemoryFloorError(err) {
 					remaining := len(runs) - i - 1
 					summary.FailedRuns += remaining
+					markRunsSkipped(events, runs[i+1:], "skipped after memory floor guard tripped")
 					stopProfileAfterMemoryFloor(events, profile, proc, processes, remaining)
 					profileAborted = true
 					break
@@ -217,6 +222,7 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 				if IsMemoryFloorError(err) {
 					remaining := len(runs) - i - 1
 					summary.FailedRuns += remaining
+					markRunsSkipped(events, runs[i+1:], "skipped after memory floor guard tripped")
 					stopProfileAfterMemoryFloor(events, profile, proc, processes, remaining)
 					profileAborted = true
 					break
@@ -238,7 +244,9 @@ func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error
 					stopProcess(proc)
 					delete(processes, profile.Name)
 				}
-				summary.FailedRuns += remainingRunsAfterProfile(spec.Profiles, plan, profile.Name)
+				remainingRuns := runsAfterProfile(spec.Profiles, plan, profile.Name)
+				summary.FailedRuns += len(remainingRuns)
+				markRunsSkipped(events, remainingRuns, err.Error())
 				runErr := fmt.Errorf("profile %s sleep failed: %w", profile.Name, err)
 				if finishErr := finalizeRun(runDir, &summary, events, spec, opts.OriginalSpecPath, runErr); finishErr != nil {
 					return summary, finishErr
@@ -540,6 +548,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	row.Context = planned.Profile.MaxModelLen
 	row.ServerMaxNumSeqs = planned.Profile.MaxNumSeqs
 	row.Concurrency = planned.Concurrency
+	row.Repeat = planned.Repeat
 	row.RandomInputLen = planned.Workload.RandomInputLen
 	row.RandomOutputLen = planned.Workload.RandomOutputLen
 	row.DatasetName = planned.Workload.DatasetName
@@ -876,19 +885,33 @@ func runsForProfile(plan []PlannedRun, profileName string) []PlannedRun {
 	return out
 }
 
-func remainingRunsAfterProfile(profiles []Profile, plan []PlannedRun, profileName string) int {
+func runsAfterProfile(profiles []Profile, plan []PlannedRun, profileName string) []PlannedRun {
 	seenProfile := false
-	remaining := 0
+	var remaining []PlannedRun
 	for _, profile := range profilesInPlanOrder(profiles, plan) {
 		if profile.Name == profileName {
 			seenProfile = true
 			continue
 		}
 		if seenProfile {
-			remaining += len(runsForProfile(plan, profile.Name))
+			remaining = append(remaining, runsForProfile(plan, profile.Name)...)
 		}
 	}
 	return remaining
+}
+
+func markRunsSkipped(events *eventWriter, runs []PlannedRun, message string) {
+	for _, planned := range runs {
+		events.Write(Event{
+			Timestamp:   time.Now().UTC(),
+			Type:        "workload_skipped",
+			Profile:     planned.Profile.Name,
+			Workload:    planned.Workload.Name,
+			Concurrency: planned.Concurrency,
+			Repeat:      planned.Repeat,
+			Error:       message,
+		})
+	}
 }
 
 func shouldStopManaged(spec Spec) bool {
