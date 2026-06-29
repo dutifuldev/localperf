@@ -30,6 +30,7 @@
       "name": "sharegpt-chat-smoke",
       "phase": "decode",
       "profiles": ["smoke"],
+      "capture_payload_artifacts": true,
       "dataset": {
         "type": "sharegpt",
         "path": "examples/sharegpt-chat-smoke/data/sharegpt.json",

@@ -248,8 +248,12 @@ func applyWorkloadFields(row *ReportRow, workload Workload) {
 		row.RandomInputLen = firstNonZeroInt(row.RandomInputLen, workload.RandomInputLen)
 		row.RandomOutputLen = firstNonZeroInt(row.RandomOutputLen, workload.RandomOutputLen)
 	}
-	row.InputLen = firstNonZeroInt(row.InputLen, trafficInputLen(workload.BenchmarkTrafficConfig))
+	row.InputLen = firstNonZeroInt(row.InputLen, trafficInputLen(workload.BenchmarkTrafficConfig), structuredInputLen(workload))
 	row.OutputLen = firstNonZeroInt(row.OutputLen, trafficOutputLen(workload.BenchmarkTrafficConfig), structuredOutputLen(workload))
+}
+
+func structuredInputLen(workload Workload) int {
+	return workload.Dataset.InputTokens
 }
 
 func structuredOutputLen(workload Workload) int {

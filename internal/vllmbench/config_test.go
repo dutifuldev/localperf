@@ -1013,6 +1013,7 @@ func TestExecuteWithShareGPTDatasetStoresCanonicalArtifactRows(t *testing.T) {
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].EnableSleepMode = false
 	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{spec.Profiles[0].Name})}
+	spec.Workloads[0].CapturePayloadArtifacts = true
 	ApplyDefaults(&spec)
 
 	summary, err := Execute(context.Background(), spec, RunOptions{})
@@ -1055,6 +1056,50 @@ func TestExecuteWithShareGPTDatasetStoresCanonicalArtifactRows(t *testing.T) {
 	}
 }
 
+func TestExecuteWithShareGPTDatasetSkipsPayloadArtifactsByDefault(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Name = "sharegpt-default-private"
+	spec.OutputDir = dir
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Managed = false
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{spec.Profiles[0].Name})}
+	ApplyDefaults(&spec)
+
+	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true, RunDir: filepath.Join(dir, "run")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckSQLiteArtifact(summary.ArtifactPath); err != nil {
+		t.Fatalf("artifact check failed: %v", err)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for table, want := range map[string]int{"datasets": 1, "source_records": 0, "canonical_requests": 0} {
+		var got int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s rows = %d, want %d", table, got, want)
+		}
+	}
+	var datasetArtifacts int
+	if err := db.QueryRow("SELECT COUNT(*) FROM artifacts WHERE kind IN ('canonical_dataset', 'engine_dataset')").Scan(&datasetArtifacts); err != nil {
+		t.Fatal(err)
+	}
+	if datasetArtifacts != 0 {
+		t.Fatalf("dataset artifacts = %d, want 0 without payload capture", datasetArtifacts)
+	}
+}
+
 func TestDryRunStoresDuplicateCustomRequestIDsAcrossWorkloads(t *testing.T) {
 	dir := t.TempDir()
 	datasetPath := filepath.Join(dir, "custom.jsonl")
@@ -1073,6 +1118,8 @@ func TestDryRunStoresDuplicateCustomRequestIDsAcrossWorkloads(t *testing.T) {
 		testCustomJSONLWorkload("w1", datasetPath, []string{spec.Profiles[0].Name}),
 		testCustomJSONLWorkload("w2", datasetPath, []string{spec.Profiles[0].Name}),
 	}
+	spec.Workloads[0].CapturePayloadArtifacts = true
+	spec.Workloads[1].CapturePayloadArtifacts = true
 
 	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true, RunDir: filepath.Join(dir, "run")})
 	if err != nil {
@@ -1840,6 +1887,48 @@ func TestBuildReportEnrichesStructuredOutputLenFromSpec(t *testing.T) {
 	row := report.Rows[0]
 	if row.OutputLen != 512 || row.DisplayOutputLen() != 512 {
 		t.Fatalf("row output length was not enriched from structured request: %+v", row)
+	}
+}
+
+func TestBuildReportEnrichesStructuredInputLenFromSpec(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{{
+		Name:     "structured-synthetic",
+		Profiles: []string{"8k"},
+		Dataset: DatasetSpec{
+			Type:         "synthetic",
+			SampleCount:  1,
+			InputTokens:  8192,
+			OutputTokens: 16,
+		},
+		Request: RequestSpec{Mode: "chat", MaxOutputTokens: 16},
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "custom",
+			CustomOutputLen: intPointer(-1),
+			RequestRate:     "inf",
+		},
+		NumPrompts:     1,
+		MaxConcurrency: []int{1},
+	}}
+	ApplyDefaults(&spec)
+	runDir := t.TempDir()
+	if err := writeJSONFile(filepath.Join(runDir, "spec.normalized.json"), spec); err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(runDir, "results", "8k__structured-synthetic__c1.json")
+	writeFile(t, resultPath, `{"completed":1,"failed":0,"output_throughput":10}`)
+	writeFile(t, filepath.Join(runDir, "events.jsonl"), `{"timestamp":"2026-06-26T00:00:00Z","type":"workload_finish","profile":"8k","workload":"structured-synthetic","concurrency":1,"result_file":"results/8k__structured-synthetic__c1.json"}`+"\n")
+	report, err := BuildReport(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(report.Rows))
+	}
+	row := report.Rows[0]
+	if row.InputLen != 8192 || row.DisplayInputLen() != 8192 || row.Phase != "prefill" {
+		t.Fatalf("row input length/phase was not enriched from structured dataset: %+v", row)
 	}
 }
 

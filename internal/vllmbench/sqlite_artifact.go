@@ -500,6 +500,9 @@ func insertCanonicalDataset(tx *sql.Tx, runID, runDir string, workload Workload)
 	if err != nil {
 		return err
 	}
+	if !workload.CapturePayloadArtifacts {
+		return nil
+	}
 	sourceIDs := map[string]int64{}
 	for _, request := range requests {
 		sourceID, err := insertSourceRecord(tx, runID, datasetID, request, sourceIDs)
@@ -629,6 +632,9 @@ func (inserter artifactInserter) addDatasetArtifacts(spec Spec) error {
 }
 
 func datasetArtifactsForWorkload(workload Workload) []artifactSpec {
+	if !workload.CapturePayloadArtifacts {
+		return nil
+	}
 	prepared := workload.Dataset.Prepared
 	rows := []struct {
 		kind string
