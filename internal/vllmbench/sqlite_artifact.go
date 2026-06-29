@@ -1172,7 +1172,7 @@ func insertReports(tx *sql.Tx, runID string, artifactIDs map[string]int64, creat
 func rowsByMeasurement(runDir string, events []Event) map[string]ReportRow {
 	out := map[string]ReportRow{}
 	for _, event := range events {
-		if event.Type != "workload_finish" || event.ResultFile == "" || event.Error != "" {
+		if event.Type != "workload_finish" || event.ResultFile == "" {
 			continue
 		}
 		rows, err := ParseResultFile(resolveResultPath(runDir, event.ResultFile))

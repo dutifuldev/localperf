@@ -1540,6 +1540,25 @@ func TestExecuteLocalPerfHTTPFailedSamplesRemainReportable(t *testing.T) {
 	if len(report.Rows) != 1 || report.Rows[0].Failed != 1 {
 		t.Fatalf("report rows = %+v, want failed request row", report.Rows)
 	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var completedRequests, failedRequests int
+	if err := db.QueryRow("SELECT completed_requests, failed_requests FROM measurements LIMIT 1").Scan(&completedRequests, &failedRequests); err != nil {
+		t.Fatal(err)
+	}
+	if completedRequests != 0 || failedRequests != 1 {
+		t.Fatalf("measurement completed/failed = %d/%d, want 0/1", completedRequests, failedRequests)
+	}
+	var requestRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&requestRows); err != nil {
+		t.Fatal(err)
+	}
+	if requestRows != 1 {
+		t.Fatalf("request rows = %d, want failed sample imported", requestRows)
+	}
 }
 
 func TestInsertMeasurementPreservesUnknownTokenNulls(t *testing.T) {
