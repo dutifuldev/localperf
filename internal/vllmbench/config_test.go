@@ -1484,6 +1484,38 @@ func TestExecuteLocalPerfHTTPRecordsRequestSamples(t *testing.T) {
 	}
 }
 
+func TestLocalPerfHTTPMergesExtraBody(t *testing.T) {
+	client := openAIHTTPClient{
+		profile: Profile{Model: "model"},
+		workload: Workload{BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:   "openai-chat",
+			ExtraBody: `{"guided_decoding_backend":"outlines","add_generation_prompt":false}`,
+		}},
+	}
+	body, endpoint, err := client.requestBody(CanonicalRequest{
+		ID:              "request-1",
+		Messages:        []Message{{Role: "user", Content: "hello"}},
+		MaxOutputTokens: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "/v1/chat/completions" {
+		t.Fatalf("endpoint = %q, want chat completions", endpoint)
+	}
+	if body["guided_decoding_backend"] != "outlines" || body["add_generation_prompt"] != false {
+		t.Fatalf("extra body was not merged: %+v", body)
+	}
+	client.workload.ExtraBody = `[1]`
+	if _, _, err := client.requestBody(CanonicalRequest{
+		ID:              "request-1",
+		Messages:        []Message{{Role: "user", Content: "hello"}},
+		MaxOutputTokens: 8,
+	}); err == nil {
+		t.Fatal("expected non-object extra_body to fail")
+	}
+}
+
 func TestExecuteLocalPerfHTTPChecksMemoryBeforeRun(t *testing.T) {
 	original := checkMemoryFloor
 	defer func() { checkMemoryFloor = original }()

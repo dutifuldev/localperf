@@ -423,6 +423,9 @@ func (client openAIHTTPClient) requestBody(request CanonicalRequest) (map[string
 		if endpoint == "" {
 			endpoint = defaultEndpoint("openai")
 		}
+		if err := mergeExtraBody(body, client.workload.ExtraBody); err != nil {
+			return nil, "", err
+		}
 		return body, endpoint, nil
 	}
 	messages := request.Messages
@@ -437,7 +440,31 @@ func (client openAIHTTPClient) requestBody(request CanonicalRequest) (map[string
 	if endpoint == "" {
 		endpoint = defaultEndpoint("openai-chat")
 	}
+	if err := mergeExtraBody(body, client.workload.ExtraBody); err != nil {
+		return nil, "", err
+	}
 	return body, endpoint, nil
+}
+
+func mergeExtraBody(body map[string]any, raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	extra := map[string]any{}
+	if err := decoder.Decode(&extra); err != nil {
+		return fmt.Errorf("invalid extra_body: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("invalid extra_body: extra content after JSON object")
+	}
+	for key, value := range extra {
+		body[key] = value
+	}
+	return nil
 }
 
 func requestModeBackendFallback(mode string) string {
