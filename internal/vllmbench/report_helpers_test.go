@@ -250,6 +250,9 @@ func TestReportPhasesGroupRowsByExplicitAndInferredPhase(t *testing.T) {
 	if strings.Index(got, "### Decode") > strings.Index(got, "### Prefill") {
 		t.Fatalf("phase sections were not ranked decode before prefill:\n%s", got)
 	}
+	if phase := reportRowPhase(ReportRow{Profile: "p", Workload: "default-mixed", Phase: "mixed", InputLen: 4096, OutputLen: 16}); phase != "prefill" {
+		t.Fatalf("default mixed row phase = %q, want prefill", phase)
+	}
 }
 
 func TestSortedProfileNames(t *testing.T) {

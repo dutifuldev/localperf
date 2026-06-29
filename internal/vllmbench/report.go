@@ -330,7 +330,7 @@ func rowsForPhase(rows []ReportRow, phase string) []ReportRow {
 }
 
 func reportRowPhase(row ReportRow) string {
-	if phase := normalizeWorkloadPhase(row.Phase); phase != "" {
+	if phase := normalizeWorkloadPhase(row.Phase); phase != "" && phase != "mixed" {
 		return phase
 	}
 	return inferWorkloadPhase(row.Workload, row.DisplayInputLen(), row.DisplayOutputLen())
