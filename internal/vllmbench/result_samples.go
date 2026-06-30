@@ -318,14 +318,17 @@ func resultDate(raw map[string]json.RawMessage) time.Time {
 		return time.Unix(0, 0).UTC()
 	}
 	text = strings.TrimSpace(text)
-	for _, layout := range []string{
-		"20060102-150405",
-		time.RFC3339Nano,
-		time.RFC3339,
-		"2006-01-02 15:04:05.999999",
-		"2006-01-02 15:04:05",
+	for _, candidate := range []struct {
+		layout   string
+		location *time.Location
+	}{
+		{"20060102-150405", time.Local},
+		{time.RFC3339Nano, time.UTC},
+		{time.RFC3339, time.UTC},
+		{"2006-01-02 15:04:05.999999", time.Local},
+		{"2006-01-02 15:04:05", time.Local},
 	} {
-		if parsed, err := time.ParseInLocation(layout, text, time.UTC); err == nil {
+		if parsed, err := time.ParseInLocation(candidate.layout, text, candidate.location); err == nil {
 			return parsed.UTC()
 		}
 	}

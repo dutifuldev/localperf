@@ -42,12 +42,14 @@ func TestBuildPlanAndBenchCommand(t *testing.T) {
 		"--random-output-len 16",
 		"--endpoint /v1/chat/completions",
 		"--max-concurrency 4",
-		"--save-detailed",
 		"--result-filename runs/example/results/8k__prefill-8k__c4.json",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("command %q missing %q", got, want)
 		}
+	}
+	if strings.Contains(got, "--save-detailed") {
+		t.Fatalf("command %q should not include --save-detailed by default", got)
 	}
 }
 

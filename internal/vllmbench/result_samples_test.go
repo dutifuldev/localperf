@@ -7,7 +7,7 @@ import (
 
 func TestRequestSamplesFromResultReadsVLLMBenchArrays(t *testing.T) {
 	samples, err := requestSamplesFromResultData([]byte(`{
-  "date": "20260102-030405",
+  "date": "2026-01-02T03:04:05Z",
   "duration": 10.0,
   "completed": 2,
   "failed": 0,
@@ -76,6 +76,31 @@ func TestRequestSamplesFromResultUsesVLLMBenchPerRequestErrors(t *testing.T) {
 	}
 	if samples[2].Status != "completed" || samples[2].CompletionTokens != 10 {
 		t.Fatalf("third sample = %+v, want completed request", samples[2])
+	}
+}
+
+func TestRequestSamplesFromResultParsesVLLMWallClockInLocalTime(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = time.FixedZone("test-local", 3*60*60)
+	defer func() { time.Local = originalLocal }()
+
+	samples, err := requestSamplesFromResultData([]byte(`{
+  "date": "20260102-030405",
+  "duration": 5.0,
+  "completed": 1,
+  "failed": 0,
+  "input_lens": [100],
+  "output_lens": [1],
+  "ttfts": [0.1],
+  "itls": [[]],
+  "start_times": [0.0]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStart := time.Date(2026, 1, 2, 0, 4, 0, 0, time.UTC)
+	if len(samples) != 1 || !samples[0].StartedAt.Equal(wantStart) {
+		t.Fatalf("sample start = %+v, want %s", samples, wantStart)
 	}
 }
 
