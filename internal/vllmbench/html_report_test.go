@@ -106,6 +106,34 @@ func TestWriteSQLiteHTMLReportRejectsOverwritingSourceArtifact(t *testing.T) {
 	}
 }
 
+func TestWriteSQLiteHTMLReportRejectsSymlinkOutputToSourceArtifact(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "No Symlink Overwrite")
+	outputPath := filepath.Join(t.TempDir(), "report.html")
+	if err := os.Symlink(artifactPath, outputPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := WriteSQLiteHTMLReport(artifactPath, outputPath, HTMLReportOptions{}); err == nil {
+		t.Fatal("WriteSQLiteHTMLReport error = nil, want symlink output rejection")
+	}
+	if err := CheckSQLiteArtifact(artifactPath); err != nil {
+		t.Fatalf("source artifact was corrupted after rejected symlink render: %v", err)
+	}
+}
+
+func TestWriteSQLiteHTMLReportRejectsHardlinkOutputToSourceArtifact(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "No Hardlink Overwrite")
+	outputPath := filepath.Join(t.TempDir(), "report.html")
+	if err := os.Link(artifactPath, outputPath); err != nil {
+		t.Skipf("hardlink unavailable: %v", err)
+	}
+	if err := WriteSQLiteHTMLReport(artifactPath, outputPath, HTMLReportOptions{}); err == nil {
+		t.Fatal("WriteSQLiteHTMLReport error = nil, want hardlink output rejection")
+	}
+	if err := CheckSQLiteArtifact(artifactPath); err != nil {
+		t.Fatalf("source artifact was corrupted after rejected hardlink render: %v", err)
+	}
+}
+
 func TestWriteSQLiteHTMLReportRejectsDefaultOutputOverSourceArtifact(t *testing.T) {
 	dir := t.TempDir()
 	artifactPath := testSQLiteHTMLArtifact(t, "HTML Named Artifact")

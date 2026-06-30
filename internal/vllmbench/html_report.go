@@ -301,18 +301,44 @@ func htmlReportOutputPath(artifactPath, outputPath string) (string, error) {
 }
 
 func rejectSourceArtifactOutput(artifactPath, outputPath string) error {
-	artifactAbs, err := filepath.Abs(artifactPath)
+	sameFile, err := sameSQLiteArtifactOutput(artifactPath, outputPath)
 	if err != nil {
 		return err
 	}
-	outputAbs, err := filepath.Abs(outputPath)
-	if err != nil {
-		return err
-	}
-	if filepath.Clean(artifactAbs) == filepath.Clean(outputAbs) {
+	if sameFile {
 		return fmt.Errorf("HTML output path must differ from SQLite artifact path: %s", outputPath)
 	}
 	return nil
+}
+
+func sameSQLiteArtifactOutput(artifactPath, outputPath string) (bool, error) {
+	artifactAbs, err := filepath.Abs(artifactPath)
+	if err != nil {
+		return false, err
+	}
+	outputAbs, err := filepath.Abs(outputPath)
+	if err != nil {
+		return false, err
+	}
+	if filepath.Clean(artifactAbs) == filepath.Clean(outputAbs) {
+		return true, nil
+	}
+	return sameExistingFile(artifactAbs, outputAbs)
+}
+
+func sameExistingFile(firstPath, secondPath string) (bool, error) {
+	firstInfo, err := os.Stat(firstPath)
+	if err != nil {
+		return false, err
+	}
+	secondInfo, err := os.Stat(secondPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return os.SameFile(firstInfo, secondInfo), nil
 }
 
 func StoreSQLiteHTMLReport(artifactPath, name, originalPath string, content []byte) error {
