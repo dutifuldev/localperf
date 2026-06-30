@@ -66,6 +66,9 @@ type RequestSample struct {
 	CompletedAt           *time.Time     `json:"completed_at,omitempty"`
 	LatencyMillis         float64        `json:"latency_ms,omitempty"`
 	FirstByteMillis       float64        `json:"first_byte_ms,omitempty"`
+	TTFTMillis            float64        `json:"ttft_ms,omitempty"`
+	TPOTMillis            float64        `json:"tpot_ms,omitempty"`
+	ITLMeanMillis         float64        `json:"itl_mean_ms,omitempty"`
 	PromptTokens          int            `json:"prompt_tokens,omitempty"`
 	CompletionTokens      int            `json:"completion_tokens,omitempty"`
 	TotalTokens           int            `json:"total_tokens,omitempty"`

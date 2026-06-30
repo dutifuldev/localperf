@@ -151,7 +151,7 @@ type BenchmarkTrafficConfig struct {
 	DisableShuffle              bool     `json:"disable_shuffle,omitempty"`
 	NoOversample                bool     `json:"no_oversample,omitempty"`
 	SkipChatTemplate            bool     `json:"skip_chat_template,omitempty"`
-	SaveDetailed                bool     `json:"save_detailed,omitempty"`
+	SaveDetailed                *bool    `json:"save_detailed,omitempty"`
 	PlotDatasetStats            bool     `json:"plot_dataset_stats,omitempty"`
 	ExtraBody                   string   `json:"extra_body,omitempty"`
 	Metadata                    []string `json:"metadata,omitempty"`
@@ -1146,6 +1146,14 @@ func SleepLevelValue(profile Profile) int {
 
 func intPointer(value int) *int {
 	return &value
+}
+
+func boolPointer(value bool) *bool {
+	return &value
+}
+
+func boolValue(value *bool) bool {
+	return value != nil && *value
 }
 
 func Slug(text string) string {

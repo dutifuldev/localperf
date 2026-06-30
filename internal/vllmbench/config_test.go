@@ -48,6 +48,9 @@ func TestBuildPlanAndBenchCommand(t *testing.T) {
 			t.Fatalf("command %q missing %q", got, want)
 		}
 	}
+	if strings.Contains(got, "--save-detailed") {
+		t.Fatalf("command %q should not include --save-detailed by default", got)
+	}
 }
 
 func TestLoadGeneratorAliasesNormalize(t *testing.T) {
@@ -163,7 +166,7 @@ func TestBenchCommandSupportsStandardDatasetKnobs(t *testing.T) {
 			DisableShuffle:              true,
 			NoOversample:                true,
 			SkipChatTemplate:            true,
-			SaveDetailed:                true,
+			SaveDetailed:                boolPointer(true),
 			PlotDatasetStats:            true,
 			ExtraBody:                   `{"guided_decoding_backend":"outlines"}`,
 			Metadata:                    []string{"suite=standard", "shape=sonnet"},
@@ -280,7 +283,7 @@ func TestApplyDefaultsOverlaysNestedTraffic(t *testing.T) {
 		Name:     "mixed-traffic",
 		Profiles: []string{"8k"},
 		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
-			SaveDetailed: true,
+			SaveDetailed: boolPointer(true),
 			Metadata:     []string{"suite=localperf"},
 			Goodput:      []string{"ttft:5000"},
 			ExtraArgs:    []string{"--request-id-prefix", "mixed"},
@@ -297,7 +300,7 @@ func TestApplyDefaultsOverlaysNestedTraffic(t *testing.T) {
 	}}
 	ApplyDefaults(&spec)
 	workload := spec.Workloads[0]
-	if !workload.SaveDetailed || fmt.Sprint(workload.Metadata) != "[suite=localperf]" || fmt.Sprint(workload.Goodput) != "[ttft:5000]" {
+	if !boolValue(workload.SaveDetailed) || fmt.Sprint(workload.Metadata) != "[suite=localperf]" || fmt.Sprint(workload.Goodput) != "[ttft:5000]" {
 		t.Fatalf("top-level traffic flags were not preserved: %+v", workload.BenchmarkTrafficConfig)
 	}
 	if workload.RandomInputLen != 128 || workload.RandomOutputLen != 16 || workload.NumPrompts != 2 || fmt.Sprint(workload.MaxConcurrency) != "[1]" {
@@ -308,6 +311,20 @@ func TestApplyDefaultsOverlaysNestedTraffic(t *testing.T) {
 		if !strings.Contains(command, want) {
 			t.Fatalf("command %q missing preserved arg %q", command, want)
 		}
+	}
+}
+
+func TestApplyDefaultsPreservesSaveDetailedOptOut(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads[0].BenchmarkTrafficConfig.SaveDetailed = boolPointer(false)
+	ApplyDefaults(&spec)
+	workload := spec.Workloads[0]
+	if workload.SaveDetailed == nil || *workload.SaveDetailed {
+		t.Fatalf("save_detailed opt-out was not preserved: %+v", workload.BenchmarkTrafficConfig)
+	}
+	command := ShellQuote(BenchCommand(spec, BuildPlan(spec, "runs/example")[0]).Args)
+	if strings.Contains(command, "--save-detailed") {
+		t.Fatalf("command %q should not include --save-detailed", command)
 	}
 }
 
