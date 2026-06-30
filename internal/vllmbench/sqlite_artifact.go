@@ -967,6 +967,9 @@ func sampleMetricDistributions(samples []RequestSample) []sampleMetricDistributi
 		{"request_total_throughput", "tok/s", statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.TotalTokensPerSecond })},
 		{"latency", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.LatencyMillis })},
 		{"first_byte", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.FirstByteMillis })},
+		{"request_ttft", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.TTFTMillis })},
+		{"request_tpot", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.TPOTMillis })},
+		{"request_itl_mean", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.ITLMeanMillis })},
 	}
 }
 
@@ -991,25 +994,6 @@ func requestSamplesForResult(runDir, resultFile string) ([]RequestSample, error)
 	return requestSamplesFromResultData(data)
 }
 
-func requestSamplesFromResultData(data []byte) ([]RequestSample, error) {
-	if len(data) == 0 || data[0] != '{' {
-		return nil, nil
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, nil
-	}
-	samplesRaw, ok := raw["request_samples"]
-	if !ok {
-		return nil, nil
-	}
-	var samples []RequestSample
-	if err := json.Unmarshal(samplesRaw, &samples); err != nil {
-		return nil, err
-	}
-	return samples, nil
-}
-
 func insertRequestSamples(tx *sql.Tx, measurementID int64, samples []RequestSample) error {
 	for _, sample := range samples {
 		completedSample := sample.Status == "completed"
@@ -1026,7 +1010,8 @@ func insertRequestSamples(tx *sql.Tx, measurementID int64, samples []RequestSamp
 			intNull(sample.HTTPStatusCode), sample.StartedAt.Format(time.RFC3339),
 			timePtrString(sample.FirstByteAt), floatNull(sample.FirstByteMillis),
 			nil, timePtrString(sample.CompletedAt), floatNull(sample.LatencyMillis),
-			nil, nil, nil, knownIntNull(completedSample, sample.PromptTokens), knownIntNull(completedSample, sample.CompletionTokens),
+			floatNull(sample.TTFTMillis), floatNull(sample.TPOTMillis), floatNull(sample.ITLMeanMillis),
+			knownIntNull(completedSample, sample.PromptTokens), knownIntNull(completedSample, sample.CompletionTokens),
 			knownIntNull(completedSample, sample.TotalTokens), knownFloatNull(completedSample, sample.OutputTokensPerSecond),
 			knownFloatNull(completedSample, sample.TotalTokensPerSecond), nullString(sample.PromptSHA256),
 			nullString(sample.ResponseSHA256), nullString(sample.ErrorType),
