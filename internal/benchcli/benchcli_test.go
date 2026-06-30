@@ -78,6 +78,26 @@ func TestParseArtifactRenderFlagsAllowsPathBeforeFlags(t *testing.T) {
 	}
 }
 
+func TestParseArtifactRenderFlagsAllowsPathBetweenFlags(t *testing.T) {
+	config, err := parseArtifactRenderFlags([]string{"--output", "report.html", "run.sqlite", "--store"}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.path != "run.sqlite" || config.output != "report.html" || !config.store {
+		t.Fatalf("config = %+v, want interspersed path and store", config)
+	}
+}
+
+func TestParseArtifactRenderFlagsAllowsEqualsValueFlags(t *testing.T) {
+	config, err := parseArtifactRenderFlags([]string{"--output=report.html", "run.sqlite", "--title=Run", "--store=true"}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.path != "run.sqlite" || config.output != "report.html" || config.title != "Run" || !config.store {
+		t.Fatalf("config = %+v, want equals value flags", config)
+	}
+}
+
 func TestParseArtifactRenderFlagsAllowsPathFlag(t *testing.T) {
 	config, err := parseArtifactRenderFlags([]string{"--path", "run.sqlite", "--output", "report.html"}, flag.ContinueOnError)
 	if err != nil {

@@ -297,12 +297,7 @@ func parseArtifactRenderFlags(args []string, errorHandling flag.ErrorHandling) (
 	title := flags.String("title", "", "optional report title")
 	store := flags.Bool("store", false, "store report.html back into the SQLite artifact")
 	includeRaw := flags.Bool("include-raw", false, "reserved for explicit raw artifact rendering")
-	positionalPath := ""
-	parseArgs := args
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		positionalPath = args[0]
-		parseArgs = args[1:]
-	}
+	positionalPath, parseArgs := artifactRenderParseArgs(args)
 	if err := flags.Parse(parseArgs); err != nil {
 		return artifactRenderConfig{}, err
 	}
@@ -322,6 +317,36 @@ func parseArtifactRenderFlags(args []string, errorHandling flag.ErrorHandling) (
 		store:      *store,
 		includeRaw: *includeRaw,
 	}, nil
+}
+
+func artifactRenderParseArgs(args []string) (string, []string) {
+	positionalPath := ""
+	parseArgs := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if positionalPath == "" && !strings.HasPrefix(arg, "-") {
+			positionalPath = arg
+			continue
+		}
+		parseArgs = append(parseArgs, arg)
+		if artifactRenderFlagNeedsValue(arg) && !strings.Contains(arg, "=") && index+1 < len(args) {
+			index++
+			parseArgs = append(parseArgs, args[index])
+		}
+	}
+	return positionalPath, parseArgs
+}
+
+func artifactRenderFlagNeedsValue(arg string) bool {
+	if equals := strings.Index(arg, "="); equals >= 0 {
+		arg = arg[:equals]
+	}
+	switch arg {
+	case "-path", "--path", "-output", "--output", "-title", "--title":
+		return true
+	default:
+		return false
+	}
 }
 
 func profileFromBaseURL(rawURL, model string) (vllmbench.Profile, error) {
