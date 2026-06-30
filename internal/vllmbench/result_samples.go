@@ -165,7 +165,7 @@ func (data vllmBenchSampleData) applySampleTimings(sample RequestSample, index i
 	ttftSeconds, hasTTFT := finiteAt(data.ttfts, index)
 	itlValues := floatSliceAt(data.itls, index)
 	latencySeconds := sampleLatencySeconds(ttftSeconds, hasTTFT, itlValues)
-	if hasTTFT {
+	if hasTTFT && (sample.Status == "completed" || ttftSeconds > 0) {
 		sample.applyTTFT(ttftSeconds)
 	}
 	if len(itlValues) > 0 {

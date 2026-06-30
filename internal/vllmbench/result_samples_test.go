@@ -71,6 +71,9 @@ func TestRequestSamplesFromResultUsesVLLMBenchPerRequestErrors(t *testing.T) {
 	if samples[0].Status != "failed" || samples[0].ErrorType != "vllm_bench_error" || samples[0].ErrorMessage != "boom" {
 		t.Fatalf("first sample = %+v, want failed vLLM error", samples[0])
 	}
+	if samples[0].FirstByteAt != nil || samples[0].FirstByteMillis != 0 {
+		t.Fatalf("first failed sample first byte = %v/%.3f, want absent", samples[0].FirstByteAt, samples[0].FirstByteMillis)
+	}
 	if samples[1].Status != "completed" || samples[1].CompletionTokens != 0 {
 		t.Fatalf("second sample = %+v, want completed zero-output request", samples[1])
 	}
