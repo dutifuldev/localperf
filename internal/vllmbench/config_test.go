@@ -1751,6 +1751,29 @@ func TestEventHasArtifactResultIncludesWarmup(t *testing.T) {
 	}
 }
 
+func TestMeasurementRawArtifactIDLinksFailedResultArtifact(t *testing.T) {
+	planned := PlannedRun{
+		Profile:     Profile{Name: "profile"},
+		Workload:    Workload{Name: "workload"},
+		Concurrency: 1,
+	}
+	resultFile := filepath.Join("results", "failed.json")
+	events := []Event{{
+		Type:        "workload_finish",
+		Profile:     "profile",
+		Workload:    "workload",
+		Concurrency: 1,
+		ResultFile:  resultFile,
+		Error:       "external benchmark failed",
+	}}
+	if got := measurementRawArtifactID(ReportRow{}, events, planned, map[string]int64{resultFile: 42}); got != 42 {
+		t.Fatalf("raw artifact id = %d, want failed result artifact linked", got)
+	}
+	if got := measurementResultFile(ReportRow{}, events, planned); got != "" {
+		t.Fatalf("measurement result file = %q, want no sample import for unmarked failed result", got)
+	}
+}
+
 func TestArtifactIDForPathVariants(t *testing.T) {
 	ids := map[string]int64{
 		"results/result.json":                  7,

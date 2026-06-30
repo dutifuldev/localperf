@@ -873,7 +873,7 @@ func measurementRawArtifactID(row ReportRow, events []Event, planned PlannedRun,
 	if row.ResultFile != "" {
 		return artifactIDForPath(artifactIDs, row.ResultFile)
 	}
-	if event := importableFinishEvent(events, planned); event.ResultFile != "" {
+	if event := artifactFinishEvent(events, planned); event.ResultFile != "" {
 		return artifactIDForPath(artifactIDs, event.ResultFile)
 	}
 	return 0
@@ -1189,6 +1189,15 @@ func rowsByMeasurement(runDir string, events []Event) map[string]ReportRow {
 func importableFinishEvent(events []Event, planned PlannedRun) Event {
 	for _, event := range events {
 		if eventMatchesPlanned(event, planned) && eventHasImportableResult(event) {
+			return event
+		}
+	}
+	return Event{}
+}
+
+func artifactFinishEvent(events []Event, planned PlannedRun) Event {
+	for _, event := range events {
+		if eventMatchesPlanned(event, planned) && event.Type == "workload_finish" && eventHasArtifactResult(event) {
 			return event
 		}
 	}
