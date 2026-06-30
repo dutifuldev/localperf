@@ -90,25 +90,25 @@ func readVLLMBenchSampleData(raw map[string]json.RawMessage) (vllmBenchSampleDat
 
 func readVLLMBenchTokenData(raw map[string]json.RawMessage, data *vllmBenchSampleData) error {
 	var err error
-	data.inputLens, _, err = intArrayField(raw, "input_lens")
+	data.inputLens, _, err = arrayField[int](raw, "input_lens")
 	if err != nil {
 		return err
 	}
-	data.outputLens, _, err = intArrayField(raw, "output_lens")
+	data.outputLens, _, err = arrayField[int](raw, "output_lens")
 	return err
 }
 
 func readVLLMBenchTimingData(raw map[string]json.RawMessage, data *vllmBenchSampleData) error {
 	var err error
-	data.ttfts, _, err = floatArrayField(raw, "ttfts")
+	data.ttfts, _, err = arrayField[float64](raw, "ttfts")
 	if err != nil {
 		return err
 	}
-	data.itls, _, err = nestedFloatArrayField(raw, "itls")
+	data.itls, _, err = arrayField[[]float64](raw, "itls")
 	if err != nil {
 		return err
 	}
-	data.startTimes, _, err = floatArrayField(raw, "start_times")
+	data.startTimes, _, err = arrayField[float64](raw, "start_times")
 	return err
 }
 
@@ -245,36 +245,12 @@ func (data vllmBenchSampleData) applySampleError(sample *RequestSample, index in
 	sample.ErrorMessage = message
 }
 
-func intArrayField(raw map[string]json.RawMessage, key string) ([]int, bool, error) {
+func arrayField[T any](raw map[string]json.RawMessage, key string) ([]T, bool, error) {
 	value, ok := raw[key]
 	if !ok {
 		return nil, false, nil
 	}
-	var out []int
-	if err := json.Unmarshal(value, &out); err != nil {
-		return nil, true, fmt.Errorf("%s: %w", key, err)
-	}
-	return out, true, nil
-}
-
-func floatArrayField(raw map[string]json.RawMessage, key string) ([]float64, bool, error) {
-	value, ok := raw[key]
-	if !ok {
-		return nil, false, nil
-	}
-	var out []float64
-	if err := json.Unmarshal(value, &out); err != nil {
-		return nil, true, fmt.Errorf("%s: %w", key, err)
-	}
-	return out, true, nil
-}
-
-func nestedFloatArrayField(raw map[string]json.RawMessage, key string) ([][]float64, bool, error) {
-	value, ok := raw[key]
-	if !ok {
-		return nil, false, nil
-	}
-	var out [][]float64
+	var out []T
 	if err := json.Unmarshal(value, &out); err != nil {
 		return nil, true, fmt.Errorf("%s: %w", key, err)
 	}

@@ -271,7 +271,7 @@ func appendCommonTrafficArgs(builder *argBuilder, traffic BenchmarkTrafficConfig
 	builder.flag(traffic.DisableShuffle, "--disable-shuffle")
 	builder.flag(traffic.NoOversample, "--no-oversample")
 	builder.flag(traffic.SkipChatTemplate, "--skip-chat-template")
-	builder.flag(traffic.SaveDetailed, "--save-detailed")
+	builder.flag(boolValue(traffic.SaveDetailed), "--save-detailed")
 	builder.flag(traffic.PlotDatasetStats, "--plot-dataset-stats")
 }
 

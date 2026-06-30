@@ -75,7 +75,7 @@ func TestDefaultEndpointAndTrafficValidationBranches(t *testing.T) {
 		DisableShuffle:              true,
 		NoOversample:                true,
 		SkipChatTemplate:            true,
-		SaveDetailed:                true,
+		SaveDetailed:                boolPointer(true),
 		PlotDatasetStats:            true,
 	}
 	issues := validateTrafficConfig("workload x", traffic)
