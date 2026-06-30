@@ -73,6 +73,13 @@ func TestValidateSpecAllowsUnmanagedEndpointOnlyProfile(t *testing.T) {
 		t.Fatalf("ValidateSpec endpoint-only vllm_bench profile = %v, want port issue", err)
 	}
 
+	withPort := testSpec()
+	withPort.Profiles[0].Managed = false
+	withPort.Profiles[0].EndpointBaseURL = "https://api.example.com/v1"
+	if err := ValidateSpec(withPort); err == nil || !strings.Contains(err.Error(), "endpoint_base_url") {
+		t.Fatalf("ValidateSpec endpoint vllm_bench profile = %v, want endpoint_base_url issue", err)
+	}
+
 	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
 	for _, endpoint := range []string{"api.example.com", "https://api.example.com/v1?x=1", "https://api.example.com/v1#frag"} {
 		spec.Profiles[0].EndpointBaseURL = endpoint
@@ -1587,17 +1594,25 @@ func TestExecuteLocalPerfHTTPFailedSamplesRemainReportable(t *testing.T) {
 	if len(report.Rows) != 1 || report.Rows[0].Failed != 1 {
 		t.Fatalf("report rows = %+v, want failed request row", report.Rows)
 	}
+	events, err := os.ReadFile(summary.EventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(events), `"result_written":true`) || !strings.Contains(string(events), "localperf_http result reported 1 failed request") {
+		t.Fatalf("events did not mark failed HTTP samples as errored:\n%s", events)
+	}
 	db, err := sql.Open("sqlite", summary.ArtifactPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	var status string
 	var completedRequests, failedRequests int
-	if err := db.QueryRow("SELECT completed_requests, failed_requests FROM measurements LIMIT 1").Scan(&completedRequests, &failedRequests); err != nil {
+	if err := db.QueryRow("SELECT status, completed_requests, failed_requests FROM measurements LIMIT 1").Scan(&status, &completedRequests, &failedRequests); err != nil {
 		t.Fatal(err)
 	}
-	if completedRequests != 0 || failedRequests != 1 {
-		t.Fatalf("measurement completed/failed = %d/%d, want 0/1", completedRequests, failedRequests)
+	if status != "failed" || completedRequests != 0 || failedRequests != 1 {
+		t.Fatalf("measurement status/completed/failed = %s/%d/%d, want failed/0/1", status, completedRequests, failedRequests)
 	}
 	var requestRows int
 	if err := db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&requestRows); err != nil {

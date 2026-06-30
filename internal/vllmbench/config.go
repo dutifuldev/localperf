@@ -535,7 +535,7 @@ func ValidateSpec(spec Spec) error {
 	profileIssues, profileNames := validateProfiles(spec, engineNames)
 	issues = append(issues, engineIssues...)
 	issues = append(issues, profileIssues...)
-	issues = append(issues, validateEndpointOnlyProfileUsage(spec)...)
+	issues = append(issues, validateEndpointBaseURLProfileUsage(spec)...)
 	issues = append(issues, validateWarmup(spec.Warmup)...)
 	issues = append(issues, validateWorkloads(spec.Workloads, profileNames)...)
 	if len(issues) > 0 {
@@ -679,18 +679,18 @@ func validEndpointBaseURL(raw string) bool {
 	return parsed.Host != "" && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
-func validateEndpointOnlyProfileUsage(spec Spec) []string {
-	return endpointOnlyProfileIssueMessages(invalidEndpointOnlyProfiles(spec))
+func validateEndpointBaseURLProfileUsage(spec Spec) []string {
+	return endpointBaseURLProfileIssueMessages(invalidEndpointBaseURLProfiles(spec))
 }
 
-func invalidEndpointOnlyProfiles(spec Spec) map[string]bool {
-	endpointOnly := endpointOnlyProfiles(spec.Profiles)
-	if len(endpointOnly) == 0 {
+func invalidEndpointBaseURLProfiles(spec Spec) map[string]bool {
+	endpointProfiles := endpointBaseURLProfiles(spec.Profiles)
+	if len(endpointProfiles) == 0 {
 		return nil
 	}
 	invalid := map[string]bool{}
-	addWarmupEndpointOnlyProfiles(invalid, endpointOnly, spec.Warmup.Enabled)
-	addWorkloadEndpointOnlyProfiles(invalid, endpointOnly, spec.Workloads)
+	addWarmupEndpointOnlyProfiles(invalid, endpointProfiles, spec.Warmup.Enabled)
+	addWorkloadEndpointOnlyProfiles(invalid, endpointProfiles, spec.Workloads)
 	return invalid
 }
 
@@ -716,18 +716,18 @@ func addWorkloadEndpointOnlyProfiles(invalid, endpointOnly map[string]bool, work
 	}
 }
 
-func endpointOnlyProfileIssueMessages(invalid map[string]bool) []string {
+func endpointBaseURLProfileIssueMessages(invalid map[string]bool) []string {
 	var issues []string
 	for _, name := range collections.SortedKeys(invalid) {
-		issues = append(issues, "profile "+name+": port must be positive unless warmup is disabled and all referenced workloads use localperf_http")
+		issues = append(issues, "profile "+name+": endpoint_base_url can only be used when warmup is disabled and all referenced workloads use localperf_http")
 	}
 	return issues
 }
 
-func endpointOnlyProfiles(profiles []Profile) map[string]bool {
+func endpointBaseURLProfiles(profiles []Profile) map[string]bool {
 	out := map[string]bool{}
 	for _, profile := range profiles {
-		if profile.Port <= 0 && !profileRequiresPort(profile) {
+		if validEndpointBaseURL(profile.EndpointBaseURL) {
 			out[profile.Name] = true
 		}
 	}
