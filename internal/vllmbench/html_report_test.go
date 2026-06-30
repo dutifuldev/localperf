@@ -96,6 +96,71 @@ func TestWriteSQLiteHTMLReportUsesDefaultOutput(t *testing.T) {
 	}
 }
 
+func TestLoadSQLiteReportFallsBackToAggregateOnlyArtifact(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "Aggregate Only")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE workloads SET save_detailed = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM requests`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM metric_stats WHERE metric IN (
+		'request_output_throughput', 'request_ttft', 'request_tpot', 'request_itl_mean', 'latency'
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	var measurementID int64
+	if err := db.QueryRow(`SELECT id FROM measurements ORDER BY id LIMIT 1`).Scan(&measurementID); err != nil {
+		t.Fatal(err)
+	}
+	for _, metric := range []struct {
+		name  string
+		mean  float64
+		count int
+	}{
+		{"ttft", 321, 2},
+		{"tpot", 45, 2},
+	} {
+		if _, err := db.Exec(`INSERT INTO metric_stats (
+			measurement_id, metric, unit, mean, count
+		) VALUES (?, ?, 'ms', ?, ?)`, measurementID, metric.name, metric.mean, metric.count); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.RequestSummary.Total != 2 || doc.RequestSummary.Completed != 2 || doc.RequestSummary.Failed != 0 {
+		t.Fatalf("request summary = %+v, want aggregate measurement counts", doc.RequestSummary)
+	}
+	if doc.RequestSummary.OutputTokSMean != "123.400" || doc.RequestSummary.TTFTMeanMS != "321.000" || doc.RequestSummary.TPOTMeanMS != "45.000" {
+		t.Fatalf("aggregate request summary = %+v", doc.RequestSummary)
+	}
+	if got := doc.Measurements[0].TTFTMeanMS; got != "321.000" {
+		t.Fatalf("measurement TTFT = %q, want aggregate fallback", got)
+	}
+	if got := doc.Measurements[0].TPOTMeanMS; got != "45.000" {
+		t.Fatalf("measurement TPOT = %q, want aggregate fallback", got)
+	}
+}
+
+func TestLoadSQLiteReportIgnoresEmptyNotableEventMessages(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "Empty Events")
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.NotableEvents) != 0 {
+		t.Fatalf("notable events = %+v, want empty routine events ignored", doc.NotableEvents)
+	}
+}
+
 func testSQLiteHTMLArtifact(t *testing.T, name string) string {
 	t.Helper()
 	spec := testSpec()

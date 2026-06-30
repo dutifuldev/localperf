@@ -127,6 +127,8 @@ type SQLiteReportMetric struct {
 	Count         int
 	MeanValue     float64
 	StdDevValue   float64
+	MeanKnown     bool
+	StdDevKnown   bool
 }
 
 type SQLiteReportPhaseSection struct {
@@ -490,8 +492,8 @@ func applySQLiteMeasurementDisplay(measurement *SQLiteReportMeasurement, metrics
 	measurement.ErrorMessage = nullStringValue(errorMessage)
 	measurement.OutputTokSStdDev = metricDisplay(metrics, "request_output_throughput", "StdDev")
 	measurement.LatencyMeanMS = metricDisplay(metrics, "latency", "Mean")
-	measurement.TTFTMeanMS = metricDisplay(metrics, "request_ttft", "Mean")
-	measurement.TPOTMeanMS = metricDisplay(metrics, "request_tpot", "Mean")
+	measurement.TTFTMeanMS = metricDisplayFirst(metrics, "Mean", "request_ttft", "ttft")
+	measurement.TPOTMeanMS = metricDisplayFirst(metrics, "Mean", "request_tpot", "tpot")
 	measurement.ITLMeanMS = metricDisplay(metrics, "request_itl_mean", "Mean")
 }
 
@@ -519,6 +521,8 @@ func loadSQLiteReportMetrics(db *sql.DB, doc *SQLiteReportDocument) error {
 		metric.Max = displayNullFloat(max)
 		metric.MeanValue = nullFloatValue(mean)
 		metric.StdDevValue = nullFloatValue(stddev)
+		metric.MeanKnown = mean.Valid
+		metric.StdDevKnown = stddev.Valid
 		if doc.MeasurementMetrics[metric.MeasurementID] == nil {
 			doc.MeasurementMetrics[metric.MeasurementID] = map[string]SQLiteReportMetric{}
 		}
@@ -546,7 +550,71 @@ func loadSQLiteReportRequestSummary(db *sql.DB, doc *SQLiteReportDocument) error
 	doc.RequestSummary.TPOTMeanMS = displayNullFloat(tpot)
 	doc.RequestSummary.ITLMeanMS = displayNullFloat(itl)
 	doc.RequestSummary.OutputTokSMean = displayNullFloat(outputTokS)
+	if doc.RequestSummary.Total == 0 {
+		applySQLiteAggregateRequestSummary(doc)
+	}
 	return nil
+}
+
+func applySQLiteAggregateRequestSummary(doc *SQLiteReportDocument) {
+	var latency, ttft, tpot, itl, outputTokS sqliteReportWeightedMean
+	for _, measurement := range doc.Measurements {
+		doc.RequestSummary.Completed += measurement.CompletedRequests
+		doc.RequestSummary.Failed += measurement.FailedRequests
+		doc.RequestSummary.Canceled += canceledRequestEstimate(measurement)
+		if measurement.OutputTokSKnown {
+			outputTokS.add(measurement.OutputTokSValue, 1)
+		}
+		metrics := doc.MeasurementMetrics[measurement.ID]
+		latency.addMetric(metricFirst(metrics, "latency"))
+		ttft.addMetric(metricFirst(metrics, "request_ttft", "ttft"))
+		tpot.addMetric(metricFirst(metrics, "request_tpot", "tpot"))
+		itl.addMetric(metricFirst(metrics, "request_itl_mean"))
+	}
+	doc.RequestSummary.Total = doc.RequestSummary.Completed + doc.RequestSummary.Failed + doc.RequestSummary.Canceled
+	doc.RequestSummary.LatencyMeanMS = displayWeightedMean(latency)
+	doc.RequestSummary.TTFTMeanMS = displayWeightedMean(ttft)
+	doc.RequestSummary.TPOTMeanMS = displayWeightedMean(tpot)
+	doc.RequestSummary.ITLMeanMS = displayWeightedMean(itl)
+	doc.RequestSummary.OutputTokSMean = displayWeightedMean(outputTokS)
+}
+
+func canceledRequestEstimate(measurement SQLiteReportMeasurement) int {
+	if measurement.Status != "canceled" {
+		return 0
+	}
+	remaining := measurement.SamplesRequested - measurement.CompletedRequests - measurement.FailedRequests
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+type sqliteReportWeightedMean struct {
+	total  float64
+	weight int
+}
+
+func (mean *sqliteReportWeightedMean) add(value float64, weight int) {
+	if weight <= 0 {
+		weight = 1
+	}
+	mean.total += value * float64(weight)
+	mean.weight += weight
+}
+
+func (mean *sqliteReportWeightedMean) addMetric(metric SQLiteReportMetric, ok bool) {
+	if !ok || !metric.MeanKnown {
+		return
+	}
+	mean.add(metric.MeanValue, metric.Count)
+}
+
+func displayWeightedMean(mean sqliteReportWeightedMean) string {
+	if mean.weight == 0 {
+		return "-"
+	}
+	return displayFloat(mean.total / float64(mean.weight))
 }
 
 func loadSQLiteReportEventCounts(db *sql.DB, doc *SQLiteReportDocument) error {
@@ -569,7 +637,7 @@ func loadSQLiteReportNotableEvents(db *sql.DB, doc *SQLiteReportDocument) error 
 	rows, err := db.Query(`SELECT
 		timestamp, level, type, COALESCE(profile_id, ''), COALESCE(workload_id, ''), COALESCE(message, '')
 		FROM events
-		WHERE level IN ('warn', 'error') OR type LIKE '%failed%' OR message IS NOT NULL
+		WHERE level IN ('warn', 'error') OR type LIKE '%failed%' OR TRIM(COALESCE(message, '')) <> ''
 		ORDER BY timestamp DESC LIMIT 50`)
 	if err != nil {
 		return err
@@ -740,16 +808,44 @@ func upsertHTMLReportRow(tx *sql.Tx, runID, name string, artifactID int64, creat
 }
 
 func metricDisplay(metrics map[string]SQLiteReportMetric, name, field string) string {
-	metric, ok := metrics[name]
-	if !ok {
-		return "-"
+	return metricDisplayFirst(metrics, field, name)
+}
+
+func metricDisplayFirst(metrics map[string]SQLiteReportMetric, field string, names ...string) string {
+	for _, name := range names {
+		metric, ok := metricFirst(metrics, name)
+		if !ok {
+			continue
+		}
+		if value, ok := metricFieldDisplay(metric, field); ok {
+			return value
+		}
 	}
+	return "-"
+}
+
+func metricFirst(metrics map[string]SQLiteReportMetric, names ...string) (SQLiteReportMetric, bool) {
+	for _, name := range names {
+		metric, ok := metrics[name]
+		if ok {
+			return metric, true
+		}
+	}
+	return SQLiteReportMetric{}, false
+}
+
+func metricFieldDisplay(metric SQLiteReportMetric, field string) (string, bool) {
 	switch field {
 	case "StdDev":
-		return metric.StdDev
+		if metric.StdDevKnown {
+			return metric.StdDev, true
+		}
 	default:
-		return metric.Mean
+		if metric.MeanKnown {
+			return metric.Mean, true
+		}
 	}
+	return "", false
 }
 
 func commandSummaryFromJSON(data string) string {
