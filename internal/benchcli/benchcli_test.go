@@ -1,6 +1,7 @@
 package benchcli
 
 import (
+	"flag"
 	"path/filepath"
 	"testing"
 	"time"
@@ -64,6 +65,26 @@ func TestTimeoutSecondsRoundsUp(t *testing.T) {
 	}
 	if got := timeoutSeconds(1500 * time.Millisecond); got != 2 {
 		t.Fatalf("timeoutSeconds(1500ms) = %d, want 2", got)
+	}
+}
+
+func TestParseArtifactRenderFlagsAllowsPathBeforeFlags(t *testing.T) {
+	config, err := parseArtifactRenderFlags([]string{"run.sqlite", "--output", "report.html", "--store", "--title", "Run"}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.path != "run.sqlite" || config.output != "report.html" || config.title != "Run" || !config.store {
+		t.Fatalf("config = %+v, want path, output, title, store", config)
+	}
+}
+
+func TestParseArtifactRenderFlagsAllowsPathFlag(t *testing.T) {
+	config, err := parseArtifactRenderFlags([]string{"--path", "run.sqlite", "--output", "report.html"}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.path != "run.sqlite" || config.output != "report.html" {
+		t.Fatalf("config = %+v, want flag path and output", config)
 	}
 }
 

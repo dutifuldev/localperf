@@ -105,18 +105,7 @@ func CheckSQLiteArtifact(path string) error {
 }
 
 func openSQLiteArtifactForCheck(path string) (*sql.DB, error) {
-	if _, err := os.Stat(path); err != nil {
-		return nil, err
-	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return db, nil
+	return openSQLiteArtifactWritable(path)
 }
 
 func checkIntegrity(db *sql.DB) error {
