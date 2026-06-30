@@ -150,6 +150,27 @@ func TestLoadSQLiteReportFallsBackToAggregateOnlyArtifact(t *testing.T) {
 	}
 }
 
+func TestLoadSQLiteReportMergesDetailedAndAggregateOnlySummary(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "Mixed Summary")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	insertAggregateOnlyMeasurement(t, db, 3, 300, 50, 200)
+
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.RequestSummary.Total != 5 || doc.RequestSummary.Completed != 5 || doc.RequestSummary.Failed != 0 {
+		t.Fatalf("mixed request summary = %+v, want detailed plus aggregate counts", doc.RequestSummary)
+	}
+	if doc.RequestSummary.TTFTMeanMS != "260.000" || doc.RequestSummary.TPOTMeanMS != "42.000" {
+		t.Fatalf("mixed request summary did not merge weighted metrics: %+v", doc.RequestSummary)
+	}
+}
+
 func TestLoadSQLiteReportIgnoresEmptyNotableEventMessages(t *testing.T) {
 	artifactPath := testSQLiteHTMLArtifact(t, "Empty Events")
 	doc, err := LoadSQLiteReport(artifactPath)
@@ -158,6 +179,43 @@ func TestLoadSQLiteReportIgnoresEmptyNotableEventMessages(t *testing.T) {
 	}
 	if len(doc.NotableEvents) != 0 {
 		t.Fatalf("notable events = %+v, want empty routine events ignored", doc.NotableEvents)
+	}
+}
+
+func insertAggregateOnlyMeasurement(t *testing.T, db *sql.DB, completed int, ttft, tpot, outputTokS float64) int64 {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO workloads (
+		id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
+		save_detailed, capture_payload_artifacts
+	) SELECT 'aggregate-only', run_id, 'aggregate-only', phase, traffic_json, concurrency_json, ?, 1, 0, capture_payload_artifacts
+		FROM workloads ORDER BY id LIMIT 1`, completed); err != nil {
+		t.Fatal(err)
+	}
+	result, err := db.Exec(`INSERT INTO measurements (
+		run_id, profile_id, workload_id, repeat_index, concurrency, samples_requested, status,
+		completed_requests, failed_requests, prompt_tokens, completion_tokens, total_tokens,
+		aggregate_output_tok_s, per_user_output_tok_s, aggregate_total_tok_s
+	) SELECT run_id, profile_id, 'aggregate-only', 0, 2, ?, 'completed',
+		?, 0, 300, 30, 330, ?, ? / 2.0, ? + 100.0
+		FROM measurements ORDER BY id LIMIT 1`, completed, completed, outputTokS, outputTokS, outputTokS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	measurementID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertAggregateMetric(t, db, measurementID, "ttft", "ms", ttft, completed)
+	insertAggregateMetric(t, db, measurementID, "tpot", "ms", tpot, completed)
+	return measurementID
+}
+
+func insertAggregateMetric(t *testing.T, db *sql.DB, measurementID int64, name, unit string, mean float64, count int) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO metric_stats (
+		measurement_id, metric, unit, mean, count
+	) VALUES (?, ?, ?, ?, ?)`, measurementID, name, unit, mean, count); err != nil {
+		t.Fatal(err)
 	}
 }
 

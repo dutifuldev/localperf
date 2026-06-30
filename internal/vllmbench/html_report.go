@@ -532,33 +532,67 @@ func loadSQLiteReportMetrics(db *sql.DB, doc *SQLiteReportDocument) error {
 }
 
 func loadSQLiteReportRequestSummary(db *sql.DB, doc *SQLiteReportDocument) error {
-	var latency, ttft, tpot, itl, outputTokS sql.NullFloat64
+	var latency, ttft, tpot, itl, outputTokS sqliteReportWeightedMean
+	var latencyMean, ttftMean, tpotMean, itlMean, outputTokSMean sql.NullFloat64
+	var latencyCount, ttftCount, tpotCount, itlCount, outputTokSCount int
 	err := db.QueryRow(`SELECT
-		COUNT(*),
-		COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END), 0),
-		AVG(latency_ms), AVG(ttft_ms), AVG(tpot_ms), AVG(itl_mean_ms), AVG(output_tok_s)
-		FROM requests`).Scan(
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END), 0),
+			AVG(latency_ms), COUNT(latency_ms),
+			AVG(ttft_ms), COUNT(ttft_ms),
+			AVG(tpot_ms), COUNT(tpot_ms),
+			AVG(itl_mean_ms), COUNT(itl_mean_ms),
+			AVG(output_tok_s), COUNT(output_tok_s)
+			FROM requests`).Scan(
 		&doc.RequestSummary.Total, &doc.RequestSummary.Completed, &doc.RequestSummary.Failed,
-		&doc.RequestSummary.Canceled, &latency, &ttft, &tpot, &itl, &outputTokS)
+		&doc.RequestSummary.Canceled, &latencyMean, &latencyCount, &ttftMean, &ttftCount,
+		&tpotMean, &tpotCount, &itlMean, &itlCount, &outputTokSMean, &outputTokSCount)
 	if err != nil {
 		return err
 	}
-	doc.RequestSummary.LatencyMeanMS = displayNullFloat(latency)
-	doc.RequestSummary.TTFTMeanMS = displayNullFloat(ttft)
-	doc.RequestSummary.TPOTMeanMS = displayNullFloat(tpot)
-	doc.RequestSummary.ITLMeanMS = displayNullFloat(itl)
-	doc.RequestSummary.OutputTokSMean = displayNullFloat(outputTokS)
-	if doc.RequestSummary.Total == 0 {
-		applySQLiteAggregateRequestSummary(doc)
+	latency.addNullFloat(latencyMean, latencyCount)
+	ttft.addNullFloat(ttftMean, ttftCount)
+	tpot.addNullFloat(tpotMean, tpotCount)
+	itl.addNullFloat(itlMean, itlCount)
+	outputTokS.addNullFloat(outputTokSMean, outputTokSCount)
+	requestRows, err := sqliteRequestRowsByMeasurement(db)
+	if err != nil {
+		return err
 	}
+	applySQLiteAggregateRequestSummary(doc, requestRows, &latency, &ttft, &tpot, &itl, &outputTokS)
+	doc.RequestSummary.LatencyMeanMS = displayWeightedMean(latency)
+	doc.RequestSummary.TTFTMeanMS = displayWeightedMean(ttft)
+	doc.RequestSummary.TPOTMeanMS = displayWeightedMean(tpot)
+	doc.RequestSummary.ITLMeanMS = displayWeightedMean(itl)
+	doc.RequestSummary.OutputTokSMean = displayWeightedMean(outputTokS)
 	return nil
 }
 
-func applySQLiteAggregateRequestSummary(doc *SQLiteReportDocument) {
-	var latency, ttft, tpot, itl, outputTokS sqliteReportWeightedMean
+func sqliteRequestRowsByMeasurement(db *sql.DB) (map[int64]int, error) {
+	rows, err := db.Query(`SELECT measurement_id, COUNT(*) FROM requests GROUP BY measurement_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var measurementID int64
+		var count int
+		if err := rows.Scan(&measurementID, &count); err != nil {
+			return nil, err
+		}
+		out[measurementID] = count
+	}
+	return out, rows.Err()
+}
+
+func applySQLiteAggregateRequestSummary(doc *SQLiteReportDocument, requestRows map[int64]int, latency, ttft, tpot, itl, outputTokS *sqliteReportWeightedMean) {
 	for _, measurement := range doc.Measurements {
+		if requestRows[measurement.ID] > 0 {
+			continue
+		}
 		doc.RequestSummary.Completed += measurement.CompletedRequests
 		doc.RequestSummary.Failed += measurement.FailedRequests
 		doc.RequestSummary.Canceled += canceledRequestEstimate(measurement)
@@ -572,11 +606,6 @@ func applySQLiteAggregateRequestSummary(doc *SQLiteReportDocument) {
 		itl.addMetric(metricFirst(metrics, "request_itl_mean"))
 	}
 	doc.RequestSummary.Total = doc.RequestSummary.Completed + doc.RequestSummary.Failed + doc.RequestSummary.Canceled
-	doc.RequestSummary.LatencyMeanMS = displayWeightedMean(latency)
-	doc.RequestSummary.TTFTMeanMS = displayWeightedMean(ttft)
-	doc.RequestSummary.TPOTMeanMS = displayWeightedMean(tpot)
-	doc.RequestSummary.ITLMeanMS = displayWeightedMean(itl)
-	doc.RequestSummary.OutputTokSMean = displayWeightedMean(outputTokS)
 }
 
 func canceledRequestEstimate(measurement SQLiteReportMeasurement) int {
@@ -601,6 +630,13 @@ func (mean *sqliteReportWeightedMean) add(value float64, weight int) {
 	}
 	mean.total += value * float64(weight)
 	mean.weight += weight
+}
+
+func (mean *sqliteReportWeightedMean) addNullFloat(value sql.NullFloat64, weight int) {
+	if !value.Valid {
+		return
+	}
+	mean.add(value.Float64, weight)
 }
 
 func (mean *sqliteReportWeightedMean) addMetric(metric SQLiteReportMetric, ok bool) {
