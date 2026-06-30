@@ -17,6 +17,7 @@ type vllmBenchSampleData struct {
 	ttfts      []float64
 	itls       [][]float64
 	startTimes []float64
+	errors     []string
 	completed  int
 	failed     int
 	baseTime   time.Time
@@ -72,38 +73,49 @@ func isVLLMBenchSampleResult(raw map[string]json.RawMessage) bool {
 }
 
 func readVLLMBenchSampleData(raw map[string]json.RawMessage) (vllmBenchSampleData, error) {
-	inputLens, _, err := intArrayField(raw, "input_lens")
-	if err != nil {
+	data := vllmBenchSampleData{baseTime: resultDate(raw)}
+	if err := readVLLMBenchTokenData(raw, &data); err != nil {
 		return vllmBenchSampleData{}, err
 	}
-	outputLens, _, err := intArrayField(raw, "output_lens")
-	if err != nil {
+	if err := readVLLMBenchTimingData(raw, &data); err != nil {
 		return vllmBenchSampleData{}, err
 	}
-	ttfts, _, err := floatArrayField(raw, "ttfts")
-	if err != nil {
+	if err := readVLLMBenchErrorData(raw, &data); err != nil {
 		return vllmBenchSampleData{}, err
 	}
-	itls, _, err := nestedFloatArrayField(raw, "itls")
+	data.completed, _ = intScalarField(raw, "completed")
+	data.failed, _ = intScalarField(raw, "failed")
+	return data, nil
+}
+
+func readVLLMBenchTokenData(raw map[string]json.RawMessage, data *vllmBenchSampleData) error {
+	var err error
+	data.inputLens, _, err = intArrayField(raw, "input_lens")
 	if err != nil {
-		return vllmBenchSampleData{}, err
+		return err
 	}
-	startTimes, _, err := floatArrayField(raw, "start_times")
+	data.outputLens, _, err = intArrayField(raw, "output_lens")
+	return err
+}
+
+func readVLLMBenchTimingData(raw map[string]json.RawMessage, data *vllmBenchSampleData) error {
+	var err error
+	data.ttfts, _, err = floatArrayField(raw, "ttfts")
 	if err != nil {
-		return vllmBenchSampleData{}, err
+		return err
 	}
-	completed, _ := intScalarField(raw, "completed")
-	failed, _ := intScalarField(raw, "failed")
-	return vllmBenchSampleData{
-		inputLens:  inputLens,
-		outputLens: outputLens,
-		ttfts:      ttfts,
-		itls:       itls,
-		startTimes: startTimes,
-		completed:  completed,
-		failed:     failed,
-		baseTime:   resultDate(raw),
-	}, nil
+	data.itls, _, err = nestedFloatArrayField(raw, "itls")
+	if err != nil {
+		return err
+	}
+	data.startTimes, _, err = floatArrayField(raw, "start_times")
+	return err
+}
+
+func readVLLMBenchErrorData(raw map[string]json.RawMessage, data *vllmBenchSampleData) error {
+	var err error
+	data.errors, _, err = stringArrayField(raw, "errors")
+	return err
 }
 
 func (data vllmBenchSampleData) samples() []RequestSample {
@@ -137,7 +149,7 @@ func (data vllmBenchSampleData) sample(index int, minStart float64, hasStart boo
 	sample := RequestSample{
 		RequestIndex:     index,
 		RequestID:        fmt.Sprintf("vllm-bench-%d", index),
-		Status:           vllmBenchRequestStatus(index, data.completed, completionTokens),
+		Status:           data.requestStatus(index, completionTokens),
 		Streamed:         true,
 		StartedAt:        startedAt,
 		PromptTokens:     promptTokens,
@@ -145,6 +157,7 @@ func (data vllmBenchSampleData) sample(index int, minStart float64, hasStart boo
 		TotalTokens:      promptTokens + completionTokens,
 		ResponseMetadata: vllmBenchResponseMetadata(),
 	}
+	data.applySampleError(&sample, index)
 	return data.applySampleTimings(sample, index)
 }
 
@@ -197,17 +210,39 @@ func vllmBenchResponseMetadata() map[string]any {
 	}
 }
 
-func vllmBenchRequestStatus(index, completed, outputTokens int) string {
-	if completed > 0 {
-		if index < completed {
-			return "completed"
-		}
-		return "failed"
-	}
-	if outputTokens > 0 {
+func (data vllmBenchSampleData) requestStatus(index, outputTokens int) string {
+	if data.requestCompleted(index, outputTokens) {
 		return "completed"
 	}
 	return "failed"
+}
+
+func (data vllmBenchSampleData) requestCompleted(index, outputTokens int) bool {
+	if data.hasRequestError(index) {
+		return false
+	}
+	return outputTokens > 0 || data.hasSuccessfulEmptyError(index) || data.hasAggregateCompletion(index)
+}
+
+func (data vllmBenchSampleData) hasRequestError(index int) bool {
+	return strings.TrimSpace(stringAt(data.errors, index)) != ""
+}
+
+func (data vllmBenchSampleData) hasSuccessfulEmptyError(index int) bool {
+	return len(data.errors) > index && data.failed == 0
+}
+
+func (data vllmBenchSampleData) hasAggregateCompletion(index int) bool {
+	return len(data.errors) == 0 && index < data.completed
+}
+
+func (data vllmBenchSampleData) applySampleError(sample *RequestSample, index int) {
+	message := strings.TrimSpace(stringAt(data.errors, index))
+	if message == "" {
+		return
+	}
+	sample.ErrorType = "vllm_bench_error"
+	sample.ErrorMessage = message
 }
 
 func intArrayField(raw map[string]json.RawMessage, key string) ([]int, bool, error) {
@@ -244,6 +279,33 @@ func nestedFloatArrayField(raw map[string]json.RawMessage, key string) ([][]floa
 		return nil, true, fmt.Errorf("%s: %w", key, err)
 	}
 	return out, true, nil
+}
+
+func stringArrayField(raw map[string]json.RawMessage, key string) ([]string, bool, error) {
+	value, ok := raw[key]
+	if !ok {
+		return nil, false, nil
+	}
+	var values []any
+	if err := json.Unmarshal(value, &values); err != nil {
+		return nil, true, fmt.Errorf("%s: %w", key, err)
+	}
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = stringValueAny(value)
+	}
+	return out, true, nil
+}
+
+func stringValueAny(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	default:
+		return fmt.Sprint(typed)
+	}
 }
 
 func intScalarField(raw map[string]json.RawMessage, key string) (int, bool) {
@@ -329,6 +391,13 @@ func finiteAt(values []float64, index int) (float64, bool) {
 func floatSliceAt(values [][]float64, index int) []float64 {
 	if index < 0 || index >= len(values) {
 		return nil
+	}
+	return values[index]
+}
+
+func stringAt(values []string, index int) string {
+	if index < 0 || index >= len(values) {
+		return ""
 	}
 	return values[index]
 }

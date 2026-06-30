@@ -46,6 +46,31 @@ func TestRequestSamplesFromResultReadsVLLMBenchArrays(t *testing.T) {
 	}
 }
 
+func TestRequestSamplesFromResultUsesVLLMBenchPerRequestErrors(t *testing.T) {
+	samples, err := requestSamplesFromResultData([]byte(`{
+  "date": "20260102-030405",
+  "completed": 1,
+  "failed": 1,
+  "input_lens": [100, 200],
+  "output_lens": [0, 10],
+  "ttfts": [0.0, 0.1],
+  "itls": [[], [0.2]],
+  "errors": ["boom", ""]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("samples = %d, want 2", len(samples))
+	}
+	if samples[0].Status != "failed" || samples[0].ErrorType != "vllm_bench_error" || samples[0].ErrorMessage != "boom" {
+		t.Fatalf("first sample = %+v, want failed vLLM error", samples[0])
+	}
+	if samples[1].Status != "completed" || samples[1].CompletionTokens != 10 {
+		t.Fatalf("second sample = %+v, want completed request", samples[1])
+	}
+}
+
 func near(got, want float64) bool {
 	const epsilon = 0.000001
 	diff := got - want
