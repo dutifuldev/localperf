@@ -18,6 +18,7 @@ type vllmBenchSampleData struct {
 	itls       [][]float64
 	startTimes []float64
 	errors     []string
+	hasErrors  bool
 	completed  int
 	failed     int
 	baseTime   time.Time
@@ -114,7 +115,7 @@ func readVLLMBenchTimingData(raw map[string]json.RawMessage, data *vllmBenchSamp
 
 func readVLLMBenchErrorData(raw map[string]json.RawMessage, data *vllmBenchSampleData) error {
 	var err error
-	data.errors, _, err = stringArrayField(raw, "errors")
+	data.errors, data.hasErrors, err = stringArrayField(raw, "errors")
 	return err
 }
 
@@ -125,8 +126,9 @@ func (data vllmBenchSampleData) samples() []RequestSample {
 	}
 	samples := make([]RequestSample, 0, count)
 	minStart, hasStart := minFinite(data.startTimes)
+	completed := data.completionStatuses(count)
 	for i := 0; i < count; i++ {
-		samples = append(samples, data.sample(i, minStart, hasStart))
+		samples = append(samples, data.sample(i, minStart, hasStart, completed[i]))
 	}
 	return samples
 }
@@ -142,14 +144,14 @@ func (data vllmBenchSampleData) sampleCount() int {
 	)
 }
 
-func (data vllmBenchSampleData) sample(index int, minStart float64, hasStart bool) RequestSample {
+func (data vllmBenchSampleData) sample(index int, minStart float64, hasStart bool, completed bool) RequestSample {
 	promptTokens := intAt(data.inputLens, index)
 	completionTokens := intAt(data.outputLens, index)
 	startedAt := derivedStartTime(data.baseTime, data.startTimes, index, minStart, hasStart)
 	sample := RequestSample{
 		RequestIndex:     index,
 		RequestID:        fmt.Sprintf("vllm-bench-%d", index),
-		Status:           data.requestStatus(index, completionTokens),
+		Status:           requestStatus(completed),
 		Streamed:         true,
 		StartedAt:        startedAt,
 		PromptTokens:     promptTokens,
@@ -210,30 +212,71 @@ func vllmBenchResponseMetadata() map[string]any {
 	}
 }
 
-func (data vllmBenchSampleData) requestStatus(index, outputTokens int) string {
-	if data.requestCompleted(index, outputTokens) {
+func requestStatus(completed bool) string {
+	if completed {
 		return "completed"
 	}
 	return "failed"
 }
 
-func (data vllmBenchSampleData) requestCompleted(index, outputTokens int) bool {
-	if data.hasRequestError(index) {
-		return false
+func (data vllmBenchSampleData) completionStatuses(count int) []bool {
+	completed := make([]bool, count)
+	if data.aggregateCountsKnown() {
+		remaining := data.completed
+		data.markCompletions(completed, &remaining, data.hasOutputTokens)
+		data.markCompletions(completed, &remaining, data.hasZeroOutputTTFTCandidate)
+		data.markCompletions(completed, &remaining, data.hasZeroOutputCandidate)
+		return completed
 	}
-	return outputTokens > 0 || data.hasSuccessfulEmptyError(index) || data.hasAggregateCompletion(index)
+	for i := range completed {
+		completed[i] = !data.hasRequestError(i) && (data.hasOutputTokens(i) || data.hasEmptyErrorEntry(i))
+	}
+	return completed
+}
+
+func (data vllmBenchSampleData) aggregateCountsKnown() bool {
+	return data.completed+data.failed > 0
+}
+
+func (data vllmBenchSampleData) markCompletions(completed []bool, remaining *int, candidate func(int) bool) {
+	for i := range completed {
+		if *remaining <= 0 {
+			return
+		}
+		if completed[i] || data.hasRequestError(i) || !candidate(i) {
+			continue
+		}
+		completed[i] = true
+		*remaining--
+	}
+}
+
+func (data vllmBenchSampleData) hasOutputTokens(index int) bool {
+	return intAt(data.outputLens, index) > 0
+}
+
+func (data vllmBenchSampleData) hasZeroOutputTTFTCandidate(index int) bool {
+	ttft, ok := finiteAt(data.ttfts, index)
+	return ok && ttft > 0 && data.hasZeroOutputCandidate(index)
+}
+
+func (data vllmBenchSampleData) hasZeroOutputCandidate(index int) bool {
+	return !data.hasOutputTokens(index) && data.hasZeroOutputCompletionEvidence(index)
 }
 
 func (data vllmBenchSampleData) hasRequestError(index int) bool {
 	return strings.TrimSpace(stringAt(data.errors, index)) != ""
 }
 
-func (data vllmBenchSampleData) hasSuccessfulEmptyError(index int) bool {
-	return len(data.errors) > index
+func (data vllmBenchSampleData) hasZeroOutputCompletionEvidence(index int) bool {
+	if data.hasErrors {
+		return data.hasEmptyErrorEntry(index)
+	}
+	return true
 }
 
-func (data vllmBenchSampleData) hasAggregateCompletion(index int) bool {
-	return len(data.errors) == 0 && index < data.completed
+func (data vllmBenchSampleData) hasEmptyErrorEntry(index int) bool {
+	return len(data.errors) > index
 }
 
 func (data vllmBenchSampleData) applySampleError(sample *RequestSample, index int) {

@@ -82,6 +82,31 @@ func TestRequestSamplesFromResultUsesVLLMBenchPerRequestErrors(t *testing.T) {
 	}
 }
 
+func TestRequestSamplesFromResultCapsBlankVLLMErrorsByCompletedCount(t *testing.T) {
+	samples, err := requestSamplesFromResultData([]byte(`{
+  "date": "20260102-030405",
+  "completed": 2,
+  "failed": 1,
+  "input_lens": [100, 150, 200],
+  "output_lens": [0, 0, 10],
+  "ttfts": [0.0, 0.05, 0.1],
+  "itls": [[], [], [0.2]],
+  "errors": ["", "", ""]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 3 {
+		t.Fatalf("samples = %d, want 3", len(samples))
+	}
+	if samples[0].Status != "failed" {
+		t.Fatalf("first sample status = %q, want failed", samples[0].Status)
+	}
+	if samples[1].Status != "completed" || samples[2].Status != "completed" {
+		t.Fatalf("sample statuses = %q/%q/%q, want failed/completed/completed", samples[0].Status, samples[1].Status, samples[2].Status)
+	}
+}
+
 func TestRequestSamplesFromResultParsesVLLMWallClockInLocalTime(t *testing.T) {
 	originalLocal := time.Local
 	time.Local = time.FixedZone("test-local", 3*60*60)
