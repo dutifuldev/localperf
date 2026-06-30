@@ -228,6 +228,37 @@ func TestLoadSQLiteReportMergesDetailedAndAggregateOnlySummary(t *testing.T) {
 	}
 }
 
+func TestWriteSQLiteHTMLReportRendersOlderRequestSchema(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "Older Request Schema")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE requests DROP COLUMN output_tok_s`); err != nil {
+		_ = db.Close()
+		t.Fatalf("drop output_tok_s: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE requests DROP COLUMN total_tok_s`); err != nil {
+		_ = db.Close()
+		t.Fatalf("drop total_tok_s: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "report.html")
+	if err := WriteSQLiteHTMLReport(artifactPath, outputPath, HTMLReportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	html, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(html), "123.400") {
+		t.Fatalf("older-schema HTML missing aggregate throughput fallback:\n%s", html)
+	}
+}
+
 func TestLoadSQLiteReportIgnoresEmptyNotableEventMessages(t *testing.T) {
 	artifactPath := testSQLiteHTMLArtifact(t, "Empty Events")
 	doc, err := LoadSQLiteReport(artifactPath)
