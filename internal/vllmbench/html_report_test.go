@@ -96,6 +96,35 @@ func TestWriteSQLiteHTMLReportUsesDefaultOutput(t *testing.T) {
 	}
 }
 
+func TestWriteSQLiteHTMLReportRejectsOverwritingSourceArtifact(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "No Overwrite")
+	if err := WriteSQLiteHTMLReport(artifactPath, artifactPath, HTMLReportOptions{}); err == nil {
+		t.Fatal("WriteSQLiteHTMLReport error = nil, want same-path rejection")
+	}
+	if err := CheckSQLiteArtifact(artifactPath); err != nil {
+		t.Fatalf("source artifact was corrupted after rejected render: %v", err)
+	}
+}
+
+func TestWriteSQLiteHTMLReportRejectsDefaultOutputOverSourceArtifact(t *testing.T) {
+	dir := t.TempDir()
+	artifactPath := testSQLiteHTMLArtifact(t, "HTML Named Artifact")
+	htmlNamedArtifact := filepath.Join(dir, "run.html")
+	data, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(htmlNamedArtifact, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSQLiteHTMLReport(htmlNamedArtifact, "", HTMLReportOptions{}); err == nil {
+		t.Fatal("WriteSQLiteHTMLReport error = nil, want default same-path rejection")
+	}
+	if err := CheckSQLiteArtifact(htmlNamedArtifact); err != nil {
+		t.Fatalf("HTML-named source artifact was corrupted after rejected render: %v", err)
+	}
+}
+
 func TestLoadSQLiteReportFallsBackToAggregateOnlyArtifact(t *testing.T) {
 	artifactPath := testSQLiteHTMLArtifact(t, "Aggregate Only")
 	db, err := sql.Open("sqlite", artifactPath)

@@ -265,14 +265,15 @@ func RenderHTMLReport(writer io.Writer, doc SQLiteReportDocument, opts HTMLRepor
 }
 
 func WriteSQLiteHTMLReport(artifactPath, outputPath string, opts HTMLReportOptions) error {
+	resolvedOutputPath, err := htmlReportOutputPath(artifactPath, outputPath)
+	if err != nil {
+		return err
+	}
 	doc, err := LoadSQLiteReport(artifactPath)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(outputPath) == "" {
-		outputPath = defaultHTMLReportPath(artifactPath)
-	}
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(resolvedOutputPath), 0o755); err != nil {
 		return err
 	}
 	var builder strings.Builder
@@ -280,11 +281,36 @@ func WriteSQLiteHTMLReport(artifactPath, outputPath string, opts HTMLReportOptio
 		return err
 	}
 	content := []byte(builder.String())
-	if err := os.WriteFile(outputPath, content, 0o644); err != nil {
+	if err := os.WriteFile(resolvedOutputPath, content, 0o644); err != nil {
 		return err
 	}
 	if opts.Store {
-		return StoreSQLiteHTMLReport(artifactPath, htmlReportName, outputPath, content)
+		return StoreSQLiteHTMLReport(artifactPath, htmlReportName, resolvedOutputPath, content)
+	}
+	return nil
+}
+
+func htmlReportOutputPath(artifactPath, outputPath string) (string, error) {
+	if strings.TrimSpace(outputPath) == "" {
+		outputPath = defaultHTMLReportPath(artifactPath)
+	}
+	if err := rejectSourceArtifactOutput(artifactPath, outputPath); err != nil {
+		return "", err
+	}
+	return outputPath, nil
+}
+
+func rejectSourceArtifactOutput(artifactPath, outputPath string) error {
+	artifactAbs, err := filepath.Abs(artifactPath)
+	if err != nil {
+		return err
+	}
+	outputAbs, err := filepath.Abs(outputPath)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(artifactAbs) == filepath.Clean(outputAbs) {
+		return fmt.Errorf("HTML output path must differ from SQLite artifact path: %s", outputPath)
 	}
 	return nil
 }
