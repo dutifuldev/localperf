@@ -259,6 +259,39 @@ func TestWriteSQLiteHTMLReportRendersOlderRequestSchema(t *testing.T) {
 	}
 }
 
+func TestWriteSQLiteHTMLReportHandlesQueryCharacterPath(t *testing.T) {
+	spec := testSpec()
+	spec.Name = "Query Character Path"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Warmup.Enabled = false
+	spec.Workloads[0].NumPrompts = 1
+	spec.Workloads[0].MaxConcurrency = []int{1}
+	ApplyDefaults(&spec)
+	runDir := filepath.Join(t.TempDir(), "a?b", "run")
+	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true, RunDir: runDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ArtifactPath != runDir+".sqlite" {
+		t.Fatalf("artifact path = %q, want query-character path", summary.ArtifactPath)
+	}
+	if _, err := os.Stat(summary.ArtifactPath); err != nil {
+		t.Fatalf("artifact was not written at query-character path: %v", err)
+	}
+	outputPath := filepath.Join(filepath.Dir(summary.ArtifactPath), "report.html")
+	if err := WriteSQLiteHTMLReport(summary.ArtifactPath, outputPath, HTMLReportOptions{Store: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckSQLiteArtifact(summary.ArtifactPath); err != nil {
+		t.Fatalf("query-character artifact check: %v", err)
+	}
+	if _, err := os.Stat(outputPath); err != nil {
+		t.Fatalf("HTML report was not written at query-character path: %v", err)
+	}
+}
+
 func TestLoadSQLiteReportIgnoresEmptyNotableEventMessages(t *testing.T) {
 	artifactPath := testSQLiteHTMLArtifact(t, "Empty Events")
 	doc, err := LoadSQLiteReport(artifactPath)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -364,38 +363,11 @@ func StoreSQLiteHTMLReport(artifactPath, name, originalPath string, content []by
 }
 
 func openSQLiteArtifactReadOnly(path string) (*sql.DB, error) {
-	if _, err := os.Stat(path); err != nil {
-		return nil, err
-	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
-	}
-	uri := url.URL{Scheme: "file", Path: absolute, RawQuery: "mode=ro"}
-	db, err := sql.Open("sqlite", uri.String())
-	if err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return db, nil
+	return openExistingSQLiteFile(path, "mode=ro")
 }
 
 func openSQLiteArtifactWritable(path string) (*sql.DB, error) {
-	if _, err := os.Stat(path); err != nil {
-		return nil, err
-	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return db, nil
+	return openExistingSQLiteFile(path, "")
 }
 
 func defaultHTMLReportPath(artifactPath string) string {
