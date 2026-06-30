@@ -481,6 +481,7 @@ func applyTrafficDefaults(traffic *BenchmarkTrafficConfig, defaultDataset string
 	if strings.TrimSpace(traffic.RequestRate) == "" {
 		traffic.RequestRate = "inf"
 	}
+	traffic.SaveDetailed = true
 }
 
 func applyLoadGeneratorDefault(workload *Workload) {

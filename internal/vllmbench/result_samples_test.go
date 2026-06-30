@@ -8,6 +8,7 @@ import (
 func TestRequestSamplesFromResultReadsVLLMBenchArrays(t *testing.T) {
 	samples, err := requestSamplesFromResultData([]byte(`{
   "date": "20260102-030405",
+  "duration": 10.0,
   "completed": 2,
   "failed": 0,
   "input_lens": [100, 200],
@@ -38,6 +39,10 @@ func TestRequestSamplesFromResultReadsVLLMBenchArrays(t *testing.T) {
 	if first.FirstByteAt == nil || first.CompletedAt == nil {
 		t.Fatalf("first sample timestamps missing: %+v", first)
 	}
+	wantStart := time.Date(2026, 1, 2, 3, 3, 55, 0, time.UTC)
+	if !samples[0].StartedAt.Equal(wantStart) {
+		t.Fatalf("first sample start = %s, want %s", samples[0].StartedAt, wantStart)
+	}
 	if got := samples[1].StartedAt.Sub(samples[0].StartedAt); got != 1500*time.Millisecond {
 		t.Fatalf("start delta = %s, want 1.5s", got)
 	}
@@ -49,25 +54,28 @@ func TestRequestSamplesFromResultReadsVLLMBenchArrays(t *testing.T) {
 func TestRequestSamplesFromResultUsesVLLMBenchPerRequestErrors(t *testing.T) {
 	samples, err := requestSamplesFromResultData([]byte(`{
   "date": "20260102-030405",
-  "completed": 1,
+  "completed": 2,
   "failed": 1,
-  "input_lens": [100, 200],
-  "output_lens": [0, 10],
-  "ttfts": [0.0, 0.1],
-  "itls": [[], [0.2]],
-  "errors": ["boom", ""]
+  "input_lens": [100, 150, 200],
+  "output_lens": [0, 0, 10],
+  "ttfts": [0.0, 0.05, 0.1],
+  "itls": [[], [], [0.2]],
+  "errors": ["boom", "", ""]
 }`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(samples) != 2 {
-		t.Fatalf("samples = %d, want 2", len(samples))
+	if len(samples) != 3 {
+		t.Fatalf("samples = %d, want 3", len(samples))
 	}
 	if samples[0].Status != "failed" || samples[0].ErrorType != "vllm_bench_error" || samples[0].ErrorMessage != "boom" {
 		t.Fatalf("first sample = %+v, want failed vLLM error", samples[0])
 	}
-	if samples[1].Status != "completed" || samples[1].CompletionTokens != 10 {
-		t.Fatalf("second sample = %+v, want completed request", samples[1])
+	if samples[1].Status != "completed" || samples[1].CompletionTokens != 0 {
+		t.Fatalf("second sample = %+v, want completed zero-output request", samples[1])
+	}
+	if samples[2].Status != "completed" || samples[2].CompletionTokens != 10 {
+		t.Fatalf("third sample = %+v, want completed request", samples[2])
 	}
 }
 

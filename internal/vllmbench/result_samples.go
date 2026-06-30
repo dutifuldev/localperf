@@ -73,7 +73,7 @@ func isVLLMBenchSampleResult(raw map[string]json.RawMessage) bool {
 }
 
 func readVLLMBenchSampleData(raw map[string]json.RawMessage) (vllmBenchSampleData, error) {
-	data := vllmBenchSampleData{baseTime: resultDate(raw)}
+	data := vllmBenchSampleData{baseTime: resultStartTime(raw)}
 	if err := readVLLMBenchTokenData(raw, &data); err != nil {
 		return vllmBenchSampleData{}, err
 	}
@@ -229,7 +229,7 @@ func (data vllmBenchSampleData) hasRequestError(index int) bool {
 }
 
 func (data vllmBenchSampleData) hasSuccessfulEmptyError(index int) bool {
-	return len(data.errors) > index && data.failed == 0
+	return len(data.errors) > index
 }
 
 func (data vllmBenchSampleData) hasAggregateCompletion(index int) bool {
@@ -320,6 +320,18 @@ func intScalarField(raw map[string]json.RawMessage, key string) (int, bool) {
 	return out, true
 }
 
+func floatScalarField(raw map[string]json.RawMessage, key string) float64 {
+	value, ok := raw[key]
+	if !ok {
+		return 0
+	}
+	var out float64
+	if err := json.Unmarshal(value, &out); err != nil || !isFinite(out) || out < 0 {
+		return 0
+	}
+	return out
+}
+
 func resultDate(raw map[string]json.RawMessage) time.Time {
 	value, ok := raw["date"]
 	if !ok {
@@ -342,6 +354,10 @@ func resultDate(raw map[string]json.RawMessage) time.Time {
 		}
 	}
 	return time.Unix(0, 0).UTC()
+}
+
+func resultStartTime(raw map[string]json.RawMessage) time.Time {
+	return resultDate(raw).Add(-secondsDuration(floatScalarField(raw, "duration")))
 }
 
 func derivedStartTime(base time.Time, startTimes []float64, index int, minStart float64, hasStart bool) time.Time {
