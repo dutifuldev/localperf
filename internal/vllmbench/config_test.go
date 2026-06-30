@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -45,6 +47,91 @@ func TestBuildPlanAndBenchCommand(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("command %q missing %q", got, want)
 		}
+	}
+}
+
+func TestLoadGeneratorAliasesNormalize(t *testing.T) {
+	for _, alias := range []string{"vllm-bench", "vllmbench", "vllm_bench"} {
+		spec := testSpec()
+		spec.Workloads[0].LoadGenerator = alias
+		ApplyDefaults(&spec)
+		if got := spec.Workloads[0].LoadGenerator; got != LoadGeneratorVLLMBench {
+			t.Fatalf("load_generator alias %q normalized to %q, want %q", alias, got, LoadGeneratorVLLMBench)
+		}
+		if err := ValidateSpec(spec); err != nil {
+			t.Fatalf("ValidateSpec with alias %q: %v", alias, err)
+		}
+	}
+}
+
+func TestValidateSpecAllowsUnmanagedEndpointOnlyProfile(t *testing.T) {
+	spec := testSpec()
+	spec.Profiles[0].Managed = false
+	spec.Profiles[0].Port = 0
+	spec.Profiles[0].EndpointBaseURL = "https://api.example.com/v1"
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "all referenced workloads use localperf_http") {
+		t.Fatalf("ValidateSpec endpoint-only vllm_bench profile = %v, want port issue", err)
+	}
+
+	withPort := testSpec()
+	withPort.Profiles[0].Managed = false
+	withPort.Profiles[0].EndpointBaseURL = "https://api.example.com/v1"
+	if err := ValidateSpec(withPort); err == nil || !strings.Contains(err.Error(), "endpoint_base_url") {
+		t.Fatalf("ValidateSpec endpoint vllm_bench profile = %v, want endpoint_base_url issue", err)
+	}
+
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	for _, endpoint := range []string{"api.example.com", "https://api.example.com/v1?x=1", "https://api.example.com/v1#frag"} {
+		spec.Profiles[0].EndpointBaseURL = endpoint
+		if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "endpoint_base_url") {
+			t.Fatalf("ValidateSpec endpoint %q = %v, want endpoint_base_url issue", endpoint, err)
+		}
+	}
+	spec.Profiles[0].EndpointBaseURL = "https://api.example.com/v1"
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec endpoint-only profile: %v", err)
+	}
+	if got := baseURL(spec.Profiles[0]); got != "https://api.example.com" {
+		t.Fatalf("baseURL = %q, want normalized endpoint URL", got)
+	}
+
+	spec.Warmup = WarmupConfig{
+		Enabled:        true,
+		NumPrompts:     1,
+		MaxConcurrency: 1,
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:         "openai-chat",
+			DatasetName:     "random",
+			RandomInputLen:  1,
+			RandomOutputLen: 1,
+			RequestRate:     "inf",
+		},
+	}
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "all referenced workloads use localperf_http") {
+		t.Fatalf("ValidateSpec endpoint-only warmup profile = %v, want port issue", err)
+	}
+
+	spec.Warmup.Enabled = false
+	spec.Profiles[0].Managed = true
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "port must be positive") {
+		t.Fatalf("ValidateSpec managed endpoint profile = %v, want port issue", err)
+	}
+}
+
+func TestValidateLocalPerfHTTPRejectsUnsupportedDatasetName(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].BenchmarkTrafficConfig.DatasetName = "sonnet"
+	spec.Workloads[0].BenchmarkTrafficConfig.RandomInputLen = 0
+	spec.Workloads[0].BenchmarkTrafficConfig.RandomOutputLen = 0
+	ApplyDefaults(&spec)
+	err := ValidateSpec(spec)
+	if err == nil || !strings.Contains(err.Error(), "localperf_http supports random or canonical structured datasets") {
+		t.Fatalf("ValidateSpec error = %v, want localperf_http dataset rejection", err)
+	}
+	spec.Workloads[0].BenchmarkTrafficConfig.DatasetPath = "/tmp/canonical.jsonl"
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec with canonical dataset path: %v", err)
 	}
 }
 
@@ -577,6 +664,19 @@ func TestParseCustomJSONLResult(t *testing.T) {
 	}
 }
 
+func TestRequestSamplesForResultSkipsJSONL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "result.jsonl")
+	writeFile(t, path, "{\"completed\":1}\n{\"completed\":2}\n")
+	samples, err := requestSamplesForResult(dir, "result.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 0 {
+		t.Fatalf("samples = %d, want 0", len(samples))
+	}
+}
+
 func TestExecuteDryRunAndReport(t *testing.T) {
 	spec := testSpec()
 	spec.OutputDir = t.TempDir()
@@ -905,6 +1005,59 @@ func TestPrepareDatasetsMaterializesShareGPTWorkload(t *testing.T) {
 	}
 	if !strings.Contains(string(vllmData), `"prompt":"Explain TTFT in one sentence."`) || !strings.Contains(string(vllmData), `"output_tokens":512`) {
 		t.Fatalf("vLLM custom dataset was not rendered correctly:\n%s", vllmData)
+	}
+}
+
+func TestLocalPerfHTTPCommandUsesPreparedCanonicalDataset(t *testing.T) {
+	dir := t.TempDir()
+	datasetPath := writeShareGPTFixture(t, dir)
+	spec := testSpec()
+	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].ExtraBody = `{"guided_decoding_backend":"outlines"}`
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run")
+	if err := PrepareDatasets(context.Background(), &spec, runDir); err != nil {
+		t.Fatal(err)
+	}
+	workload := spec.Workloads[0]
+	command := ShellQuote(LoadCommand(spec, BuildPlan(spec, runDir)[0]).Args)
+	for _, want := range []string{
+		"localperf bench http-load",
+		"--dataset-name custom",
+		"--dataset-path " + workload.Dataset.Prepared.CanonicalPath,
+		"--min-mem-available-gib 40",
+		"--num-prompts 1",
+		"--max-concurrency 1",
+		"--extra-body '{\"guided_decoding_backend\":\"outlines\"}'",
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command %q missing %q", command, want)
+		}
+	}
+	if strings.Contains(command, workload.Dataset.Prepared.VLLMCustomPath) {
+		t.Fatalf("localperf_http command should use canonical dataset path, got %q", command)
+	}
+}
+
+func TestLocalPerfHTTPCommandUsesDirectDatasetPath(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads = []Workload{testRandomWorkload("http-custom", []string{"8k"}, 0, 8, 1, []int{1})}
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].BenchmarkTrafficConfig.DatasetName = "custom"
+	spec.Workloads[0].BenchmarkTrafficConfig.DatasetPath = "/tmp/direct.canonical.jsonl"
+	spec.Safety.WorkloadTimeoutSec = 7
+	ApplyDefaults(&spec)
+	command := ShellQuote(LoadCommand(spec, BuildPlan(spec, t.TempDir())[0]).Args)
+	if !strings.Contains(command, "--dataset-path /tmp/direct.canonical.jsonl") {
+		t.Fatalf("command %q missing direct dataset path", command)
+	}
+	if !strings.Contains(command, "--timeout 7s") {
+		t.Fatalf("command %q missing workload timeout", command)
 	}
 }
 
@@ -1358,6 +1511,481 @@ func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
 	}
 	if len(report.Rows) != 1 || report.Rows[0].Failed != 1 {
 		t.Fatalf("report rows = %+v, want failed request row", report.Rows)
+	}
+}
+
+func TestExecuteLocalPerfHTTPRecordsRequestSamples(t *testing.T) {
+	server, host, port := fakeOpenAIServer(t)
+	defer server.Close()
+	spec := localPerfHTTPTestSpec(t, host, port, "localperf-http-request-samples", 3, 2)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if summary.CompletedRuns != 1 || summary.FailedRuns != 0 {
+		t.Fatalf("summary = %+v, want one completed run", summary)
+	}
+	if len(summary.Rows) != 1 {
+		t.Fatalf("summary rows = %d, want 1", len(summary.Rows))
+	}
+	row := summary.Rows[0]
+	if row.OutputTokensPerSec <= 0 || row.OutputTokSecStdDev <= 0 {
+		t.Fatalf("row throughput = %+v, want positive aggregate and stddev", row)
+	}
+	if row.PromptTokens != 192 || row.CompletionTokens != 24 || row.TotalTokens != 216 {
+		t.Fatalf("row tokens = prompt %d completion %d total %d, want 192/24/216", row.PromptTokens, row.CompletionTokens, row.TotalTokens)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var requestRows, completionTokens int
+	if err := db.QueryRow("SELECT COUNT(*), COALESCE(SUM(completion_tokens), 0) FROM requests").Scan(&requestRows, &completionTokens); err != nil {
+		t.Fatal(err)
+	}
+	if requestRows != 3 || completionTokens != 24 {
+		t.Fatalf("requests rows = %d completion tokens = %d, want 3/24", requestRows, completionTokens)
+	}
+	var stddev float64
+	var count int
+	if err := db.QueryRow("SELECT stddev, count FROM metric_stats WHERE metric = 'request_output_throughput'").Scan(&stddev, &count); err != nil {
+		t.Fatal(err)
+	}
+	if stddev <= 0 || count != 3 {
+		t.Fatalf("request_output_throughput stddev/count = %v/%d, want positive/3", stddev, count)
+	}
+}
+
+func TestExecuteLocalPerfHTTPPreservesZeroTokenArtifacts(t *testing.T) {
+	server, host, port := fakeOpenAIServerWithUsage(t, 12, 0, 12)
+	defer server.Close()
+	spec := localPerfHTTPTestSpec(t, host, port, "localperf-http-zero-tokens", 1, 1)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if summary.CompletedRuns != 1 || summary.FailedRuns != 0 {
+		t.Fatalf("summary = %+v, want one completed run", summary)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	assertZeroTokenArtifactRows(t, db)
+}
+
+func TestExecuteLocalPerfHTTPFailedSamplesRemainReportable(t *testing.T) {
+	server, host, port := fakeOpenAIErrorServer(t)
+	defer server.Close()
+	spec := localPerfHTTPTestSpec(t, host, port, "localperf-http-failed-samples", 1, 1)
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
+		t.Fatalf("Execute error = %v, want benchmark run failure", err)
+	}
+	if summary.FailedRuns != 1 {
+		t.Fatalf("summary = %+v, want one failed run", summary)
+	}
+	report, err := BuildReport(summary.RunDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].Failed != 1 {
+		t.Fatalf("report rows = %+v, want failed request row", report.Rows)
+	}
+	events, err := os.ReadFile(summary.EventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(events), `"result_written":true`) || !strings.Contains(string(events), "localperf_http result reported 1 failed request") {
+		t.Fatalf("events did not mark failed HTTP samples as errored:\n%s", events)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var status string
+	var completedRequests, failedRequests int
+	if err := db.QueryRow("SELECT status, completed_requests, failed_requests FROM measurements LIMIT 1").Scan(&status, &completedRequests, &failedRequests); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || completedRequests != 0 || failedRequests != 1 {
+		t.Fatalf("measurement status/completed/failed = %s/%d/%d, want failed/0/1", status, completedRequests, failedRequests)
+	}
+	var requestRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&requestRows); err != nil {
+		t.Fatal(err)
+	}
+	if requestRows != 1 {
+		t.Fatalf("request rows = %d, want failed sample imported", requestRows)
+	}
+}
+
+func TestInsertMeasurementPreservesUnknownTokenNulls(t *testing.T) {
+	db, err := createSQLiteArtifact(filepath.Join(t.TempDir(), "artifact.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := withSQLiteTx(db, func(tx *sql.Tx) error {
+		seedMeasurementParents(t, tx)
+		_, err := insertMeasurement(tx, measurementInsert{
+			runID: "run",
+			planned: PlannedRun{
+				Profile:     Profile{Name: "profile"},
+				Workload:    Workload{Name: "workload", NumPrompts: 1},
+				Concurrency: 1,
+			},
+			row:    ReportRow{Completed: 1},
+			status: "completed",
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var promptTokens, completionTokens, totalTokens sql.NullInt64
+	if err := db.QueryRow("SELECT prompt_tokens, completion_tokens, total_tokens FROM measurements LIMIT 1").Scan(&promptTokens, &completionTokens, &totalTokens); err != nil {
+		t.Fatal(err)
+	}
+	if promptTokens.Valid || completionTokens.Valid || totalTokens.Valid {
+		t.Fatalf("token fields = %v/%v/%v, want NULLs for unknown token totals", promptTokens, completionTokens, totalTokens)
+	}
+}
+
+func TestInsertMeasurementDetailsReadsFallbackResultFile(t *testing.T) {
+	runDir := t.TempDir()
+	resultFile := filepath.Join("results", "failed.json")
+	writeFile(t, filepath.Join(runDir, resultFile), `{
+  "request_samples": [
+    {"request_index":0,"status":"failed","started_at":"2026-01-01T00:00:00Z","error_type":"http_status"}
+  ]
+}`)
+	db, err := createSQLiteArtifact(filepath.Join(t.TempDir(), "artifact.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := withSQLiteTx(db, func(tx *sql.Tx) error {
+		seedMeasurementParents(t, tx)
+		id, err := insertMeasurement(tx, measurementInsert{
+			runID: "run",
+			planned: PlannedRun{
+				Profile:     Profile{Name: "profile"},
+				Workload:    Workload{Name: "workload", NumPrompts: 1},
+				Concurrency: 1,
+			},
+			status: "failed",
+		})
+		if err != nil {
+			return err
+		}
+		return insertMeasurementDetails(tx, runDir, id, ReportRow{}, resultFile)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var requestRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&requestRows); err != nil {
+		t.Fatal(err)
+	}
+	if requestRows != 1 {
+		t.Fatalf("request rows = %d, want fallback result sample imported", requestRows)
+	}
+}
+
+func TestRowsByMeasurementRequiresResultWrittenForErroredEvents(t *testing.T) {
+	runDir := t.TempDir()
+	resultFile := filepath.Join("results", "partial.json")
+	writeFile(t, filepath.Join(runDir, resultFile), `{"completed":1,"failed":1}`)
+	event := Event{
+		Timestamp:   time.Now().UTC(),
+		Type:        "workload_finish",
+		Profile:     "profile",
+		Workload:    "workload",
+		Concurrency: 1,
+		ResultFile:  resultFile,
+		Error:       "failed before writing a result",
+	}
+	if rows := rowsByMeasurement(runDir, []Event{event}); len(rows) != 0 {
+		t.Fatalf("rows = %+v, want errored event without result_written ignored", rows)
+	}
+
+	event.Details = mustJSON(map[string]any{"result_written": true})
+	rows := rowsByMeasurement(runDir, []Event{event})
+	row := rows[measurementKey("profile", "workload", 1, 0)]
+	if row.Completed != 1 || row.Failed != 1 {
+		t.Fatalf("row completed/failed = %d/%d, want partial result imported", row.Completed, row.Failed)
+	}
+}
+
+func TestBuildReportIncludesWrittenPartialErroredResult(t *testing.T) {
+	runDir := t.TempDir()
+	resultFile := filepath.Join("results", "partial.json")
+	writeFile(t, filepath.Join(runDir, resultFile), `{"completed":1,"failed":1}`)
+	writeFile(t, filepath.Join(runDir, "events.jsonl"), `{"timestamp":"2026-06-26T00:00:00Z","type":"workload_finish","profile":"profile","workload":"workload","concurrency":1,"result_file":"results/partial.json","error":"timeout","details":{"result_written":true}}`+"\n")
+	report, err := BuildReport(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 1 || report.Rows[0].Completed != 1 || report.Rows[0].Failed != 1 {
+		t.Fatalf("report rows = %+v, want partial errored result row", report.Rows)
+	}
+}
+
+func TestEventHasArtifactResultIncludesWarmup(t *testing.T) {
+	event := Event{Type: "warmup_finish", ResultFile: filepath.Join("results", "warmup.json"), Error: "warmup result failed validation"}
+	if !eventHasArtifactResult(event) {
+		t.Fatal("warmup result event should be preserved as a raw artifact")
+	}
+	if eventHasImportableResult(event) {
+		t.Fatal("warmup result event should not be imported as a measurement row")
+	}
+
+	event = Event{Type: "workload_finish", ResultFile: filepath.Join("results", "failed.json"), Error: "external benchmark failed"}
+	if !eventHasArtifactResult(event) {
+		t.Fatal("failed workload result should be preserved as a raw artifact")
+	}
+	if eventHasImportableResult(event) {
+		t.Fatal("failed workload result without result_written should not be imported as a measurement row")
+	}
+}
+
+func TestMeasurementRawArtifactIDLinksFailedResultArtifact(t *testing.T) {
+	planned := PlannedRun{
+		Profile:     Profile{Name: "profile"},
+		Workload:    Workload{Name: "workload"},
+		Concurrency: 1,
+	}
+	resultFile := filepath.Join("results", "failed.json")
+	events := []Event{{
+		Type:        "workload_finish",
+		Profile:     "profile",
+		Workload:    "workload",
+		Concurrency: 1,
+		ResultFile:  resultFile,
+		Error:       "external benchmark failed",
+	}}
+	if got := measurementRawArtifactID(ReportRow{}, events, planned, map[string]int64{resultFile: 42}); got != 42 {
+		t.Fatalf("raw artifact id = %d, want failed result artifact linked", got)
+	}
+	if got := measurementResultFile(ReportRow{}, events, planned); got != "" {
+		t.Fatalf("measurement result file = %q, want no sample import for unmarked failed result", got)
+	}
+}
+
+func TestArtifactIDForPathVariants(t *testing.T) {
+	ids := map[string]int64{
+		"results/result.json":                  7,
+		filepath.Clean("nested/../clean.json"): 11,
+	}
+	for _, tt := range []struct {
+		path string
+		want int64
+	}{
+		{"", 0},
+		{"results/result.json", 7},
+		{"./results/result.json", 7},
+		{"nested/../clean.json", 11},
+		{"missing.json", 0},
+	} {
+		if got := artifactIDForPath(ids, tt.path); got != tt.want {
+			t.Fatalf("artifactIDForPath(%q) = %d, want %d", tt.path, got, tt.want)
+		}
+	}
+}
+
+func seedMeasurementParents(t *testing.T, tx *sql.Tx) {
+	t.Helper()
+	for _, statement := range []string{
+		`INSERT INTO run (id, name, status, created_at) VALUES ('run', 'run', 'completed', '2026-01-01T00:00:00Z')`,
+		`INSERT INTO engines (id, run_id, name, type, managed) VALUES ('engine', 'run', 'engine', 'test', 0)`,
+		`INSERT INTO profiles (id, run_id, engine_id, name, model, managed) VALUES ('profile', 'run', 'engine', 'profile', 'model', 0)`,
+		`INSERT INTO workloads (id, run_id, name, traffic_json, concurrency_json, samples) VALUES ('workload', 'run', 'workload', '{}', '[1]', 1)`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func assertZeroTokenArtifactRows(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var requestCompletion sql.NullInt64
+	var requestOutput sql.NullFloat64
+	if err := db.QueryRow("SELECT completion_tokens, output_tok_s FROM requests LIMIT 1").Scan(&requestCompletion, &requestOutput); err != nil {
+		t.Fatal(err)
+	}
+	if !requestCompletion.Valid || requestCompletion.Int64 != 0 || !requestOutput.Valid || requestOutput.Float64 != 0 {
+		t.Fatalf("request completion/output = %v/%v, want measured zeroes", requestCompletion, requestOutput)
+	}
+	var measurementCompletion sql.NullInt64
+	var measurementOutput sql.NullFloat64
+	if err := db.QueryRow("SELECT completion_tokens, aggregate_output_tok_s FROM measurements LIMIT 1").Scan(&measurementCompletion, &measurementOutput); err != nil {
+		t.Fatal(err)
+	}
+	if !measurementCompletion.Valid || measurementCompletion.Int64 != 0 || !measurementOutput.Valid || measurementOutput.Float64 != 0 {
+		t.Fatalf("measurement completion/output = %v/%v, want measured zeroes", measurementCompletion, measurementOutput)
+	}
+	var mean float64
+	var count int
+	if err := db.QueryRow("SELECT mean, count FROM metric_stats WHERE metric = 'request_output_throughput'").Scan(&mean, &count); err != nil {
+		t.Fatal(err)
+	}
+	if mean != 0 || count != 1 {
+		t.Fatalf("request_output_throughput mean/count = %v/%d, want 0/1", mean, count)
+	}
+}
+
+func localPerfHTTPTestSpec(t *testing.T, host string, port int, name string, numPrompts, concurrency int) Spec {
+	t.Helper()
+	spec := testSpec()
+	spec.Name = name
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Host = host
+	spec.Profiles[0].Port = port
+	spec.Profiles[0].Managed = false
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{testRandomWorkload(name, []string{spec.Profiles[0].Name}, 64, 8, numPrompts, []int{concurrency})}
+	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	ApplyDefaults(&spec)
+	return spec
+}
+
+func fakeOpenAIErrorServer(t *testing.T) (*httptest.Server, string, int) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		case "/v1/chat/completions":
+			http.Error(w, `{"error":{"message":"boom","type":"server_error","code":"boom"}}`, http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	host, port := testServerHostPort(t, server)
+	return server, host, port
+}
+
+func TestLocalPerfHTTPMergesExtraBody(t *testing.T) {
+	client := openAIHTTPClient{
+		profile: Profile{Model: "model"},
+		workload: Workload{BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:   "openai-chat",
+			ExtraBody: `{"guided_decoding_backend":"outlines","add_generation_prompt":false}`,
+		}},
+	}
+	body, endpoint, err := client.requestBody(CanonicalRequest{
+		ID:              "request-1",
+		Messages:        []Message{{Role: "user", Content: "hello"}},
+		MaxOutputTokens: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "/v1/chat/completions" {
+		t.Fatalf("endpoint = %q, want chat completions", endpoint)
+	}
+	if body["guided_decoding_backend"] != "outlines" || body["add_generation_prompt"] != false {
+		t.Fatalf("extra body was not merged: %+v", body)
+	}
+	client.workload.ExtraBody = `[1]`
+	if _, _, err := client.requestBody(CanonicalRequest{
+		ID:              "request-1",
+		Messages:        []Message{{Role: "user", Content: "hello"}},
+		MaxOutputTokens: 8,
+	}); err == nil {
+		t.Fatal("expected non-object extra_body to fail")
+	}
+}
+
+func TestLocalPerfHTTPUsesCanonicalRequestMode(t *testing.T) {
+	client := openAIHTTPClient{
+		profile: Profile{Model: "model"},
+		workload: Workload{BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend: "openai-chat",
+		}},
+	}
+	body, endpoint, err := client.requestBody(CanonicalRequest{
+		ID:              "request-1",
+		Mode:            "completion",
+		Prompt:          "finish this",
+		MaxOutputTokens: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "/v1/completions" {
+		t.Fatalf("endpoint = %q, want completions", endpoint)
+	}
+	if body["prompt"] != "finish this" {
+		t.Fatalf("body prompt = %v, want completion prompt body", body["prompt"])
+	}
+	if _, ok := body["messages"]; ok {
+		t.Fatalf("completion request should not carry messages: %+v", body)
+	}
+}
+
+func TestRequestRateDelayRejectsNonFiniteValues(t *testing.T) {
+	if _, err := requestRateDelay("NaN"); err == nil {
+		t.Fatal("expected NaN request_rate to fail")
+	}
+	if _, err := requestRateDelay("+Inf"); err == nil {
+		t.Fatal("expected +Inf request_rate to fail")
+	}
+}
+
+func TestExecuteLocalPerfHTTPChecksMemoryBeforeRun(t *testing.T) {
+	original := checkMemoryFloor
+	defer func() { checkMemoryFloor = original }()
+	var calls atomic.Int64
+	checkMemoryFloor = func(minGiB float64) (MemorySnapshot, error) {
+		calls.Add(1)
+		snapshot := MemorySnapshot{MemTotalGiB: 128, MemAvailableGiB: 1}
+		return snapshot, &MemoryFloorError{Snapshot: snapshot, MinGiB: minGiB}
+	}
+
+	dir := t.TempDir()
+	spec := testSpec()
+	spec.Safety.MinMemAvailableGiB = 40
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.PollIntervalMillis = 1000
+	planned := PlannedRun{
+		Profile:     Profile{Name: "http-load", Host: "127.0.0.1", Port: 1, Model: "model"},
+		Workload:    testRandomWorkload("localperf-http", []string{"http-load"}, 64, 8, 1, []int{1}),
+		Concurrency: 1,
+		ResultFile:  filepath.Join(dir, "result.json"),
+	}
+	logPath := filepath.Join(dir, "result.log")
+	result, err := executeLocalPerfHTTPBench(context.Background(), spec, planned, logPath)
+	if err == nil || !IsMemoryFloorError(err) {
+		t.Fatalf("executeLocalPerfHTTPBench error = %v, want memory floor", err)
+	}
+	if result.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", result.ExitCode)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("memory checks = %d, want only the preflight check", calls.Load())
+	}
+	if _, err := os.Stat(planned.ResultFile); !os.IsNotExist(err) {
+		t.Fatalf("result file exists or stat failed unexpectedly: %v", err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "MemAvailable") {
+		t.Fatalf("log did not include memory error:\n%s", logData)
 	}
 }
 
@@ -2125,11 +2753,24 @@ func TestWriteReportFilesWritesCSV(t *testing.T) {
 	text := string(csvData)
 	for _, want := range []string{
 		"profile,workload,phase,dataset_name,context",
-		"8k,prefill,prefill,random,8192,16,4,,7168,16,7168,16,8,0,10.5,200,250,50,1234.5",
+		"8k,prefill,prefill,random,8192,16,4,,7168,16,7168,16,8,0,,,,10.5,200,,250,,50,1234.5",
 		"results/8k__prefill__c4.json",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("CSV %q missing %q", text, want)
+		}
+	}
+	mdData, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mdText := string(mdData)
+	for _, want := range []string{
+		"Latency mean ms | TTFT mean ms",
+		"| 250.0 | - | 1234.5 | `results/8k__prefill__c4.json` |",
+	} {
+		if !strings.Contains(mdText, want) {
+			t.Fatalf("Markdown report %q missing %q", mdText, want)
 		}
 	}
 }
@@ -2235,6 +2876,49 @@ func testSpec() Spec {
 	}
 	ApplyDefaults(&spec)
 	return spec
+}
+
+func fakeOpenAIServer(t *testing.T) (*httptest.Server, string, int) {
+	t.Helper()
+	return fakeOpenAIServerWithUsage(t, 64, 8, 72)
+}
+
+func fakeOpenAIServerWithUsage(t *testing.T, promptTokens, completionTokens, totalTokens int) (*httptest.Server, string, int) {
+	t.Helper()
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		case "/v1/chat/completions":
+			call := calls.Add(1)
+			time.Sleep(time.Duration(call*10) * time.Millisecond)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id":"cmpl-%d","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`, call, promptTokens, completionTokens, totalTokens)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	host, port := testServerHostPort(t, server)
+	return server, host, port
+}
+
+func testServerHostPort(t *testing.T, server *httptest.Server) (string, int) {
+	t.Helper()
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, portString, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return host, port
 }
 
 func testRandomWorkload(name string, profiles []string, inputLen, outputLen, numPrompts int, concurrencies []int) Workload {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,6 +15,11 @@ import (
 )
 
 const DefaultHealthPath = "/v1/models"
+
+const (
+	LoadGeneratorVLLMBench     = "vllm_bench"
+	LoadGeneratorLocalPerfHTTP = "localperf_http"
+)
 
 type Spec struct {
 	Version     string            `json:"version"`
@@ -71,6 +77,7 @@ type Profile struct {
 	Model                string            `json:"model,omitempty"`
 	Host                 string            `json:"host,omitempty"`
 	Port                 int               `json:"port"`
+	EndpointBaseURL      string            `json:"endpoint_base_url,omitempty"`
 	Managed              bool              `json:"managed"`
 	EnableSleepMode      bool              `json:"enable_sleep_mode,omitempty"`
 	SleepLevel           *int              `json:"sleep_level,omitempty"`
@@ -92,6 +99,7 @@ type Workload struct {
 	BenchmarkTrafficConfig
 	Name                    string                 `json:"name"`
 	Phase                   string                 `json:"phase,omitempty"`
+	LoadGenerator           string                 `json:"load_generator,omitempty"`
 	Dataset                 DatasetSpec            `json:"dataset,omitempty"`
 	Request                 RequestSpec            `json:"request,omitempty"`
 	Load                    LoadConfig             `json:"load,omitempty"`
@@ -289,21 +297,33 @@ func applyWorkloadDefaults(workloads []Workload) {
 }
 
 func applyWorkloadDefault(workload *Workload) {
+	applyWorkloadCompatibilityDefaults(workload)
+	applyStructuredWorkloadDefaults(workload)
+	applyWorkloadExecutionDefaults(workload)
+	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
+	applyLoadGeneratorDefault(workload)
+	workload.Phase = workloadPhase(*workload)
+}
+
+func applyWorkloadCompatibilityDefaults(workload *Workload) {
 	if !trafficConfigEmpty(workload.Traffic) {
 		workload.BenchmarkTrafficConfig = overlayTrafficConfig(workload.BenchmarkTrafficConfig, workload.Traffic)
+	}
+	if strings.TrimSpace(workload.LoadGenerator) == "" && strings.TrimSpace(workload.Load.Generator) != "" {
+		workload.LoadGenerator = workload.Load.Generator
 	}
 	if workload.NumPrompts <= 0 && workload.Samples > 0 {
 		workload.NumPrompts = workload.Samples
 	}
-	applyStructuredWorkloadDefaults(workload)
+}
+
+func applyWorkloadExecutionDefaults(workload *Workload) {
 	if len(workload.MaxConcurrency) == 0 && len(workload.Concurrency) > 0 {
 		workload.MaxConcurrency = append([]int(nil), workload.Concurrency...)
 	}
 	if workload.Repeats <= 0 {
 		workload.Repeats = 1
 	}
-	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
-	workload.Phase = workloadPhase(*workload)
 }
 
 func applyStructuredWorkloadDefaults(workload *Workload) {
@@ -334,6 +354,9 @@ func applyLoadDefaults(workload *Workload) {
 	}
 	if strings.TrimSpace(workload.BenchmarkTrafficConfig.RequestRate) == "" && strings.TrimSpace(workload.Load.RequestRate) != "" {
 		workload.BenchmarkTrafficConfig.RequestRate = workload.Load.RequestRate
+	}
+	if strings.TrimSpace(workload.LoadGenerator) == "" && strings.TrimSpace(workload.Load.Generator) != "" {
+		workload.LoadGenerator = workload.Load.Generator
 	}
 }
 
@@ -460,6 +483,27 @@ func applyTrafficDefaults(traffic *BenchmarkTrafficConfig, defaultDataset string
 	}
 }
 
+func applyLoadGeneratorDefault(workload *Workload) {
+	workload.LoadGenerator = normalizeLoadGenerator(workload.LoadGenerator)
+	if workload.LoadGenerator == "" {
+		workload.LoadGenerator = LoadGeneratorVLLMBench
+	}
+}
+
+func normalizeLoadGenerator(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	switch value {
+	case "":
+		return ""
+	case LoadGeneratorVLLMBench, "vllm-bench", "vllmbench":
+		return LoadGeneratorVLLMBench
+	case LoadGeneratorLocalPerfHTTP, "localperf-http", "http", "openai-http":
+		return LoadGeneratorLocalPerfHTTP
+	default:
+		return value
+	}
+}
+
 func RedactedSpec(spec Spec) Spec {
 	out := spec
 	out.Env = redactedEnv(spec.Env)
@@ -491,6 +535,7 @@ func ValidateSpec(spec Spec) error {
 	profileIssues, profileNames := validateProfiles(spec, engineNames)
 	issues = append(issues, engineIssues...)
 	issues = append(issues, profileIssues...)
+	issues = append(issues, validateEndpointBaseURLProfileUsage(spec)...)
 	issues = append(issues, validateWarmup(spec.Warmup)...)
 	issues = append(issues, validateWorkloads(spec.Workloads, profileNames)...)
 	if len(issues) > 0 {
@@ -596,7 +641,8 @@ func validateSlug(prefix, label, name string, reserved map[string]string, slugs 
 
 func validateProfileFields(prefix string, profile Profile, engineNames map[string]bool) []string {
 	var issues []string
-	if profile.Port <= 0 {
+	issues = append(issues, validateProfileEndpointBaseURL(prefix, profile.EndpointBaseURL)...)
+	if profile.Port <= 0 && profileRequiresPort(profile) {
 		issues = append(issues, prefix+": port must be positive")
 	}
 	if strings.TrimSpace(profile.Model) == "" {
@@ -609,6 +655,95 @@ func validateProfileFields(prefix string, profile Profile, engineNames map[strin
 		issues = append(issues, prefix+": unknown engine "+profile.Engine)
 	}
 	return issues
+}
+
+func profileRequiresPort(profile Profile) bool {
+	return profile.Managed || !validEndpointBaseURL(profile.EndpointBaseURL)
+}
+
+func validateProfileEndpointBaseURL(prefix, raw string) []string {
+	if strings.TrimSpace(raw) == "" || validEndpointBaseURL(raw) {
+		return nil
+	}
+	return []string{prefix + ": endpoint_base_url must be an http(s) URL with a host and no query or fragment"}
+}
+
+func validEndpointBaseURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	return parsed.Host != "" && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
+func validateEndpointBaseURLProfileUsage(spec Spec) []string {
+	return endpointBaseURLProfileIssueMessages(invalidEndpointBaseURLProfiles(spec))
+}
+
+func invalidEndpointBaseURLProfiles(spec Spec) map[string]bool {
+	endpointProfiles := endpointBaseURLProfiles(spec.Profiles)
+	if len(endpointProfiles) == 0 {
+		return nil
+	}
+	invalid := map[string]bool{}
+	addWarmupEndpointOnlyProfiles(invalid, endpointProfiles, spec.Warmup.Enabled)
+	addWorkloadEndpointOnlyProfiles(invalid, endpointProfiles, spec.Workloads)
+	return invalid
+}
+
+func addWarmupEndpointOnlyProfiles(invalid, endpointOnly map[string]bool, warmupEnabled bool) {
+	if !warmupEnabled {
+		return
+	}
+	for name := range endpointOnly {
+		invalid[name] = true
+	}
+}
+
+func addWorkloadEndpointOnlyProfiles(invalid, endpointOnly map[string]bool, workloads []Workload) {
+	for _, workload := range workloads {
+		if normalizeLoadGenerator(workload.LoadGenerator) == LoadGeneratorLocalPerfHTTP {
+			continue
+		}
+		for name := range endpointOnly {
+			if workloadReferencesProfile(workload, name) {
+				invalid[name] = true
+			}
+		}
+	}
+}
+
+func endpointBaseURLProfileIssueMessages(invalid map[string]bool) []string {
+	var issues []string
+	for _, name := range collections.SortedKeys(invalid) {
+		issues = append(issues, "profile "+name+": endpoint_base_url can only be used when warmup is disabled and all referenced workloads use localperf_http")
+	}
+	return issues
+}
+
+func endpointBaseURLProfiles(profiles []Profile) map[string]bool {
+	out := map[string]bool{}
+	for _, profile := range profiles {
+		if validEndpointBaseURL(profile.EndpointBaseURL) {
+			out[profile.Name] = true
+		}
+	}
+	return out
+}
+
+func workloadReferencesProfile(workload Workload, profileName string) bool {
+	if len(workload.Profiles) == 0 {
+		return true
+	}
+	for _, name := range workload.Profiles {
+		if name == profileName {
+			return true
+		}
+	}
+	return false
 }
 
 func validateManagedProfile(prefix string, profile Profile, runner RunnerConfig) []string {
@@ -692,6 +827,8 @@ func validateWorkloadFields(prefix string, workload Workload) []string {
 	issues = append(issues, validateWorkloadDatasetName(prefix, workload)...)
 	issues = append(issues, validateWorkloadPositiveFields(prefix, workload)...)
 	issues = append(issues, validateWorkloadPhase(prefix, workload)...)
+	issues = append(issues, validateLoadGenerator(prefix, workload.LoadGenerator)...)
+	issues = append(issues, validateLoadGeneratorDataset(prefix, workload)...)
 	return append(issues, validateStructuredDataset(prefix, workload)...)
 }
 
@@ -721,6 +858,25 @@ func validateWorkloadPhase(prefix string, workload Workload) []string {
 		return []string{prefix + ": phase must contain at least one ASCII letter or digit"}
 	}
 	return nil
+}
+
+func validateLoadGenerator(prefix, generator string) []string {
+	switch normalizeLoadGenerator(generator) {
+	case "", LoadGeneratorVLLMBench, LoadGeneratorLocalPerfHTTP:
+		return nil
+	default:
+		return []string{prefix + ": unsupported load_generator " + generator}
+	}
+}
+
+func validateLoadGeneratorDataset(prefix string, workload Workload) []string {
+	if normalizeLoadGenerator(workload.LoadGenerator) != LoadGeneratorLocalPerfHTTP {
+		return nil
+	}
+	if workload.DatasetName == "random" || hasHTTPDatasetPath(workload) || hasStructuredDataset(workload) {
+		return nil
+	}
+	return []string{prefix + ": localperf_http supports random or canonical structured datasets, not dataset_name " + workload.DatasetName}
 }
 
 func validateStructuredDataset(prefix string, workload Workload) []string {

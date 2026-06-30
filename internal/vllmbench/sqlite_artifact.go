@@ -660,7 +660,7 @@ func datasetArtifactsForWorkload(workload Workload) []artifactSpec {
 
 func (inserter artifactInserter) addEventArtifacts(events []Event) error {
 	for _, event := range events {
-		if event.ResultFile != "" {
+		if eventHasArtifactResult(event) {
 			name := rawResultArtifactName(event)
 			if err := inserter.add(artifactSpec{"bench_raw_result", name, event.ResultFile, "application/json"}); err != nil {
 				return err
@@ -811,59 +811,227 @@ func insertMeasurements(tx *sql.Tx, runID, runDir string, plan []PlannedRun, eve
 	for _, planned := range plan {
 		key := measurementKey(planned.Profile.Name, planned.Workload.Name, planned.Concurrency, planned.Repeat)
 		row := reportRows[key]
-		status := measurementStatus(events, planned)
 		startedAt, completedAt := measurementTimes(events, planned)
-		rawID := int64(0)
-		if row.ResultFile != "" {
-			rawID = artifactIDForPath(artifactIDs, row.ResultFile)
-		} else if event := finishEvent(events, planned); event.ResultFile != "" {
-			rawID = artifactIDForPath(artifactIDs, event.ResultFile)
-		}
-		result, err := tx.Exec(`INSERT INTO measurements (
-			run_id, profile_id, workload_id, phase_id, repeat_index, concurrency,
-			samples_requested, status, started_at, completed_at, wall_time_ms,
-			completed_requests, failed_requests, prompt_tokens, completion_tokens,
-			total_tokens, aggregate_output_tok_s, per_user_output_tok_s,
-			aggregate_total_tok_s, raw_result_artifact_id, error_type, error_message
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			runID, planned.Profile.Name, planned.Workload.Name, zeroNullInt(phaseIDs[key]),
-			planned.Repeat, planned.Concurrency, planned.Workload.NumPrompts, status,
-			timePtrString(startedAt), timePtrString(completedAt), durationMillis(startedAt, completedAt),
-			row.Completed, row.Failed, nil, nil, nil, floatNull(row.OutputTokensPerSec),
-			floatNull(row.PerUserOutputTokSec), floatNull(row.TotalTokensPerSec),
-			zeroNullInt(rawID), nil, measurementError(events, planned))
+		id, err := insertMeasurement(tx, measurementInsert{
+			runID:       runID,
+			planned:     planned,
+			row:         row,
+			phaseID:     phaseIDs[key],
+			rawID:       measurementRawArtifactID(row, events, planned, artifactIDs),
+			status:      measurementStatus(events, planned),
+			errorText:   measurementError(events, planned),
+			startedAt:   startedAt,
+			completedAt: completedAt,
+		})
 		if err != nil {
 			return nil, err
 		}
-		id, _ := result.LastInsertId()
 		measurementIDs[key] = id
-		if err := insertMetricStats(tx, id, row); err != nil {
+		if err := insertMeasurementDetails(tx, runDir, id, row, measurementResultFile(row, events, planned)); err != nil {
 			return nil, err
 		}
 	}
 	return measurementIDs, nil
 }
 
-func insertMetricStats(tx *sql.Tx, measurementID int64, row ReportRow) error {
-	stats := []struct {
-		metric string
-		unit   string
-		mean   float64
-		p99    float64
-		count  int
-	}{
+type measurementInsert struct {
+	runID       string
+	planned     PlannedRun
+	row         ReportRow
+	phaseID     int64
+	rawID       int64
+	status      string
+	errorText   any
+	startedAt   *time.Time
+	completedAt *time.Time
+}
+
+func insertMeasurement(tx *sql.Tx, insert measurementInsert) (int64, error) {
+	result, err := tx.Exec(`INSERT INTO measurements (
+		run_id, profile_id, workload_id, phase_id, repeat_index, concurrency,
+		samples_requested, status, started_at, completed_at, wall_time_ms,
+		completed_requests, failed_requests, prompt_tokens, completion_tokens,
+		total_tokens, aggregate_output_tok_s, per_user_output_tok_s,
+		aggregate_total_tok_s, raw_result_artifact_id, error_type, error_message
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		insert.runID, insert.planned.Profile.Name, insert.planned.Workload.Name, zeroNullInt(insert.phaseID),
+		insert.planned.Repeat, insert.planned.Concurrency, insert.planned.Workload.NumPrompts, insert.status,
+		timePtrString(insert.startedAt), timePtrString(insert.completedAt), durationMillis(insert.startedAt, insert.completedAt),
+		insert.row.Completed, insert.row.Failed, knownIntNull(insert.row.promptTokensKnown, insert.row.PromptTokens),
+		knownIntNull(insert.row.completionTokensKnown, insert.row.CompletionTokens), knownIntNull(insert.row.totalTokensKnown, insert.row.TotalTokens),
+		knownFloatNull(insert.row.outputTokensPerSecKnown, insert.row.OutputTokensPerSec),
+		knownFloatNull(insert.row.perUserOutputTokSecKnown, insert.row.PerUserOutputTokSec),
+		knownFloatNull(insert.row.totalTokensPerSecKnown, insert.row.TotalTokensPerSec),
+		zeroNullInt(insert.rawID), nil, insert.errorText)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+func measurementRawArtifactID(row ReportRow, events []Event, planned PlannedRun, artifactIDs map[string]int64) int64 {
+	if row.ResultFile != "" {
+		return artifactIDForPath(artifactIDs, row.ResultFile)
+	}
+	if event := artifactFinishEvent(events, planned); event.ResultFile != "" {
+		return artifactIDForPath(artifactIDs, event.ResultFile)
+	}
+	return 0
+}
+
+func measurementResultFile(row ReportRow, events []Event, planned PlannedRun) string {
+	if row.ResultFile != "" {
+		return row.ResultFile
+	}
+	return importableFinishEvent(events, planned).ResultFile
+}
+
+func insertMeasurementDetails(tx *sql.Tx, runDir string, measurementID int64, row ReportRow, resultFile string) error {
+	samples, err := requestSamplesForResult(runDir, resultFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		samples = nil
+	}
+	if err := insertRequestSamples(tx, measurementID, samples); err != nil {
+		return err
+	}
+	return insertMetricStats(tx, measurementID, row, samples)
+}
+
+func insertMetricStats(tx *sql.Tx, measurementID int64, row ReportRow, samples []RequestSample) error {
+	if err := insertAggregateMetricStats(tx, measurementID, row); err != nil {
+		return err
+	}
+	return insertSampleMetricStats(tx, measurementID, samples)
+}
+
+type aggregateMetricStat struct {
+	metric string
+	unit   string
+	mean   float64
+	p99    float64
+	count  int
+}
+
+func insertAggregateMetricStats(tx *sql.Tx, measurementID int64, row ReportRow) error {
+	for _, stat := range aggregateMetricStats(row) {
+		if err := insertAggregateMetricStat(tx, measurementID, stat); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func aggregateMetricStats(row ReportRow) []aggregateMetricStat {
+	return []aggregateMetricStat{
 		{"ttft", "ms", row.MeanTTFTMillis, row.P99TTFTMillis, row.Completed},
 		{"tpot", "ms", row.MeanTPOTMillis, 0, row.Completed},
 		{"output_throughput", "tok/s", row.OutputTokensPerSec, 0, 1},
 		{"total_throughput", "tok/s", row.TotalTokensPerSec, 0, 1},
 	}
-	for _, stat := range stats {
-		if stat.mean == 0 && stat.p99 == 0 {
+}
+
+func insertAggregateMetricStat(tx *sql.Tx, measurementID int64, stat aggregateMetricStat) error {
+	if stat.mean == 0 && stat.p99 == 0 {
+		return nil
+	}
+	_, err := tx.Exec(`INSERT INTO metric_stats (
+		measurement_id, metric, unit, mean, p99, count
+	) VALUES (?, ?, ?, ?, ?, ?)`, measurementID, stat.metric, stat.unit, stat.mean, floatNull(stat.p99), stat.count)
+	return err
+}
+
+func insertSampleMetricStats(tx *sql.Tx, measurementID int64, samples []RequestSample) error {
+	for _, distribution := range sampleMetricDistributions(samples) {
+		if distribution.stats.Count == 0 {
 			continue
 		}
-		if _, err := tx.Exec(`INSERT INTO metric_stats (
-			measurement_id, metric, unit, mean, p99, count
-		) VALUES (?, ?, ?, ?, ?, ?)`, measurementID, stat.metric, stat.unit, stat.mean, floatNull(stat.p99), stat.count); err != nil {
+		if err := insertMetricDistribution(tx, measurementID, distribution.metric, distribution.unit, distribution.stats); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type sampleMetricDistribution struct {
+	metric string
+	unit   string
+	stats  numericStats
+}
+
+func sampleMetricDistributions(samples []RequestSample) []sampleMetricDistribution {
+	return []sampleMetricDistribution{
+		{"request_output_throughput", "tok/s", statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.OutputTokensPerSecond })},
+		{"request_total_throughput", "tok/s", statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.TotalTokensPerSecond })},
+		{"latency", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.LatencyMillis })},
+		{"first_byte", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.FirstByteMillis })},
+	}
+}
+
+func insertMetricDistribution(tx *sql.Tx, measurementID int64, metric, unit string, stats numericStats) error {
+	_, err := tx.Exec(`INSERT INTO metric_stats (
+		measurement_id, metric, unit, mean, stddev, min, p50, p90, p95, p99, max, count
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		measurementID, metric, unit, stats.Mean, stats.StdDev, stats.Min, stats.P50,
+		stats.P90, stats.P95, stats.P99, stats.Max, stats.Count)
+	return err
+}
+
+func requestSamplesForResult(runDir, resultFile string) ([]RequestSample, error) {
+	path := resolveResultPath(runDir, resultFile)
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	data, err := readTrimmedFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return requestSamplesFromResultData(data)
+}
+
+func requestSamplesFromResultData(data []byte) ([]RequestSample, error) {
+	if len(data) == 0 || data[0] != '{' {
+		return nil, nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, nil
+	}
+	samplesRaw, ok := raw["request_samples"]
+	if !ok {
+		return nil, nil
+	}
+	var samples []RequestSample
+	if err := json.Unmarshal(samplesRaw, &samples); err != nil {
+		return nil, err
+	}
+	return samples, nil
+}
+
+func insertRequestSamples(tx *sql.Tx, measurementID int64, samples []RequestSample) error {
+	for _, sample := range samples {
+		completedSample := sample.Status == "completed"
+		if _, err := tx.Exec(`INSERT INTO requests (
+			measurement_id, request_index, request_id, status, streamed,
+			http_status_code, started_at, first_byte_at, first_byte_ms,
+			first_token_at, completed_at, latency_ms, ttft_ms, tpot_ms,
+			itl_mean_ms, prompt_tokens, completion_tokens, total_tokens,
+			output_tok_s, total_tok_s, prompt_sha256, response_sha256,
+			error_type, error_code, error_message, response_metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			measurementID, sample.RequestIndex, nullString(sample.RequestID),
+			firstNonEmpty(sample.Status, "failed"), boolToInt(sample.Streamed),
+			intNull(sample.HTTPStatusCode), sample.StartedAt.Format(time.RFC3339),
+			timePtrString(sample.FirstByteAt), floatNull(sample.FirstByteMillis),
+			nil, timePtrString(sample.CompletedAt), floatNull(sample.LatencyMillis),
+			nil, nil, nil, knownIntNull(completedSample, sample.PromptTokens), knownIntNull(completedSample, sample.CompletionTokens),
+			knownIntNull(completedSample, sample.TotalTokens), knownFloatNull(completedSample, sample.OutputTokensPerSecond),
+			knownFloatNull(completedSample, sample.TotalTokensPerSecond), nullString(sample.PromptSHA256),
+			nullString(sample.ResponseSHA256), nullString(sample.ErrorType),
+			nullString(sample.ErrorCode), nullString(sample.ErrorMessage),
+			nullableJSON(sample.ResponseMetadata)); err != nil {
 			return err
 		}
 	}
@@ -1004,7 +1172,7 @@ func insertReports(tx *sql.Tx, runID string, artifactIDs map[string]int64, creat
 func rowsByMeasurement(runDir string, events []Event) map[string]ReportRow {
 	out := map[string]ReportRow{}
 	for _, event := range events {
-		if event.Type != "workload_finish" || event.ResultFile == "" || event.Error != "" {
+		if !eventHasImportableResult(event) {
 			continue
 		}
 		rows, err := ParseResultFile(resolveResultPath(runDir, event.ResultFile))
@@ -1016,6 +1184,43 @@ func rowsByMeasurement(runDir string, events []Event) map[string]ReportRow {
 		out[eventMeasurementKey(event)] = row
 	}
 	return out
+}
+
+func importableFinishEvent(events []Event, planned PlannedRun) Event {
+	for _, event := range events {
+		if eventMatchesPlanned(event, planned) && eventHasImportableResult(event) {
+			return event
+		}
+	}
+	return Event{}
+}
+
+func artifactFinishEvent(events []Event, planned PlannedRun) Event {
+	for _, event := range events {
+		if eventMatchesPlanned(event, planned) && event.Type == "workload_finish" && eventHasArtifactResult(event) {
+			return event
+		}
+	}
+	return Event{}
+}
+
+func eventHasImportableResult(event Event) bool {
+	return event.Type == "workload_finish" && event.ResultFile != "" && (event.Error == "" || eventDetailBool(event, "result_written"))
+}
+
+func eventHasArtifactResult(event Event) bool {
+	return event.ResultFile != "" && (event.Type == "workload_finish" || event.Type == "warmup_finish")
+}
+
+func eventDetailBool(event Event, key string) bool {
+	if len(event.Details) == 0 {
+		return false
+	}
+	var details map[string]bool
+	if err := json.Unmarshal(event.Details, &details); err != nil {
+		return false
+	}
+	return details[key]
 }
 
 func measurementStatus(events []Event, planned PlannedRun) string {
@@ -1061,15 +1266,6 @@ func measurementTimes(events []Event, planned PlannedRun) (*time.Time, *time.Tim
 		}
 	}
 	return start, end
-}
-
-func finishEvent(events []Event, planned PlannedRun) Event {
-	for _, event := range events {
-		if eventMatchesPlanned(event, planned) && event.Type == "workload_finish" {
-			return event
-		}
-	}
-	return Event{}
 }
 
 func eventMatchesPlanned(event Event, planned PlannedRun) bool {
@@ -1290,6 +1486,10 @@ func intNull(value int) any {
 	return value
 }
 
+func knownIntNull(known bool, value int) any {
+	return knownNull(known, value, intNull(value))
+}
+
 func intPointerNull(value *int) any {
 	if value == nil {
 		return nil
@@ -1309,6 +1509,17 @@ func floatNull(value float64) any {
 		return nil
 	}
 	return value
+}
+
+func knownFloatNull(known bool, value float64) any {
+	return knownNull(known, value, floatNull(value))
+}
+
+func knownNull(known bool, value, fallback any) any {
+	if known {
+		return value
+	}
+	return fallback
 }
 
 func eventLevel(event Event) string {
@@ -1524,6 +1735,8 @@ CREATE TABLE requests (
   streamed INTEGER NOT NULL DEFAULT 0 CHECK (streamed IN (0, 1)),
   http_status_code INTEGER,
   started_at TEXT NOT NULL,
+  first_byte_at TEXT,
+  first_byte_ms REAL,
   first_token_at TEXT,
   completed_at TEXT,
   latency_ms REAL,
@@ -1533,6 +1746,8 @@ CREATE TABLE requests (
   prompt_tokens INTEGER CHECK (prompt_tokens >= 0),
   completion_tokens INTEGER CHECK (completion_tokens >= 0),
   total_tokens INTEGER CHECK (total_tokens >= 0),
+  output_tok_s REAL,
+  total_tok_s REAL,
   prompt_sha256 TEXT,
   response_sha256 TEXT,
   prompt_artifact_id INTEGER REFERENCES artifacts(id),

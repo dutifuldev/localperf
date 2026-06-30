@@ -98,6 +98,21 @@ func TestDefaultEndpointAndTrafficValidationBranches(t *testing.T) {
 	}
 }
 
+func TestBaseURLPrefersEndpointBaseURL(t *testing.T) {
+	profile := Profile{Host: "127.0.0.1", Port: 8000, EndpointBaseURL: "http://127.0.0.1:8000/proxy/"}
+	if got := baseURL(profile); got != "http://127.0.0.1:8000/proxy" {
+		t.Fatalf("baseURL = %q, want endpoint base URL without trailing slash", got)
+	}
+	profile.EndpointBaseURL = "http://127.0.0.1:8000/proxy/v1/"
+	if got := baseURL(profile); got != "http://127.0.0.1:8000/proxy" {
+		t.Fatalf("baseURL = %q, want endpoint base URL without API root", got)
+	}
+	profile.EndpointBaseURL = "http://127.0.0.1:8000/v1"
+	if got := baseURL(profile); got != "http://127.0.0.1:8000" {
+		t.Fatalf("baseURL = %q, want root endpoint base URL", got)
+	}
+}
+
 func TestParseMeminfoErrorBranches(t *testing.T) {
 	snapshot, err := ParseMeminfo(strings.NewReader("MemTotal: 2048 kB\ninvalid\nSwapFree: nope kB\n"))
 	if err == nil {

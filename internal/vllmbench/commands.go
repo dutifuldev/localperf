@@ -95,6 +95,73 @@ func BenchCommand(spec Spec, run PlannedRun) CommandSpec {
 	}
 }
 
+func LoadCommand(spec Spec, run PlannedRun) CommandSpec {
+	if run.Workload.LoadGenerator == LoadGeneratorLocalPerfHTTP {
+		return LocalPerfHTTPCommand(spec, run)
+	}
+	return BenchCommand(spec, run)
+}
+
+func LocalPerfHTTPCommand(spec Spec, run PlannedRun) CommandSpec {
+	builder := argBuilder{
+		"localperf", "bench", "http-load",
+		"--backend", run.Workload.Backend,
+		"--base-url", baseURL(run.Profile),
+		"--model", run.Profile.Model,
+		"--dataset-name", run.Workload.DatasetName,
+		"--num-prompts", strconv.Itoa(run.Workload.NumPrompts),
+		"--max-concurrency", strconv.Itoa(run.Concurrency),
+		"--request-rate", run.Workload.RequestRate,
+		"--result-filename", run.ResultFile,
+	}
+	appendLocalPerfHTTPSafetyArgs(&builder, spec)
+	appendLocalPerfHTTPDatasetArgs(&builder, run.Workload)
+	appendLocalPerfHTTPRandomArgs(&builder, run.Workload)
+	appendLocalPerfHTTPOptionalArgs(&builder, run.Workload)
+	return CommandSpec{Args: builder}
+}
+
+func appendLocalPerfHTTPSafetyArgs(builder *argBuilder, spec Spec) {
+	if spec.Safety.WorkloadTimeoutSec > 0 {
+		*builder = append(*builder, "--timeout", strconv.Itoa(spec.Safety.WorkloadTimeoutSec)+"s")
+	}
+	if spec.Safety.MinMemAvailableGiB > 0 {
+		*builder = append(*builder, "--min-mem-available-gib", trimFloat(spec.Safety.MinMemAvailableGiB))
+	}
+}
+
+func appendLocalPerfHTTPDatasetArgs(builder *argBuilder, workload Workload) {
+	if datasetPath := httpDatasetPath(workload); datasetPath != "" {
+		*builder = append(*builder, "--dataset-path", datasetPath)
+	}
+}
+
+func appendLocalPerfHTTPRandomArgs(builder *argBuilder, workload Workload) {
+	if workload.DatasetName == "random" {
+		if workload.RandomInputLen > 0 {
+			*builder = append(*builder, "--random-input-len", strconv.Itoa(workload.RandomInputLen))
+		}
+		if workload.RandomOutputLen > 0 {
+			*builder = append(*builder, "--random-output-len", strconv.Itoa(workload.RandomOutputLen))
+		}
+	}
+}
+
+func appendLocalPerfHTTPOptionalArgs(builder *argBuilder, workload Workload) {
+	if strings.TrimSpace(workload.Endpoint) != "" {
+		*builder = append(*builder, "--endpoint", workload.Endpoint)
+	}
+	if strings.TrimSpace(workload.ExtraBody) != "" {
+		*builder = append(*builder, "--extra-body", workload.ExtraBody)
+	}
+	if workload.IgnoreEOS {
+		*builder = append(*builder, "--ignore-eos")
+	}
+	if workload.Temperature != nil {
+		*builder = append(*builder, "--temperature", trimFloat(*workload.Temperature))
+	}
+}
+
 func WarmupCommand(spec Spec, profile Profile, runDir string) CommandSpec {
 	warmup := spec.Warmup
 	engine := EngineForProfile(spec, profile)

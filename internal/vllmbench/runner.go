@@ -179,7 +179,7 @@ func writePlanEvents(session *runSession) {
 }
 
 func writePlannedRunEvent(session *runSession, planned PlannedRun) {
-	command := BenchCommand(session.spec, planned)
+	command := LoadCommand(session.spec, planned)
 	session.events.Write(Event{
 		Timestamp:   time.Now().UTC(),
 		Type:        "planned_run",
@@ -690,6 +690,9 @@ func runWarmup(ctx context.Context, spec Spec, profile Profile, runDir string, e
 		DurationSeconds: result.Duration.Seconds(),
 		ExitCode:        result.ExitCode,
 	}
+	if result.ResultWritten {
+		event.Details = mustJSON(map[string]any{"result_written": true})
+	}
 	if err != nil {
 		event.Error = err.Error()
 		events.Write(event)
@@ -705,21 +708,25 @@ func runWarmup(ctx context.Context, spec Spec, profile Profile, runDir string, e
 }
 
 func validateWarmupResult(path string) error {
+	return validateParsedResult(path, "warmup")
+}
+
+func validateParsedResult(path, label string) error {
 	rows, err := ParseResultFile(path)
 	if err != nil {
 		return err
 	}
 	if len(rows) == 0 {
-		return errors.New("warmup result file did not contain a parseable row")
+		return fmt.Errorf("%s result file did not contain a parseable row", label)
 	}
 	if failed := failedRequestCount(rows); failed > 0 {
-		return fmt.Errorf("warmup result reported %d failed request(s)", failed)
+		return fmt.Errorf("%s result reported %d failed request(s)", label, failed)
 	}
 	return nil
 }
 
 func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir string, events *eventWriter) (*ReportRow, error) {
-	command := BenchCommand(spec, planned)
+	command := LoadCommand(spec, planned)
 	logPath := benchmarkLogPath(runDir, planned)
 	events.Write(Event{
 		Timestamp:   time.Now().UTC(),
@@ -733,7 +740,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		ResultFile:  planned.ResultFile,
 		LogFile:     logPath,
 	})
-	result, err := executeCommand(ctx, command, logPath, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second, spec.Safety.MinMemAvailableGiB, time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond)
+	result, err := executeLoadCommand(ctx, spec, planned, command, logPath)
 	event := Event{
 		Timestamp:       time.Now().UTC(),
 		Type:            "workload_finish",
@@ -747,6 +754,9 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		LogFile:         logPath,
 		DurationSeconds: result.Duration.Seconds(),
 		ExitCode:        result.ExitCode,
+	}
+	if result.ResultWritten {
+		event.Details = mustJSON(map[string]any{"result_written": true})
 	}
 	if err != nil {
 		event.Error = err.Error()
@@ -781,6 +791,13 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	return &row, nil
 }
 
+func executeLoadCommand(ctx context.Context, spec Spec, planned PlannedRun, command CommandSpec, logPath string) (commandResult, error) {
+	if planned.Workload.LoadGenerator == LoadGeneratorLocalPerfHTTP {
+		return executeLocalPerfHTTPBench(ctx, spec, planned, logPath)
+	}
+	return executeCommand(ctx, command, logPath, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second, spec.Safety.MinMemAvailableGiB, time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond)
+}
+
 func benchmarkLogPath(runDir string, planned PlannedRun) string {
 	name := fmt.Sprintf("%s__%s__c%d", Slug(planned.Profile.Name), Slug(planned.Workload.Name), planned.Concurrency)
 	if planned.Workload.Repeats > 1 {
@@ -798,8 +815,9 @@ func failedRequestCount(rows []ReportRow) int {
 }
 
 type commandResult struct {
-	Duration time.Duration
-	ExitCode int
+	Duration      time.Duration
+	ExitCode      int
+	ResultWritten bool
 }
 
 func executeCommand(ctx context.Context, command CommandSpec, logPath string, timeout time.Duration, minMemAvailableGiB float64, pollInterval time.Duration) (commandResult, error) {
@@ -1114,7 +1132,15 @@ func (writer *eventWriter) Close() error {
 }
 
 func baseURL(profile Profile) string {
+	if endpoint := NormalizeEndpointBaseURL(profile.EndpointBaseURL); endpoint != "" {
+		return endpoint
+	}
 	return fmt.Sprintf("http://%s:%d", profile.Host, profile.Port)
+}
+
+func NormalizeEndpointBaseURL(raw string) string {
+	endpoint := strings.TrimRight(strings.TrimSpace(raw), "/")
+	return strings.TrimSuffix(endpoint, "/v1")
 }
 
 func resultFromArgs(args []string) string {
