@@ -309,14 +309,14 @@ type SQLiteReportArtifactSummary struct {
 }
 
 func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
-	if err := artifact.Check(path); err != nil {
-		return SQLiteReportDocument{}, err
-	}
 	db, err := artifact.OpenReadOnly(path)
 	if err != nil {
 		return SQLiteReportDocument{}, err
 	}
 	defer db.Close()
+	if err := artifact.CheckHeader(db); err != nil {
+		return SQLiteReportDocument{}, err
+	}
 	doc := SQLiteReportDocument{
 		ArtifactPath:       path,
 		GeneratedAt:        time.Now().UTC(),

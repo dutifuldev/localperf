@@ -251,6 +251,39 @@ func TestWriteSQLiteHTMLReportStoresArtifact(t *testing.T) {
 	}
 }
 
+func TestWriteSQLiteHTMLReportDoesNotRequireFullArtifactHashCheck(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "Readable With Bad Raw Artifact")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO artifacts (
+		run_id, kind, name, media_type, compression, content, content_size_bytes,
+		uncompressed_size_bytes, sha256, created_at
+	) SELECT id, 'debug', 'bad.log', 'text/plain', 'none', CAST('bad raw bytes' AS BLOB),
+		13, 13, 'wrong-hash', created_at FROM run LIMIT 1`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := artifact.Check(artifactPath); err == nil {
+		t.Fatal("artifact.Check error = nil, want full validation failure")
+	}
+	outputPath := filepath.Join(t.TempDir(), "report.html")
+	if err := WriteSQLiteHTMLReport(artifactPath, outputPath, HTMLReportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	html, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(html), "Readable With Bad Raw Artifact") {
+		t.Fatalf("HTML report missing run title:\n%s", html)
+	}
+}
+
 func TestWriteSQLiteHTMLReportUsesDefaultOutput(t *testing.T) {
 	dir := t.TempDir()
 	artifactPath := testSQLiteHTMLArtifact(t, "Default Output")

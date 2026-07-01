@@ -136,6 +136,18 @@ func Check(path string) error {
 	return nil
 }
 
+func CheckHeader(db *sql.DB) error {
+	for _, check := range []func(*sql.DB) error{
+		checkMetadata,
+		checkRunRowCount,
+	} {
+		if err := check(db); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func checkIntegrity(db *sql.DB) error {
 	var integrity string
 	if err := db.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
