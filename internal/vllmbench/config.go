@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dutifuldev/localperf/internal/bench"
 	"github.com/dutifuldev/localperf/internal/collections"
 )
 
@@ -396,7 +397,7 @@ func workloadPhase(workload Workload) string {
 }
 
 func normalizeWorkloadPhase(phase string) string {
-	return Slug(strings.ToLower(strings.TrimSpace(phase)))
+	return bench.NormalizeWorkloadPhase(phase)
 }
 
 func inferWorkloadPhase(name string, inputLen, outputLen int) string {
@@ -1157,20 +1158,5 @@ func boolValue(value *bool) bool {
 }
 
 func Slug(text string) string {
-	text = strings.ToLower(strings.TrimSpace(text))
-	var out strings.Builder
-	lastDash := false
-	for _, r := range text {
-		isAlnum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if isAlnum {
-			out.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash {
-			out.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return strings.Trim(out.String(), "-")
+	return bench.Slug(text)
 }

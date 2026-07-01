@@ -1,4 +1,4 @@
-package vllmbench
+package report
 
 import (
 	"database/sql"
@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dutifuldev/localperf/internal/artifact"
+	"github.com/dutifuldev/localperf/internal/bench"
 	"github.com/dutifuldev/localperf/internal/collections"
 )
 
@@ -307,15 +309,12 @@ type SQLiteReportArtifactSummary struct {
 }
 
 func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
-	db, err := openSQLiteArtifactReadOnly(path)
+	db, err := artifact.OpenReadOnly(path)
 	if err != nil {
 		return SQLiteReportDocument{}, err
 	}
 	defer db.Close()
-	if err := checkMetadata(db); err != nil {
-		return SQLiteReportDocument{}, err
-	}
-	if err := checkRunRowCount(db); err != nil {
+	if err := artifact.CheckHeader(db); err != nil {
 		return SQLiteReportDocument{}, err
 	}
 	doc := SQLiteReportDocument{
@@ -354,7 +353,7 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 func RenderHTMLReport(writer io.Writer, doc SQLiteReportDocument, opts HTMLReportOptions) error {
 	title := strings.TrimSpace(opts.Title)
 	if title == "" {
-		title = firstNonEmpty(doc.Run.Name, "LocalPerf Report")
+		title = bench.FirstNonEmpty(doc.Run.Name, "LocalPerf Report")
 	}
 	view := struct {
 		Title string
@@ -458,30 +457,7 @@ func StoreSQLiteHTMLReport(artifactPath, name, originalPath string, content []by
 	if strings.TrimSpace(name) == "" {
 		name = htmlReportName
 	}
-	db, err := openSQLiteArtifactWritable(artifactPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	return withSQLiteTx(db, func(tx *sql.Tx) error {
-		runID, err := sqliteSingleRunID(tx)
-		if err != nil {
-			return err
-		}
-		artifactID, err := upsertHTMLReportArtifact(tx, runID, name, originalPath, content, time.Now().UTC())
-		if err != nil {
-			return err
-		}
-		return upsertHTMLReportRow(tx, runID, name, artifactID, time.Now().UTC())
-	})
-}
-
-func openSQLiteArtifactReadOnly(path string) (*sql.DB, error) {
-	return openExistingSQLiteFile(path, "mode=ro")
-}
-
-func openSQLiteArtifactWritable(path string) (*sql.DB, error) {
-	return openExistingSQLiteFile(path, "")
+	return artifact.StoreReport(artifactPath, name, "text/html", originalPath, content)
 }
 
 func defaultHTMLReportPath(artifactPath string) string {
@@ -981,12 +957,12 @@ func loadSQLiteReportArtifactSummaries(db *sql.DB, doc *SQLiteReportDocument) er
 func sqliteReportPhaseSections(measurements []SQLiteReportMeasurement) []SQLiteReportPhaseSection {
 	byPhase := map[string][]SQLiteReportMeasurement{}
 	for _, measurement := range measurements {
-		phase := normalizeReportPhase(measurement.Phase)
+		phase := bench.NormalizeReportPhase(measurement.Phase)
 		byPhase[phase] = append(byPhase[phase], measurement)
 	}
 	phases := collections.SortedKeys(byPhase)
 	sort.SliceStable(phases, func(i, j int) bool {
-		left, right := phaseRank(phases[i]), phaseRank(phases[j])
+		left, right := bench.PhaseRank(phases[i]), bench.PhaseRank(phases[j])
 		if left != right {
 			return left < right
 		}
@@ -994,7 +970,7 @@ func sqliteReportPhaseSections(measurements []SQLiteReportMeasurement) []SQLiteR
 	})
 	out := make([]SQLiteReportPhaseSection, 0, len(phases))
 	for _, phase := range phases {
-		out = append(out, SQLiteReportPhaseSection{Phase: phase, Title: phaseTitle(phase), Measurements: byPhase[phase]})
+		out = append(out, SQLiteReportPhaseSection{Phase: phase, Title: bench.PhaseTitle(phase), Measurements: byPhase[phase]})
 	}
 	return out
 }
@@ -1030,8 +1006,8 @@ func sqliteReportCharts(measurements []SQLiteReportMeasurement) []SQLiteReportCh
 func sqliteReportMetadataItems(doc SQLiteReportDocument) []SQLiteReportMetadataItem {
 	items := []SQLiteReportMetadataItem{
 		{Label: "Engine", Value: joinUnique(engineSummaries(doc.Engines), ", ")},
-		{Label: "Quant", Value: firstNonEmpty(inferQuantization(doc.Profiles), "-")},
-		{Label: "KV", Value: firstNonEmpty(joinUnique(profileKVDtypes(doc.Profiles), ", "), "-")},
+		{Label: "Quant", Value: bench.FirstNonEmpty(inferQuantization(doc.Profiles), "-")},
+		{Label: "KV", Value: bench.FirstNonEmpty(joinUnique(profileKVDtypes(doc.Profiles), ", "), "-")},
 		{Label: "Contexts", Value: formatContextList(measurementPositiveInts(doc.Measurements, func(measurement SQLiteReportMeasurement) int {
 			return measurement.ContextWindow
 		}))},
@@ -1050,7 +1026,7 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 		inputTokS := inputThroughput(measurement)
 		throughputTokS, perUserTokS := phaseThroughputMetrics(mode, inputTokS, measurement)
 		rows = append(rows, SQLiteReportThroughputRow{
-			Phase:             phaseTitle(normalizeReportPhase(measurement.Phase)),
+			Phase:             bench.PhaseTitle(bench.NormalizeReportPhase(measurement.Phase)),
 			Mode:              mode,
 			Profile:           measurement.Profile,
 			Workload:          measurement.Workload,
@@ -1086,14 +1062,14 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 }
 
 func throughputMode(phase string) string {
-	normalized := normalizeReportPhase(phase)
+	normalized := bench.NormalizeReportPhase(phase)
 	switch normalized {
 	case "prefill":
 		return "prefill"
 	case "decode":
 		return "decode"
 	default:
-		value := strings.ToLower(strings.TrimSpace(phaseTitle(normalized)))
+		value := strings.ToLower(strings.TrimSpace(bench.PhaseTitle(normalized)))
 		if value == "" || value == "-" {
 			return "run"
 		}
@@ -1479,7 +1455,7 @@ func profileKVDtypes(profiles []SQLiteReportProfile) []string {
 func engineSummaries(engines []SQLiteReportEngine) []string {
 	values := make([]string, 0, len(engines))
 	for _, engine := range engines {
-		name := firstNonEmpty(engine.Name, engine.Type, "engine")
+		name := bench.FirstNonEmpty(engine.Name, engine.Type, "engine")
 		if engine.Version != "" {
 			values = append(values, fmt.Sprintf("%s %s", name, engine.Version))
 			continue
@@ -1614,54 +1590,6 @@ func formatIntList(values []int) string {
 	return strings.Join(parts, " / ")
 }
 
-func sqliteSingleRunID(tx *sql.Tx) (string, error) {
-	var runID string
-	if err := tx.QueryRow("SELECT id FROM run LIMIT 1").Scan(&runID); err != nil {
-		return "", err
-	}
-	return runID, nil
-}
-
-func upsertHTMLReportArtifact(tx *sql.Tx, runID, name, originalPath string, data []byte, createdAt time.Time) (int64, error) {
-	content, compression, err := artifactContent(data, "text/html")
-	if err != nil {
-		return 0, err
-	}
-	_, err = tx.Exec(`INSERT INTO artifacts (
-		run_id, kind, name, media_type, compression, content, content_size_bytes,
-		uncompressed_size_bytes, sha256, original_path, created_at
-	) VALUES (?, 'normalized_report', ?, 'text/html', ?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(run_id, kind, name) DO UPDATE SET
-		media_type = excluded.media_type,
-		compression = excluded.compression,
-		content = excluded.content,
-		content_size_bytes = excluded.content_size_bytes,
-		uncompressed_size_bytes = excluded.uncompressed_size_bytes,
-		sha256 = excluded.sha256,
-		original_path = excluded.original_path,
-		created_at = excluded.created_at`,
-		runID, name, compression, content, len(content), len(data), sha256Hex(data),
-		nullString(originalPath), createdAt.Format(time.RFC3339))
-	if err != nil {
-		return 0, err
-	}
-	var artifactID int64
-	err = tx.QueryRow(`SELECT id FROM artifacts WHERE run_id = ? AND kind = 'normalized_report' AND name = ?`, runID, name).Scan(&artifactID)
-	return artifactID, err
-}
-
-func upsertHTMLReportRow(tx *sql.Tx, runID, name string, artifactID int64, createdAt time.Time) error {
-	_, err := tx.Exec(`INSERT INTO reports (
-		run_id, name, format, media_type, artifact_id, created_at
-	) VALUES (?, ?, 'html', 'text/html', ?, ?)
-	ON CONFLICT(run_id, name, format) DO UPDATE SET
-		media_type = excluded.media_type,
-		artifact_id = excluded.artifact_id,
-		created_at = excluded.created_at`,
-		runID, name, artifactID, createdAt.Format(time.RFC3339))
-	return err
-}
-
 func metricDisplay(metrics map[string]SQLiteReportMetric, name, field string) string {
 	return metricDisplayFirst(metrics, field, name)
 }
@@ -1719,7 +1647,7 @@ func commandSummaryFromJSON(data string) string {
 	if err := json.Unmarshal([]byte(data), &args); err != nil || len(args) == 0 {
 		return ""
 	}
-	return ShellQuote(args)
+	return bench.ShellQuote(args)
 }
 
 func reportStatusClass(status string) string {

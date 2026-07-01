@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dutifuldev/localperf/internal/bench"
 	"github.com/dutifuldev/localperf/internal/collections"
 )
 
@@ -363,35 +364,15 @@ func reportRowPhase(row ReportRow) string {
 }
 
 func normalizeReportPhase(phase string) string {
-	if phase = normalizeWorkloadPhase(phase); phase != "" {
-		return phase
-	}
-	return "mixed"
+	return bench.NormalizeReportPhase(phase)
 }
 
 func phaseRank(phase string) int {
-	switch phase {
-	case "decode":
-		return 0
-	case "prefill":
-		return 1
-	case "mixed":
-		return 2
-	default:
-		return 3
-	}
+	return bench.PhaseRank(phase)
 }
 
 func phaseTitle(phase string) string {
-	phase = normalizeReportPhase(phase)
-	parts := strings.Split(phase, "-")
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		parts[i] = strings.ToUpper(part[:1]) + part[1:]
-	}
-	return strings.Join(parts, " ")
+	return bench.PhaseTitle(phase)
 }
 
 func WriteReportFiles(report Report, outputPath string) error {

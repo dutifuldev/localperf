@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dutifuldev/localperf/internal/artifact"
 	"github.com/dutifuldev/localperf/internal/collections"
+	"github.com/dutifuldev/localperf/internal/report"
 	"github.com/dutifuldev/localperf/internal/vllmbench"
 )
 
@@ -251,7 +253,7 @@ func runArtifactCheck(args []string) {
 		fmt.Fprintln(os.Stderr, "missing artifact path")
 		os.Exit(2)
 	}
-	if err := vllmbench.CheckSQLiteArtifact(*path); err != nil {
+	if err := artifact.Check(*path); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -268,7 +270,7 @@ func runArtifactRender(args []string) {
 		fmt.Fprintln(os.Stderr, "--include-raw is not implemented yet")
 		os.Exit(2)
 	}
-	if err := vllmbench.WriteSQLiteHTMLReport(config.path, config.output, vllmbench.HTMLReportOptions{Title: config.title, Store: config.store}); err != nil {
+	if err := report.WriteSQLiteHTMLReport(config.path, config.output, report.HTMLReportOptions{Title: config.title, Store: config.store}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/dutifuldev/localperf/internal/bench"
 )
 
 type DatasetSpec struct {
@@ -385,12 +387,7 @@ func normalizeDatasetType(datasetType string) string {
 }
 
 func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
+	return bench.FirstNonEmpty(values...)
 }
 
 type containsMapping struct {

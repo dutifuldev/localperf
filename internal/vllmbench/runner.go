@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/dutifuldev/localperf/internal/artifact"
 )
 
 type RunOptions struct {
@@ -151,7 +153,7 @@ func initRunSession(ctx context.Context, spec Spec, opts RunOptions) *runSession
 		StartedAt:    time.Now().UTC(),
 		DryRun:       opts.DryRun,
 		EventsPath:   filepath.Join(runDir, "events.jsonl"),
-		ArtifactPath: SQLiteArtifactPath(runDir, opts.ArtifactPath),
+		ArtifactPath: artifact.Path(runDir, opts.ArtifactPath),
 		SpecPath:     filepath.Join(runDir, "spec.normalized.json"),
 		MemoryFloor:  spec.Safety.MinMemAvailableGiB,
 	}

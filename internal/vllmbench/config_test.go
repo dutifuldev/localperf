@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/dutifuldev/localperf/internal/artifact"
 )
 
 func TestBuildPlanAndBenchCommand(t *testing.T) {
@@ -760,7 +762,7 @@ func TestExecuteDryRunStoresOriginalSpecAndPlannedCommandStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckSQLiteArtifact(summary.ArtifactPath); err != nil {
+	if err := artifact.Check(summary.ArtifactPath); err != nil {
 		t.Fatalf("artifact check failed: %v", err)
 	}
 	db, err := sql.Open("sqlite", summary.ArtifactPath)
@@ -831,8 +833,8 @@ func TestExecuteDryRunStoresOriginalSpecAndPlannedCommandStatus(t *testing.T) {
 
 func TestCheckSQLiteArtifactDoesNotCreateMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.sqlite")
-	if err := CheckSQLiteArtifact(path); err == nil {
-		t.Fatal("CheckSQLiteArtifact error = nil, want missing file error")
+	if err := artifact.Check(path); err == nil {
+		t.Fatal("artifact.Check error = nil, want missing file error")
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("artifact check created missing file or returned unexpected stat error: %v", err)
@@ -1324,7 +1326,7 @@ func TestExecuteWithShareGPTDatasetSkipsPayloadArtifactsByDefault(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckSQLiteArtifact(summary.ArtifactPath); err != nil {
+	if err := artifact.Check(summary.ArtifactPath); err != nil {
 		t.Fatalf("artifact check failed: %v", err)
 	}
 	db, err := sql.Open("sqlite", summary.ArtifactPath)
@@ -1452,7 +1454,7 @@ func assertSQLiteArtifact(t *testing.T, path string) {
 	if path == "" {
 		t.Fatal("summary artifact path is empty")
 	}
-	if err := CheckSQLiteArtifact(path); err != nil {
+	if err := artifact.Check(path); err != nil {
 		t.Fatalf("artifact check failed: %v", err)
 	}
 	db, err := sql.Open("sqlite", path)
