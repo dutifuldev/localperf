@@ -3,14 +3,12 @@ package vllmbench
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/dutifuldev/localperf/internal/bench"
 	"github.com/dutifuldev/localperf/internal/collections"
 )
-
-var safeShellArgPattern = regexp.MustCompile(`^[A-Za-z0-9_./:=,+@-]+$`)
 
 type CommandSpec struct {
 	Dir  string            `json:"dir,omitempty"`
@@ -309,11 +307,7 @@ func profileExtraArgs(profile Profile) []string {
 }
 
 func ShellQuote(args []string) string {
-	parts := make([]string, 0, len(args))
-	for _, arg := range args {
-		parts = append(parts, shellQuote(arg))
-	}
-	return strings.Join(parts, " ")
+	return bench.ShellQuote(args)
 }
 
 func WithProcessEnv(env map[string]string) []string {
@@ -351,13 +345,7 @@ func trimFloat(value float64) string {
 }
 
 func shellQuote(arg string) string {
-	if arg == "" {
-		return "''"
-	}
-	if safeShellArgPattern.MatchString(arg) {
-		return arg
-	}
-	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+	return bench.ShellQuote([]string{arg})
 }
 
 func CommandSummary(command CommandSpec) string {

@@ -1,12 +1,13 @@
-package vllmbench
+package report
 
 import (
-	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dutifuldev/localperf/internal/artifact"
 )
 
 func TestRenderSQLiteHTMLReportEscapesAndIsStandalone(t *testing.T) {
@@ -230,7 +231,7 @@ func TestWriteSQLiteHTMLReportStoresArtifact(t *testing.T) {
 	if !strings.Contains(string(data), "Stored HTML") {
 		t.Fatalf("rendered HTML missing run title:\n%s", data)
 	}
-	if err := CheckSQLiteArtifact(artifactPath); err != nil {
+	if err := artifact.Check(artifactPath); err != nil {
 		t.Fatalf("artifact check after storing HTML: %v", err)
 	}
 	db, err := sql.Open("sqlite", artifactPath)
@@ -279,7 +280,7 @@ func TestWriteSQLiteHTMLReportRejectsOverwritingSourceArtifact(t *testing.T) {
 	if err := WriteSQLiteHTMLReport(artifactPath, artifactPath, HTMLReportOptions{}); err == nil {
 		t.Fatal("WriteSQLiteHTMLReport error = nil, want same-path rejection")
 	}
-	if err := CheckSQLiteArtifact(artifactPath); err != nil {
+	if err := artifact.Check(artifactPath); err != nil {
 		t.Fatalf("source artifact was corrupted after rejected render: %v", err)
 	}
 }
@@ -293,7 +294,7 @@ func TestWriteSQLiteHTMLReportRejectsSymlinkOutputToSourceArtifact(t *testing.T)
 	if err := WriteSQLiteHTMLReport(artifactPath, outputPath, HTMLReportOptions{}); err == nil {
 		t.Fatal("WriteSQLiteHTMLReport error = nil, want symlink output rejection")
 	}
-	if err := CheckSQLiteArtifact(artifactPath); err != nil {
+	if err := artifact.Check(artifactPath); err != nil {
 		t.Fatalf("source artifact was corrupted after rejected symlink render: %v", err)
 	}
 }
@@ -307,7 +308,7 @@ func TestWriteSQLiteHTMLReportRejectsHardlinkOutputToSourceArtifact(t *testing.T
 	if err := WriteSQLiteHTMLReport(artifactPath, outputPath, HTMLReportOptions{}); err == nil {
 		t.Fatal("WriteSQLiteHTMLReport error = nil, want hardlink output rejection")
 	}
-	if err := CheckSQLiteArtifact(artifactPath); err != nil {
+	if err := artifact.Check(artifactPath); err != nil {
 		t.Fatalf("source artifact was corrupted after rejected hardlink render: %v", err)
 	}
 }
@@ -326,7 +327,7 @@ func TestWriteSQLiteHTMLReportRejectsDefaultOutputOverSourceArtifact(t *testing.
 	if err := WriteSQLiteHTMLReport(htmlNamedArtifact, "", HTMLReportOptions{}); err == nil {
 		t.Fatal("WriteSQLiteHTMLReport error = nil, want default same-path rejection")
 	}
-	if err := CheckSQLiteArtifact(htmlNamedArtifact); err != nil {
+	if err := artifact.Check(htmlNamedArtifact); err != nil {
 		t.Fatalf("HTML-named source artifact was corrupted after rejected render: %v", err)
 	}
 }
@@ -438,31 +439,16 @@ func TestWriteSQLiteHTMLReportRendersOlderRequestSchema(t *testing.T) {
 }
 
 func TestWriteSQLiteHTMLReportHandlesQueryCharacterPath(t *testing.T) {
-	spec := testSpec()
-	spec.Name = "Query Character Path"
-	spec.OutputDir = t.TempDir()
-	appendTimestamp := false
-	spec.Runner.AppendTimestampToRun = &appendTimestamp
-	spec.Warmup.Enabled = false
-	spec.Workloads[0].NumPrompts = 1
-	spec.Workloads[0].MaxConcurrency = []int{1}
-	ApplyDefaults(&spec)
-	runDir := filepath.Join(t.TempDir(), "a?b", "run")
-	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true, RunDir: runDir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if summary.ArtifactPath != runDir+".sqlite" {
-		t.Fatalf("artifact path = %q, want query-character path", summary.ArtifactPath)
-	}
-	if _, err := os.Stat(summary.ArtifactPath); err != nil {
+	artifactPath := filepath.Join(t.TempDir(), "a?b", "run.sqlite")
+	createTestSQLiteHTMLArtifact(t, artifactPath, "Query Character Path")
+	if _, err := os.Stat(artifactPath); err != nil {
 		t.Fatalf("artifact was not written at query-character path: %v", err)
 	}
-	outputPath := filepath.Join(filepath.Dir(summary.ArtifactPath), "report.html")
-	if err := WriteSQLiteHTMLReport(summary.ArtifactPath, outputPath, HTMLReportOptions{Store: true}); err != nil {
+	outputPath := filepath.Join(filepath.Dir(artifactPath), "report.html")
+	if err := WriteSQLiteHTMLReport(artifactPath, outputPath, HTMLReportOptions{Store: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckSQLiteArtifact(summary.ArtifactPath); err != nil {
+	if err := artifact.Check(artifactPath); err != nil {
 		t.Fatalf("query-character artifact check: %v", err)
 	}
 	if _, err := os.Stat(outputPath); err != nil {
@@ -520,51 +506,105 @@ func insertAggregateMetric(t *testing.T, db *sql.DB, measurementID int64, name, 
 
 func testSQLiteHTMLArtifact(t *testing.T, name string) string {
 	t.Helper()
-	spec := testSpec()
-	spec.Name = name
-	spec.OutputDir = t.TempDir()
-	appendTimestamp := false
-	spec.Runner.AppendTimestampToRun = &appendTimestamp
-	spec.Warmup.Enabled = false
-	spec.Workloads[0].NumPrompts = 1
-	spec.Workloads[0].MaxConcurrency = []int{1}
-	ApplyDefaults(&spec)
-	runDir := filepath.Join(t.TempDir(), "run")
-	summary, err := Execute(context.Background(), spec, RunOptions{DryRun: true, RunDir: runDir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if summary.ArtifactPath == "" {
-		t.Fatal("dry run did not write an artifact")
-	}
-	seedSQLiteHTMLMetrics(t, summary.ArtifactPath)
-	return summary.ArtifactPath
+	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
+	createTestSQLiteHTMLArtifact(t, artifactPath, name)
+	return artifactPath
 }
 
-func seedSQLiteHTMLMetrics(t *testing.T, artifactPath string) {
+func createTestSQLiteHTMLArtifact(t *testing.T, artifactPath, name string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", artifactPath)
+	db, err := artifact.Create(artifactPath, artifact.Schema)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`UPDATE measurements SET
-		status = 'completed',
-		completed_requests = 2,
-		failed_requests = 0,
-		prompt_tokens = 200,
-		completion_tokens = 20,
-		total_tokens = 220,
-		aggregate_output_tok_s = 123.4,
-		per_user_output_tok_s = 61.7,
-		aggregate_total_tok_s = 223.4
-		WHERE id = (SELECT id FROM measurements ORDER BY id LIMIT 1)`); err != nil {
+
+	runID := "run-1"
+	createdAt := "2026-01-01T00:00:00Z"
+	originalSpec := `{"version":"1","name":"original"}`
+	normalizedSpec := `{"version":"1","name":"normalized"}`
+	if _, err := db.Exec(`INSERT INTO metadata (key, value) VALUES
+		('format_name', ?), ('format_version', ?)`, artifact.FormatName, artifact.FormatVersion); err != nil {
 		t.Fatal(err)
 	}
-	var measurementID int64
-	if err := db.QueryRow(`SELECT id FROM measurements ORDER BY id LIMIT 1`).Scan(&measurementID); err != nil {
+	if _, err := db.Exec(`INSERT INTO run (
+		id, name, status, created_at, started_at, completed_at, localperf_version,
+		hostname, username, cwd, command_line_json, host_json, labels_json
+	) VALUES (?, ?, 'completed', ?, ?, ?, 'test', 'localhost', 'tester', '/tmp', '[]', '{}', '{}')`,
+		runID, name, createdAt, createdAt, createdAt); err != nil {
 		t.Fatal(err)
 	}
+	for _, spec := range []struct {
+		kind    string
+		content string
+	}{
+		{kind: "original", content: originalSpec},
+		{kind: "normalized", content: normalizedSpec},
+	} {
+		if _, err := db.Exec(`INSERT INTO specs (
+			run_id, kind, format, content, sha256, created_at
+		) VALUES (?, ?, 'json', ?, ?, ?)`, runID, spec.kind, spec.content, artifact.SHA256Hex([]byte(spec.content)), createdAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO engines (
+		id, run_id, name, type, managed, command, version, env_json, metadata_json
+	) VALUES ('engine-1', ?, 'vllm', 'vllm', 1, 'vllm', 'test', '{}', '{}')`, runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO profiles (
+		id, run_id, engine_id, name, model, host, port, endpoint_base_url, managed,
+		context_window, max_num_seqs, max_num_batched_tokens, gpu_memory_utilization,
+		enable_sleep_mode, sleep_level, serve_json, engine_args_json, env_json, metadata_json
+	) VALUES (
+		'profile-1', ?, 'engine-1', '8k', 'nvidia/diffusiongemma-26B-A4B-it-NVFP4',
+		'127.0.0.1', 8108, 'http://127.0.0.1:8108', 1, 8192, 16, 8192, 0.35,
+		1, 2, '{}', '{}', '{}', '{}'
+	)`, runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO workloads (
+		id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
+		save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json, metadata_json
+	) VALUES (
+		'workload-1', ?, 'prefill-8k', 'prefill',
+		'{"backend":"openai-chat","dataset_name":"random","random_input_len":8192,"random_output_len":16,"request_rate":"inf"}',
+		'[4,8]', 8, 1, 1, 0, '{}', '{}', '{}', '{}'
+	)`, runID); err != nil {
+		t.Fatal(err)
+	}
+	phaseResult, err := db.Exec(`INSERT INTO phases (
+		run_id, profile_id, workload_id, name, type, status, started_at, completed_at, metadata_json
+	) VALUES (?, 'profile-1', 'workload-1', 'measurement', 'measurement', 'completed', ?, ?, '{}')`,
+		runID, createdAt, createdAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phaseID, err := phaseResult.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	measurementResult, err := db.Exec(`INSERT INTO measurements (
+		run_id, profile_id, workload_id, phase_id, repeat_index, concurrency, samples_requested,
+		status, started_at, completed_at, wall_time_ms, completed_requests, failed_requests,
+		prompt_tokens, completion_tokens, total_tokens, aggregate_output_tok_s,
+		per_user_output_tok_s, aggregate_total_tok_s, metadata_json
+	) VALUES (
+		?, 'profile-1', 'workload-1', ?, 0, 4, 8, 'completed', ?, ?, 1000,
+		2, 0, 200, 20, 220, 123.4, 61.7, 223.4, '{}'
+	)`, runID, phaseID, createdAt, createdAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	measurementID, err := measurementResult.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedSQLiteHTMLMetrics(t, db, measurementID)
+}
+
+func seedSQLiteHTMLMetrics(t *testing.T, db *sql.DB, measurementID int64) {
+	t.Helper()
 	for _, metric := range []struct {
 		name   string
 		unit   string

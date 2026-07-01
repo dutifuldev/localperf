@@ -48,12 +48,23 @@ go:
         - internal/benchcli
     - from: internal/benchcli
       allow:
-        - internal/vllmbench
+        - internal/artifact
+        - internal/report
         - internal/collections
+        - internal/vllmbench
     - from: internal/bench
       allow: []
+    - from: internal/artifact
+      allow: []
+    - from: internal/report
+      allow:
+        - internal/artifact
+        - internal/bench
+        - internal/collections
     - from: internal/vllmbench
       allow:
+        - internal/artifact
+        - internal/bench
         - internal/collections
     - from: internal/collections
       allow: []
