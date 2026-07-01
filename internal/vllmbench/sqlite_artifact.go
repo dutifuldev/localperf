@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -50,23 +51,18 @@ func WriteSQLiteArtifact(runDir, artifactPath string, spec Spec, summary RunSumm
 }
 
 func createSQLiteArtifact(path string) (*sql.DB, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := prepareSQLiteArtifactPath(path); err != nil {
 		return nil, err
+	}
+	return openSQLiteFileWithSchema(path, sqliteSchema)
+}
+
+func prepareSQLiteArtifactPath(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
 	_ = os.Remove(path)
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if _, err := db.Exec(sqliteSchema); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return db, nil
+	return nil
 }
 
 func withSQLiteTx(db *sql.DB, run func(*sql.Tx) error) error {
@@ -79,6 +75,50 @@ func withSQLiteTx(db *sql.DB, run func(*sql.Tx) error) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func openSQLiteFileWithSchema(path, schema string) (*sql.DB, error) {
+	db, err := openSQLiteFile(path, "")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(schema); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func openExistingSQLiteFile(path, rawQuery string) (*sql.DB, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	return openSQLiteFile(path, rawQuery)
+}
+
+func openSQLiteFile(path, rawQuery string) (*sql.DB, error) {
+	dsn, err := sqliteFileDSNWithQuery(path, rawQuery)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func sqliteFileDSNWithQuery(path, rawQuery string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	uri := url.URL{Scheme: "file", Path: absolute, RawQuery: rawQuery}
+	return uri.String(), nil
 }
 
 func CheckSQLiteArtifact(path string) error {
@@ -105,18 +145,7 @@ func CheckSQLiteArtifact(path string) error {
 }
 
 func openSQLiteArtifactForCheck(path string) (*sql.DB, error) {
-	if _, err := os.Stat(path); err != nil {
-		return nil, err
-	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return db, nil
+	return openSQLiteArtifactWritable(path)
 }
 
 func checkIntegrity(db *sql.DB) error {

@@ -1,6 +1,7 @@
 package benchcli
 
 import (
+	"flag"
 	"path/filepath"
 	"testing"
 	"time"
@@ -64,6 +65,46 @@ func TestTimeoutSecondsRoundsUp(t *testing.T) {
 	}
 	if got := timeoutSeconds(1500 * time.Millisecond); got != 2 {
 		t.Fatalf("timeoutSeconds(1500ms) = %d, want 2", got)
+	}
+}
+
+func TestParseArtifactRenderFlagsAllowsPathBeforeFlags(t *testing.T) {
+	config, err := parseArtifactRenderFlags([]string{"run.sqlite", "--output", "report.html", "--store", "--title", "Run"}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.path != "run.sqlite" || config.output != "report.html" || config.title != "Run" || !config.store {
+		t.Fatalf("config = %+v, want path, output, title, store", config)
+	}
+}
+
+func TestParseArtifactRenderFlagsAllowsPathBetweenFlags(t *testing.T) {
+	config, err := parseArtifactRenderFlags([]string{"--output", "report.html", "run.sqlite", "--store"}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.path != "run.sqlite" || config.output != "report.html" || !config.store {
+		t.Fatalf("config = %+v, want interspersed path and store", config)
+	}
+}
+
+func TestParseArtifactRenderFlagsAllowsEqualsValueFlags(t *testing.T) {
+	config, err := parseArtifactRenderFlags([]string{"--output=report.html", "run.sqlite", "--title=Run", "--store=true"}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.path != "run.sqlite" || config.output != "report.html" || config.title != "Run" || !config.store {
+		t.Fatalf("config = %+v, want equals value flags", config)
+	}
+}
+
+func TestParseArtifactRenderFlagsAllowsPathFlag(t *testing.T) {
+	config, err := parseArtifactRenderFlags([]string{"--path", "run.sqlite", "--output", "report.html"}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.path != "run.sqlite" || config.output != "report.html" {
+		t.Fatalf("config = %+v, want flag path and output", config)
 	}
 }
 

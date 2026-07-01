@@ -18,6 +18,18 @@ import (
 
 const defaultHTTPLoadMinMemAvailableGiB = 40.0
 
+type commandHandlers map[string]func([]string)
+
+var localPerfHandlers = commandHandlers{
+	"bench":    Main,
+	"artifact": runArtifact,
+}
+
+var artifactHandlers = commandHandlers{
+	"check":  runArtifactCheck,
+	"render": runArtifactRender,
+}
+
 func Main(args []string) {
 	if len(args) < 1 {
 		usage()
@@ -41,19 +53,20 @@ func Main(args []string) {
 }
 
 func LocalPerfMain(args []string) {
+	dispatchCommand(args, usageLocalPerf, localPerfHandlers)
+}
+
+func dispatchCommand(args []string, usageFunc func(), handlers commandHandlers) {
 	if len(args) < 1 {
-		usageLocalPerf()
+		usageFunc()
 		os.Exit(2)
 	}
-	switch args[0] {
-	case "bench":
-		Main(args[1:])
-	case "artifact":
-		runArtifact(args[1:])
-	default:
-		usageLocalPerf()
-		os.Exit(2)
+	if handler := handlers[args[0]]; handler != nil {
+		handler(args[1:])
+		return
 	}
+	usageFunc()
+	os.Exit(2)
 }
 
 func runPlan(args []string) {
@@ -222,17 +235,7 @@ func runReport(args []string) {
 }
 
 func runArtifact(args []string) {
-	if len(args) < 1 {
-		usage()
-		os.Exit(2)
-	}
-	switch args[0] {
-	case "check":
-		runArtifactCheck(args[1:])
-	default:
-		usage()
-		os.Exit(2)
-	}
+	dispatchCommand(args, usage, artifactHandlers)
 }
 
 func runArtifactCheck(args []string) {
@@ -253,6 +256,97 @@ func runArtifactCheck(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("artifact ok: %s\n", *path)
+}
+
+func runArtifactRender(args []string) {
+	config, err := parseArtifactRenderFlags(args, flag.ExitOnError)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if config.includeRaw {
+		fmt.Fprintln(os.Stderr, "--include-raw is not implemented yet")
+		os.Exit(2)
+	}
+	if err := vllmbench.WriteSQLiteHTMLReport(config.path, config.output, vllmbench.HTMLReportOptions{Title: config.title, Store: config.store}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	outPath := config.output
+	if strings.TrimSpace(outPath) == "" {
+		outPath = strings.TrimSuffix(config.path, filepath.Ext(config.path)) + ".html"
+	}
+	fmt.Printf("html: %s\n", outPath)
+	if config.store {
+		fmt.Printf("stored: %s\n", config.path)
+	}
+}
+
+type artifactRenderConfig struct {
+	path       string
+	output     string
+	title      string
+	store      bool
+	includeRaw bool
+}
+
+func parseArtifactRenderFlags(args []string, errorHandling flag.ErrorHandling) (artifactRenderConfig, error) {
+	flags := flag.NewFlagSet("artifact render", errorHandling)
+	path := flags.String("path", "", "SQLite artifact path")
+	output := flags.String("output", "", "standalone HTML output path; defaults beside the artifact")
+	title := flags.String("title", "", "optional report title")
+	store := flags.Bool("store", false, "store report.html back into the SQLite artifact")
+	includeRaw := flags.Bool("include-raw", false, "reserved for explicit raw artifact rendering")
+	positionalPath, parseArgs := artifactRenderParseArgs(args)
+	if err := flags.Parse(parseArgs); err != nil {
+		return artifactRenderConfig{}, err
+	}
+	if strings.TrimSpace(*path) == "" && positionalPath != "" {
+		*path = positionalPath
+	}
+	if strings.TrimSpace(*path) == "" && flags.NArg() > 0 {
+		*path = flags.Arg(0)
+	}
+	if strings.TrimSpace(*path) == "" {
+		return artifactRenderConfig{}, fmt.Errorf("missing artifact path")
+	}
+	return artifactRenderConfig{
+		path:       *path,
+		output:     *output,
+		title:      *title,
+		store:      *store,
+		includeRaw: *includeRaw,
+	}, nil
+}
+
+func artifactRenderParseArgs(args []string) (string, []string) {
+	positionalPath := ""
+	parseArgs := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if positionalPath == "" && !strings.HasPrefix(arg, "-") {
+			positionalPath = arg
+			continue
+		}
+		parseArgs = append(parseArgs, arg)
+		if artifactRenderFlagNeedsValue(arg) && !strings.Contains(arg, "=") && index+1 < len(args) {
+			index++
+			parseArgs = append(parseArgs, args[index])
+		}
+	}
+	return positionalPath, parseArgs
+}
+
+func artifactRenderFlagNeedsValue(arg string) bool {
+	if equals := strings.Index(arg, "="); equals >= 0 {
+		arg = arg[:equals]
+	}
+	switch arg {
+	case "-path", "--path", "-output", "--output", "-title", "--title":
+		return true
+	default:
+		return false
+	}
 }
 
 func profileFromBaseURL(rawURL, model string) (vllmbench.Profile, error) {
@@ -406,7 +500,8 @@ func usage() {
   localperf-vllm-bench run    --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--dry-run] [--timeout 2h]
   localperf-vllm-bench http-load --base-url http://127.0.0.1:8000 --model model --dataset-name random --random-input-len 1024 --random-output-len 128 --num-prompts 8 --max-concurrency 4 --result-filename result.json [--dataset-path canonical.jsonl] [--extra-body '{"guided_decoding_backend":"outlines"}']
   localperf-vllm-bench report --run-dir runs/example [--output runs/example/report.md] [--json]
-  localperf-vllm-bench artifact check runs/example.sqlite`)
+  localperf-vllm-bench artifact check runs/example.sqlite
+  localperf-vllm-bench artifact render runs/example.sqlite [--output runs/example.html] [--store]`)
 }
 
 func usageLocalPerf() {
@@ -415,7 +510,8 @@ func usageLocalPerf() {
   localperf bench run    --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--dry-run] [--timeout 2h]
   localperf bench http-load --base-url http://127.0.0.1:8000 --model model --dataset-name random --random-input-len 1024 --random-output-len 128 --num-prompts 8 --max-concurrency 4 --result-filename result.json [--dataset-path canonical.jsonl] [--extra-body '{"guided_decoding_backend":"outlines"}']
   localperf bench report --run-dir runs/example [--output runs/example/report.md] [--json]
-  localperf artifact check runs/example.sqlite`)
+  localperf artifact check runs/example.sqlite
+  localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]`)
 }
 
 func addOverrideFlags(flags *flag.FlagSet) *overrideFlags {
