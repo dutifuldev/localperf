@@ -23,18 +23,85 @@ func TestRenderSQLiteHTMLReportEscapesAndIsStandalone(t *testing.T) {
 	for _, want := range []string{
 		"<!doctype html>",
 		"<style>",
-		"<svg class=\"svg-chart\"",
 		"Escaping &lt;script&gt;alert(1)&lt;/script&gt;",
-		"Measurements",
+		"Throughput",
+		"throughput-group",
+		"Decode tok/s",
+		"Decode/user",
+		"Prefill tok/s",
+		"Prefill/user",
+		"decode tok/s",
+		"prefill tok/s",
+		"Decode TTFT avg",
+		"Decode TTFT p95",
+		"Prefill TTFT avg",
+		"Prefill TTFT p95",
+		"OK / Err",
+		"table-layout:fixed",
+		"@media print",
+		"heat-",
+		"phone-table",
 		"Privacy",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("HTML report missing %q:\n%s", want, html)
 		}
 	}
+	if strings.Contains(html, "min-width:900px") {
+		t.Fatalf("HTML report still has fixed minimum table width:\n%s", html)
+	}
+	if strings.Contains(html, "Input tok/s") || strings.Contains(html, ">In/s<") {
+		t.Fatalf("HTML report includes derived input throughput in headline table:\n%s", html)
+	}
+	if strings.Contains(html, "<th>Mode</th>") {
+		t.Fatalf("HTML report still splits decode/prefill into mode rows:\n%s", html)
+	}
+	for _, forbidden := range []string{"Decode lat", "Prefill lat", "<th class=\"num\">OK</th><th class=\"num\">Err</th>"} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("HTML report contains removed headline column %q:\n%s", forbidden, html)
+		}
+	}
 	for _, forbidden := range []string{"<script>alert(1)</script>", "https://", "http://", "<link ", "src="} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("HTML report contains forbidden %q:\n%s", forbidden, html)
+		}
+	}
+}
+
+func TestTokenThroughputMetricDisplay(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  string
+	}{
+		{value: "522.119", want: "522"},
+		{value: "100.000", want: "100"},
+		{value: "99.950", want: "100"},
+		{value: "99.940", want: "99.9"},
+		{value: "27.765", want: "27.8"},
+		{value: "4.248", want: "4.2"},
+		{value: "-", want: "-"},
+	} {
+		if got := tokenThroughputMetric(tc.value); got != tc.want {
+			t.Fatalf("tokenThroughputMetric(%q) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestCompactMillisecondsDisplay(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  string
+	}{
+		{value: "805.907", want: "806ms"},
+		{value: "3766.128", want: "3.8s"},
+		{value: "22519.610", want: "23s"},
+		{value: "41645.481", want: "42s"},
+		{value: "59999.900", want: "1m00s"},
+		{value: "352063.414", want: "5m52s"},
+		{value: "-", want: "-"},
+	} {
+		if got := compactMilliseconds(tc.value); got != tc.want {
+			t.Fatalf("compactMilliseconds(%q) = %q, want %q", tc.value, got, tc.want)
 		}
 	}
 }
