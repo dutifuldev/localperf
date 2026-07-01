@@ -106,6 +106,117 @@ func TestCompactMillisecondsDisplay(t *testing.T) {
 	}
 }
 
+func TestThroughputMode(t *testing.T) {
+	for _, tc := range []struct {
+		phase string
+		want  string
+	}{
+		{phase: "decode", want: "decode"},
+		{phase: "prefill", want: "prefill"},
+		{phase: "", want: "mixed"},
+		{phase: "custom-phase", want: "custom phase"},
+	} {
+		if got := throughputMode(tc.phase); got != tc.want {
+			t.Fatalf("throughputMode(%q) = %q, want %q", tc.phase, got, tc.want)
+		}
+	}
+}
+
+func TestApplyThroughputComparisonHeatmapColumn(t *testing.T) {
+	rows := []SQLiteReportThroughputComparisonRow{
+		{DecodeTokS: "100"},
+		{DecodeTokS: "-"},
+		{DecodeTokS: "300"},
+	}
+	applyThroughputComparisonHeatmapColumn(rows, throughputComparisonHeatmapColumn{
+		higherIsBetter: true,
+		value: func(row SQLiteReportThroughputComparisonRow) (float64, bool) {
+			return parseDisplayedFloat(row.DecodeTokS)
+		},
+		set: func(row *SQLiteReportThroughputComparisonRow, class string) {
+			row.DecodeTokSHeat = class
+		},
+	})
+	if rows[0].DecodeTokSHeat != "heat-0" || rows[1].DecodeTokSHeat != "heat-neutral" || rows[2].DecodeTokSHeat != "heat-5" {
+		t.Fatalf("higher-is-better heat classes = %#v", rows)
+	}
+
+	applyThroughputComparisonHeatmapColumn(rows, throughputComparisonHeatmapColumn{
+		higherIsBetter: false,
+		value: func(row SQLiteReportThroughputComparisonRow) (float64, bool) {
+			return parseDisplayedFloat(row.DecodeTokS)
+		},
+		set: func(row *SQLiteReportThroughputComparisonRow, class string) {
+			row.DecodeTTFTHeat = class
+		},
+	})
+	if rows[0].DecodeTTFTHeat != "heat-5" || rows[1].DecodeTTFTHeat != "heat-neutral" || rows[2].DecodeTTFTHeat != "heat-0" {
+		t.Fatalf("lower-is-better heat classes = %#v", rows)
+	}
+}
+
+func TestApplyThroughputComparisonHeatmapColumnNeutral(t *testing.T) {
+	rows := []SQLiteReportThroughputComparisonRow{
+		{DecodeTokS: "100"},
+		{DecodeTokS: "100"},
+	}
+	applyThroughputComparisonHeatmapColumn(rows, throughputComparisonHeatmapColumn{
+		higherIsBetter: true,
+		value: func(row SQLiteReportThroughputComparisonRow) (float64, bool) {
+			return parseDisplayedFloat(row.DecodeTokS)
+		},
+		set: func(row *SQLiteReportThroughputComparisonRow, class string) {
+			row.DecodeTokSHeat = class
+		},
+	})
+	if rows[0].DecodeTokSHeat != "heat-neutral" || rows[1].DecodeTokSHeat != "heat-neutral" {
+		t.Fatalf("equal-value heat classes = %#v", rows)
+	}
+}
+
+func TestMetricFieldDisplay(t *testing.T) {
+	metric := SQLiteReportMetric{
+		Mean:        "10",
+		MeanKnown:   true,
+		StdDev:      "1",
+		StdDevKnown: true,
+		P50:         "50",
+		P90:         "90",
+		P95:         "95",
+		P99:         "99",
+	}
+	for _, tc := range []struct {
+		field string
+		want  string
+	}{
+		{field: "StdDev", want: "1"},
+		{field: "P50", want: "50"},
+		{field: "P90", want: "90"},
+		{field: "P95", want: "95"},
+		{field: "P99", want: "99"},
+		{field: "Mean", want: "10"},
+		{field: "Other", want: "10"},
+	} {
+		got, ok := metricFieldDisplay(metric, tc.field)
+		if !ok || got != tc.want {
+			t.Fatalf("metricFieldDisplay(%q) = %q/%v, want %q/true", tc.field, got, ok, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		field  string
+		metric SQLiteReportMetric
+	}{
+		{field: "StdDev", metric: SQLiteReportMetric{}},
+		{field: "P95", metric: SQLiteReportMetric{P95: "-"}},
+		{field: "Mean", metric: SQLiteReportMetric{}},
+	} {
+		if got, ok := metricFieldDisplay(tc.metric, tc.field); ok {
+			t.Fatalf("metricFieldDisplay(%q) = %q/true, want false", tc.field, got)
+		}
+	}
+}
+
 func TestWriteSQLiteHTMLReportStoresArtifact(t *testing.T) {
 	artifactPath := testSQLiteHTMLArtifact(t, "Stored HTML")
 	outputPath := filepath.Join(t.TempDir(), "report.html")

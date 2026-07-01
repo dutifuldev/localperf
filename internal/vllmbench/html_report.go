@@ -1298,6 +1298,19 @@ type throughputComparisonHeatmapColumn struct {
 	set            func(*SQLiteReportThroughputComparisonRow, string)
 }
 
+type comparisonHeatmapStats struct {
+	values []float64
+	valid  []bool
+	min    float64
+	max    float64
+	count  int
+}
+
+type metricDisplayField struct {
+	value string
+	known bool
+}
+
 func applyThroughputComparisonHeatmaps(rows []SQLiteReportThroughputComparisonRow) {
 	columns := []throughputComparisonHeatmapColumn{
 		{
@@ -1390,45 +1403,58 @@ func applyThroughputComparisonHeatmaps(rows []SQLiteReportThroughputComparisonRo
 }
 
 func applyThroughputComparisonHeatmapColumn(rows []SQLiteReportThroughputComparisonRow, column throughputComparisonHeatmapColumn) {
-	values := make([]float64, len(rows))
-	valid := make([]bool, len(rows))
-	minValue, maxValue := 0.0, 0.0
-	seen := false
-	for index, row := range rows {
-		value, ok := column.value(row)
-		if !ok {
-			continue
-		}
-		values[index] = value
-		valid[index] = true
-		if !seen {
-			minValue, maxValue = value, value
-			seen = true
-			continue
-		}
-		if value < minValue {
-			minValue = value
-		}
-		if value > maxValue {
-			maxValue = value
-		}
-	}
-	if !seen || minValue == maxValue {
-		for index := range rows {
-			column.set(&rows[index], "heat-neutral")
-		}
+	stats := collectComparisonHeatmapStats(rows, column)
+	if !stats.hasSpread() {
+		setComparisonHeatmapClass(rows, column, "heat-neutral")
 		return
 	}
 	for index := range rows {
-		if !valid[index] {
-			column.set(&rows[index], "heat-neutral")
-			continue
+		column.set(&rows[index], stats.class(index, column))
+	}
+}
+
+func collectComparisonHeatmapStats(rows []SQLiteReportThroughputComparisonRow, column throughputComparisonHeatmapColumn) comparisonHeatmapStats {
+	stats := comparisonHeatmapStats{
+		values: make([]float64, len(rows)),
+		valid:  make([]bool, len(rows)),
+		min:    math.Inf(1),
+		max:    math.Inf(-1),
+	}
+	for index, row := range rows {
+		value, ok := column.value(row)
+		if ok {
+			stats.record(index, value)
 		}
-		ratio := (values[index] - minValue) / (maxValue - minValue)
-		if !column.higherIsBetter {
-			ratio = 1 - ratio
-		}
-		column.set(&rows[index], heatClass(ratio))
+	}
+	return stats
+}
+
+func (stats *comparisonHeatmapStats) record(index int, value float64) {
+	stats.values[index] = value
+	stats.valid[index] = true
+	stats.count++
+	stats.min = math.Min(stats.min, value)
+	stats.max = math.Max(stats.max, value)
+}
+
+func (stats comparisonHeatmapStats) hasSpread() bool {
+	return stats.count > 0 && stats.min != stats.max
+}
+
+func (stats comparisonHeatmapStats) class(index int, column throughputComparisonHeatmapColumn) string {
+	if !stats.valid[index] {
+		return "heat-neutral"
+	}
+	ratio := (stats.values[index] - stats.min) / (stats.max - stats.min)
+	if !column.higherIsBetter {
+		ratio = 1 - ratio
+	}
+	return heatClass(ratio)
+}
+
+func setComparisonHeatmapClass(rows []SQLiteReportThroughputComparisonRow, column throughputComparisonHeatmapColumn, class string) {
+	for index := range rows {
+		column.set(&rows[index], class)
 	}
 }
 
@@ -1664,33 +1690,28 @@ func metricFirst(metrics map[string]SQLiteReportMetric, names ...string) (SQLite
 }
 
 func metricFieldDisplay(metric SQLiteReportMetric, field string) (string, bool) {
-	switch field {
-	case "StdDev":
-		if metric.StdDevKnown {
-			return metric.StdDev, true
-		}
-	case "P50":
-		if metric.P50 != "-" {
-			return metric.P50, true
-		}
-	case "P90":
-		if metric.P90 != "-" {
-			return metric.P90, true
-		}
-	case "P95":
-		if metric.P95 != "-" {
-			return metric.P95, true
-		}
-	case "P99":
-		if metric.P99 != "-" {
-			return metric.P99, true
-		}
-	default:
-		if metric.MeanKnown {
-			return metric.Mean, true
-		}
+	value, ok := metricDisplayFields(metric)[field]
+	if !ok {
+		value = metricDisplayField{value: metric.Mean, known: metric.MeanKnown}
 	}
-	return "", false
+	return value.display()
+}
+
+func metricDisplayFields(metric SQLiteReportMetric) map[string]metricDisplayField {
+	return map[string]metricDisplayField{
+		"StdDev": {value: metric.StdDev, known: metric.StdDevKnown},
+		"P50":    {value: metric.P50, known: metric.P50 != "-"},
+		"P90":    {value: metric.P90, known: metric.P90 != "-"},
+		"P95":    {value: metric.P95, known: metric.P95 != "-"},
+		"P99":    {value: metric.P99, known: metric.P99 != "-"},
+	}
+}
+
+func (field metricDisplayField) display() (string, bool) {
+	if !field.known {
+		return "", false
+	}
+	return field.value, true
 }
 
 func commandSummaryFromJSON(data string) string {
