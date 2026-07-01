@@ -643,19 +643,19 @@ func applySQLiteMeasurementDisplay(measurement *SQLiteReportMeasurement, metrics
 	measurement.StartedAt = nullStringValue(startedAt)
 	measurement.CompletedAt = nullStringValue(completedAt)
 	measurement.WallTimeMS = displayNullFloat(wallTime)
-	measurement.WallTimeMSValue = nullFloatValue(wallTime)
+	measurement.WallTimeMSValue = nullValue(wallTime.Valid, wallTime.Float64)
 	measurement.WallTimeMSKnown = wallTime.Valid
 	measurement.PromptTokens = displayNullInt(promptTokens)
-	measurement.PromptTokensValue = nullIntValue(promptTokens)
+	measurement.PromptTokensValue = nullValue(promptTokens.Valid, promptTokens.Int64)
 	measurement.PromptTokensKnown = promptTokens.Valid
 	measurement.CompletionTokens = displayNullInt(completionTokens)
-	measurement.CompletionTokensValue = nullIntValue(completionTokens)
+	measurement.CompletionTokensValue = nullValue(completionTokens.Valid, completionTokens.Int64)
 	measurement.CompletionTokensKnown = completionTokens.Valid
 	measurement.TotalTokens = displayNullInt(totalTokens)
-	measurement.TotalTokensValue = nullIntValue(totalTokens)
+	measurement.TotalTokensValue = nullValue(totalTokens.Valid, totalTokens.Int64)
 	measurement.TotalTokensKnown = totalTokens.Valid
 	measurement.OutputTokS = displayNullFloat(outputTokS)
-	measurement.OutputTokSValue = nullFloatValue(outputTokS)
+	measurement.OutputTokSValue = nullValue(outputTokS.Valid, outputTokS.Float64)
 	measurement.OutputTokSKnown = outputTokS.Valid
 	measurement.PerUserOutputTokS = displayNullFloat(perUserTokS)
 	measurement.TotalTokS = displayNullFloat(totalTokS)
@@ -692,8 +692,8 @@ func loadSQLiteReportMetrics(db *sql.DB, doc *SQLiteReportDocument) error {
 		metric.P95 = displayNullFloat(p95)
 		metric.P99 = displayNullFloat(p99)
 		metric.Max = displayNullFloat(max)
-		metric.MeanValue = nullFloatValue(mean)
-		metric.StdDevValue = nullFloatValue(stddev)
+		metric.MeanValue = nullValue(mean.Valid, mean.Float64)
+		metric.StdDevValue = nullValue(stddev.Valid, stddev.Float64)
 		metric.MeanKnown = mean.Valid
 		metric.StdDevKnown = stddev.Valid
 		if doc.MeasurementMetrics[metric.MeasurementID] == nil {
@@ -1032,8 +1032,12 @@ func sqliteReportMetadataItems(doc SQLiteReportDocument) []SQLiteReportMetadataI
 		{Label: "Engine", Value: joinUnique(engineSummaries(doc.Engines), ", ")},
 		{Label: "Quant", Value: firstNonEmpty(inferQuantization(doc.Profiles), "-")},
 		{Label: "KV", Value: firstNonEmpty(joinUnique(profileKVDtypes(doc.Profiles), ", "), "-")},
-		{Label: "Contexts", Value: formatContextList(measurementContexts(doc.Measurements))},
-		{Label: "Users", Value: formatIntList(measurementConcurrencies(doc.Measurements))},
+		{Label: "Contexts", Value: formatContextList(measurementPositiveInts(doc.Measurements, func(measurement SQLiteReportMeasurement) int {
+			return measurement.ContextWindow
+		}))},
+		{Label: "Users", Value: formatIntList(measurementPositiveInts(doc.Measurements, func(measurement SQLiteReportMeasurement) int {
+			return measurement.Concurrency
+		}))},
 		{Label: "Requests", Value: fmt.Sprintf("%d ok / %d err", doc.RequestSummary.Completed, doc.RequestSummary.Failed)},
 	}
 	return items
@@ -1481,21 +1485,12 @@ func inferQuantization(profiles []SQLiteReportProfile) string {
 	return joinUnique(quantizations, ", ")
 }
 
-func measurementContexts(measurements []SQLiteReportMeasurement) []int {
+func measurementPositiveInts(measurements []SQLiteReportMeasurement, value func(SQLiteReportMeasurement) int) []int {
 	values := make([]int, 0, len(measurements))
 	for _, measurement := range measurements {
-		if measurement.ContextWindow > 0 {
-			values = append(values, measurement.ContextWindow)
-		}
-	}
-	return uniqueSortedInts(values)
-}
-
-func measurementConcurrencies(measurements []SQLiteReportMeasurement) []int {
-	values := make([]int, 0, len(measurements))
-	for _, measurement := range measurements {
-		if measurement.Concurrency > 0 {
-			values = append(values, measurement.Concurrency)
+		current := value(measurement)
+		if current > 0 {
+			values = append(values, current)
 		}
 	}
 	return uniqueSortedInts(values)
@@ -1726,18 +1721,12 @@ func nullStringValue(value sql.NullString) string {
 	return ""
 }
 
-func nullFloatValue(value sql.NullFloat64) float64 {
-	if value.Valid {
-		return value.Float64
+func nullValue[T any](valid bool, value T) T {
+	if valid {
+		return value
 	}
-	return 0
-}
-
-func nullIntValue(value sql.NullInt64) int64 {
-	if value.Valid {
-		return value.Int64
-	}
-	return 0
+	var zero T
+	return zero
 }
 
 func displayNullInt(value sql.NullInt64) string {
