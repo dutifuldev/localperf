@@ -1288,12 +1288,6 @@ func throughputGroupSortKey(group SQLiteReportThroughputGroup) string {
 	return fmt.Sprintf("%012d:%s", group.ContextWindow, group.Profile)
 }
 
-type throughputHeatmapColumn struct {
-	higherIsBetter bool
-	value          func(SQLiteReportThroughputRow) (float64, bool)
-	set            func(*SQLiteReportThroughputRow, string)
-}
-
 type throughputComparisonHeatmapColumn struct {
 	higherIsBetter bool
 	value          func(SQLiteReportThroughputComparisonRow) (float64, bool)
@@ -1434,89 +1428,6 @@ func applyThroughputComparisonHeatmapColumn(rows []SQLiteReportThroughputCompari
 	}
 }
 
-func applyThroughputHeatmaps(rows []SQLiteReportThroughputRow) {
-	columns := []throughputHeatmapColumn{
-		{
-			higherIsBetter: true,
-			value:          func(row SQLiteReportThroughputRow) (float64, bool) { return parseDisplayedFloat(row.ThroughputTokS) },
-			set:            func(row *SQLiteReportThroughputRow, class string) { row.ThroughputHeat = class },
-		},
-		{
-			higherIsBetter: true,
-			value:          func(row SQLiteReportThroughputRow) (float64, bool) { return parseDisplayedFloat(row.PerUserTokS) },
-			set:            func(row *SQLiteReportThroughputRow, class string) { row.PerUserTokSHeat = class },
-		},
-		{
-			higherIsBetter: false,
-			value:          func(row SQLiteReportThroughputRow) (float64, bool) { return parseDisplayedFloat(row.TTFTP95MS) },
-			set:            func(row *SQLiteReportThroughputRow, class string) { row.TTFTHeat = class },
-		},
-		{
-			higherIsBetter: false,
-			value:          func(row SQLiteReportThroughputRow) (float64, bool) { return parseDisplayedFloat(row.LatencyP95MS) },
-			set:            func(row *SQLiteReportThroughputRow, class string) { row.LatencyHeat = class },
-		},
-		{
-			higherIsBetter: false,
-			value:          func(row SQLiteReportThroughputRow) (float64, bool) { return float64(row.FailedRequests), true },
-			set:            func(row *SQLiteReportThroughputRow, class string) { row.FailureHeat = class },
-		},
-	}
-	indexesByMode := map[string][]int{}
-	for index, row := range rows {
-		indexesByMode[row.Mode] = append(indexesByMode[row.Mode], index)
-	}
-	for _, column := range columns {
-		for _, indexes := range indexesByMode {
-			applyThroughputHeatmapColumn(rows, indexes, column)
-		}
-	}
-}
-
-func applyThroughputHeatmapColumn(rows []SQLiteReportThroughputRow, indexes []int, column throughputHeatmapColumn) {
-	values := make([]float64, len(rows))
-	valid := make([]bool, len(rows))
-	minValue, maxValue := 0.0, 0.0
-	seen := false
-	for _, index := range indexes {
-		row := rows[index]
-		value, ok := column.value(row)
-		if !ok {
-			continue
-		}
-		values[index] = value
-		valid[index] = true
-		if !seen {
-			minValue, maxValue = value, value
-			seen = true
-			continue
-		}
-		if value < minValue {
-			minValue = value
-		}
-		if value > maxValue {
-			maxValue = value
-		}
-	}
-	if !seen || minValue == maxValue {
-		for _, index := range indexes {
-			column.set(&rows[index], "heat-neutral")
-		}
-		return
-	}
-	for _, index := range indexes {
-		if !valid[index] {
-			column.set(&rows[index], "heat-neutral")
-			continue
-		}
-		ratio := (values[index] - minValue) / (maxValue - minValue)
-		if !column.higherIsBetter {
-			ratio = 1 - ratio
-		}
-		column.set(&rows[index], heatClass(ratio))
-	}
-}
-
 func heatClass(ratio float64) string {
 	if ratio < 0 {
 		ratio = 0
@@ -1525,14 +1436,6 @@ func heatClass(ratio float64) string {
 		ratio = 1
 	}
 	return fmt.Sprintf("heat-%d", int(math.Round(ratio*5)))
-}
-
-func profileModels(profiles []SQLiteReportProfile) []string {
-	values := make([]string, 0, len(profiles))
-	for _, profile := range profiles {
-		values = append(values, profile.Model)
-	}
-	return values
 }
 
 func profileKVDtypes(profiles []SQLiteReportProfile) []string {
