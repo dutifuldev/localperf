@@ -24,7 +24,7 @@ Common serving stack:
 | 300 tok/s repro | 4k | 1 | 1k tokens | 1024 | off | `ignore_eos=true` | 4 seqs | 311.4 | 311.4 |
 | 20-user claim attempt, cold-ish | 4k | 20 | 1k tokens | 1024 | off | `ignore_eos=true` | 20 seqs | 479.4 | 24.0 |
 | 20-user claim attempt, warm | 4k | 20 | 1k tokens | 1024 | off | `ignore_eos=true` | 20 seqs | 557.1 | 27.9 |
-| LocalPerf runner smoke | 4k | 1 | 1k tokens | 1024 | off | `ignore_eos=true` | 20 seqs | 334.1 | 334.1 |
+| localperf runner smoke | 4k | 1 | 1k tokens | 1024 | off | `ignore_eos=true` | 20 seqs | 334.1 | 334.1 |
 | 8k grid | 8k | 4 | short prompt | 512 | on | normal EOS | 16 seqs | 100.4 | 25.1 |
 | 8k grid | 8k | 8 | short prompt | 512 | on | normal EOS | 16 seqs | 107.5 | 13.4 |
 | 8k grid | 8k | 16 | short prompt | 512 | on | normal EOS | 16 seqs | 119.4 | 7.5 |
@@ -96,7 +96,7 @@ Claim comparison:
 - Reproduced here: best `557.1 aggregate tok/s`, about `27.9 tok/s/user`.
 - Conclusion: we did not reproduce the 20-user claim.
 
-### LocalPerf runner smoke
+### localperf runner smoke
 
 Server:
 
@@ -166,7 +166,7 @@ Saved result:
 - The 8k grid is not a full 8k-prompt prefill benchmark. It measures decode throughput with an 8k context window configured.
 - The interrupted 16k run did not produce valid 16k throughput numbers.
 
-## Standard LocalPerf Run - 2026-06-29
+## Standard localperf run - 2026-06-29
 
 The current checked-in fixture is:
 

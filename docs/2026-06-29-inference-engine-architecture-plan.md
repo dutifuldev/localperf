@@ -12,7 +12,7 @@ The long-term target is:
 one benchmark spec -> many inference engines -> comparable results
 ```
 
-LocalPerf should own workload definition, safety, telemetry, result
+localperf should own workload definition, safety, telemetry, result
 normalization, and reporting. Engines should be thin adapters that know how to
 start, stop, configure, and health-check one backend.
 
@@ -184,7 +184,7 @@ Initial load generators:
 
 - `vllm-bench`: wraps `vllm bench serve`; best for vLLM-specific benchmark
   metrics.
-- `openai-http`: built into LocalPerf; sends OpenAI-compatible requests and
+- `openai-http`: built into localperf; sends OpenAI-compatible requests and
   records per-request rows.
 
 `openai-http` should become the universal fallback. It must record:
@@ -324,7 +324,7 @@ Acceptance:
 
 Acceptance:
 
-- LocalPerf can benchmark any OpenAI-compatible endpoint without `vllm bench`.
+- localperf can benchmark any OpenAI-compatible endpoint without `vllm bench`.
 - Reports include mean, p50, p95, p99, and stddev for latency and TTFT.
 - Aggregate token/s variance can be calculated across repeats.
 
@@ -402,7 +402,7 @@ PR should prove the API shape without increasing backend surface area.
 ## Open Decisions
 
 - Whether `vllm bench serve` remains the default load generator for vLLM, or
-  whether LocalPerf's HTTP generator becomes default everywhere.
+  whether localperf's HTTP generator becomes default everywhere.
 - Whether `samples` means total requests per workload point or requests per
   repeat. The likely answer is total requests per repeat.
 - Whether engine adapters should live under `internal/bench/engines/<name>` or

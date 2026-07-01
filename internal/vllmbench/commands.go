@@ -94,13 +94,13 @@ func BenchCommand(spec Spec, run PlannedRun) CommandSpec {
 }
 
 func LoadCommand(spec Spec, run PlannedRun) CommandSpec {
-	if run.Workload.LoadGenerator == LoadGeneratorLocalPerfHTTP {
-		return LocalPerfHTTPCommand(spec, run)
+	if run.Workload.LoadGenerator == LoadGeneratorHTTP {
+		return HTTPCommand(spec, run)
 	}
 	return BenchCommand(spec, run)
 }
 
-func LocalPerfHTTPCommand(spec Spec, run PlannedRun) CommandSpec {
+func HTTPCommand(spec Spec, run PlannedRun) CommandSpec {
 	builder := argBuilder{
 		"localperf", "bench", "http-load",
 		"--backend", run.Workload.Backend,
@@ -112,14 +112,14 @@ func LocalPerfHTTPCommand(spec Spec, run PlannedRun) CommandSpec {
 		"--request-rate", run.Workload.RequestRate,
 		"--result-filename", run.ResultFile,
 	}
-	appendLocalPerfHTTPSafetyArgs(&builder, spec)
-	appendLocalPerfHTTPDatasetArgs(&builder, run.Workload)
-	appendLocalPerfHTTPRandomArgs(&builder, run.Workload)
-	appendLocalPerfHTTPOptionalArgs(&builder, run.Workload)
+	appendHTTPSafetyArgs(&builder, spec)
+	appendHTTPDatasetArgs(&builder, run.Workload)
+	appendHTTPRandomArgs(&builder, run.Workload)
+	appendHTTPOptionalArgs(&builder, run.Workload)
 	return CommandSpec{Args: builder}
 }
 
-func appendLocalPerfHTTPSafetyArgs(builder *argBuilder, spec Spec) {
+func appendHTTPSafetyArgs(builder *argBuilder, spec Spec) {
 	if spec.Safety.WorkloadTimeoutSec > 0 {
 		*builder = append(*builder, "--timeout", strconv.Itoa(spec.Safety.WorkloadTimeoutSec)+"s")
 	}
@@ -128,13 +128,13 @@ func appendLocalPerfHTTPSafetyArgs(builder *argBuilder, spec Spec) {
 	}
 }
 
-func appendLocalPerfHTTPDatasetArgs(builder *argBuilder, workload Workload) {
+func appendHTTPDatasetArgs(builder *argBuilder, workload Workload) {
 	if datasetPath := httpDatasetPath(workload); datasetPath != "" {
 		*builder = append(*builder, "--dataset-path", datasetPath)
 	}
 }
 
-func appendLocalPerfHTTPRandomArgs(builder *argBuilder, workload Workload) {
+func appendHTTPRandomArgs(builder *argBuilder, workload Workload) {
 	if workload.DatasetName == "random" {
 		if workload.RandomInputLen > 0 {
 			*builder = append(*builder, "--random-input-len", strconv.Itoa(workload.RandomInputLen))
@@ -145,7 +145,7 @@ func appendLocalPerfHTTPRandomArgs(builder *argBuilder, workload Workload) {
 	}
 }
 
-func appendLocalPerfHTTPOptionalArgs(builder *argBuilder, workload Workload) {
+func appendHTTPOptionalArgs(builder *argBuilder, workload Workload) {
 	if strings.TrimSpace(workload.Endpoint) != "" {
 		*builder = append(*builder, "--endpoint", workload.Endpoint)
 	}

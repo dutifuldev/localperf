@@ -22,8 +22,8 @@ const defaultHTTPLoadMinMemAvailableGiB = 40.0
 
 type commandHandlers map[string]func([]string)
 
-var localPerfHandlers = commandHandlers{
-	"bench":    Main,
+var rootHandlers = commandHandlers{
+	"bench":    VLLMBenchMain,
 	"artifact": runArtifact,
 }
 
@@ -32,7 +32,7 @@ var artifactHandlers = commandHandlers{
 	"render": runArtifactRender,
 }
 
-func Main(args []string) {
+func VLLMBenchMain(args []string) {
 	if len(args) < 1 {
 		usage()
 		os.Exit(2)
@@ -54,8 +54,8 @@ func Main(args []string) {
 	}
 }
 
-func LocalPerfMain(args []string) {
-	dispatchCommand(args, usageLocalPerf, localPerfHandlers)
+func Main(args []string) {
+	dispatchCommand(args, usageRoot, rootHandlers)
 }
 
 func dispatchCommand(args []string, usageFunc func(), handlers commandHandlers) {
@@ -189,7 +189,7 @@ func runHTTPLoad(args []string) {
 	if strings.TrimSpace(*logPath) == "" {
 		*logPath = strings.TrimSuffix(*resultFilename, filepath.Ext(*resultFilename)) + ".log"
 	}
-	if err := vllmbench.RunLocalPerfHTTPBench(context.Background(), spec, planned, *logPath); err != nil {
+	if err := vllmbench.RunHTTPBench(context.Background(), spec, planned, *logPath); err != nil {
 		exitOnError(err)
 	}
 	rows, err := vllmbench.ParseResultFile(*resultFilename)
@@ -429,7 +429,7 @@ func httpLoadWorkload(backend, datasetName, requestRate, endpoint, datasetPath, 
 	workload := vllmbench.Workload{
 		Name:          "http-load",
 		Profiles:      []string{"http-load"},
-		LoadGenerator: vllmbench.LoadGeneratorLocalPerfHTTP,
+		LoadGenerator: vllmbench.LoadGeneratorHTTP,
 		BenchmarkTrafficConfig: vllmbench.BenchmarkTrafficConfig{
 			Backend:         backend,
 			DatasetName:     datasetName,
@@ -506,7 +506,7 @@ func usage() {
   localperf-vllm-bench artifact render runs/example.sqlite [--output runs/example.html] [--store]`)
 }
 
-func usageLocalPerf() {
+func usageRoot() {
 	fmt.Fprintln(os.Stderr, `usage:
   localperf bench plan   --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--json]
   localperf bench run    --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--dry-run] [--timeout 2h]

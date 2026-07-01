@@ -18,8 +18,8 @@ import (
 const DefaultHealthPath = "/v1/models"
 
 const (
-	LoadGeneratorVLLMBench     = "vllm_bench"
-	LoadGeneratorLocalPerfHTTP = "localperf_http"
+	LoadGeneratorVLLMBench = "vllm_bench"
+	LoadGeneratorHTTP      = "localperf_http"
 )
 
 type Spec struct {
@@ -498,8 +498,8 @@ func normalizeLoadGenerator(value string) string {
 		return ""
 	case LoadGeneratorVLLMBench, "vllm-bench", "vllmbench":
 		return LoadGeneratorVLLMBench
-	case LoadGeneratorLocalPerfHTTP, "localperf-http", "http", "openai-http":
-		return LoadGeneratorLocalPerfHTTP
+	case LoadGeneratorHTTP, "localperf-http", "http", "openai-http":
+		return LoadGeneratorHTTP
 	default:
 		return value
 	}
@@ -706,7 +706,7 @@ func addWarmupEndpointOnlyProfiles(invalid, endpointOnly map[string]bool, warmup
 
 func addWorkloadEndpointOnlyProfiles(invalid, endpointOnly map[string]bool, workloads []Workload) {
 	for _, workload := range workloads {
-		if normalizeLoadGenerator(workload.LoadGenerator) == LoadGeneratorLocalPerfHTTP {
+		if normalizeLoadGenerator(workload.LoadGenerator) == LoadGeneratorHTTP {
 			continue
 		}
 		for name := range endpointOnly {
@@ -863,7 +863,7 @@ func validateWorkloadPhase(prefix string, workload Workload) []string {
 
 func validateLoadGenerator(prefix, generator string) []string {
 	switch normalizeLoadGenerator(generator) {
-	case "", LoadGeneratorVLLMBench, LoadGeneratorLocalPerfHTTP:
+	case "", LoadGeneratorVLLMBench, LoadGeneratorHTTP:
 		return nil
 	default:
 		return []string{prefix + ": unsupported load_generator " + generator}
@@ -871,7 +871,7 @@ func validateLoadGenerator(prefix, generator string) []string {
 }
 
 func validateLoadGeneratorDataset(prefix string, workload Workload) []string {
-	if normalizeLoadGenerator(workload.LoadGenerator) != LoadGeneratorLocalPerfHTTP {
+	if normalizeLoadGenerator(workload.LoadGenerator) != LoadGeneratorHTTP {
 		return nil
 	}
 	if workload.DatasetName == "random" || hasHTTPDatasetPath(workload) || hasStructuredDataset(workload) {

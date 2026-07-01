@@ -353,7 +353,7 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 func RenderHTMLReport(writer io.Writer, doc SQLiteReportDocument, opts HTMLReportOptions) error {
 	title := strings.TrimSpace(opts.Title)
 	if title == "" {
-		title = bench.FirstNonEmpty(doc.Run.Name, "LocalPerf Report")
+		title = bench.FirstNonEmpty(doc.Run.Name, "localperf report")
 	}
 	view := struct {
 		Title string

@@ -33,7 +33,7 @@ func requestSamplesFromResultData(data []byte) ([]RequestSample, error) {
 		return nil, nil
 	}
 	for _, adapter := range []resultSampleAdapter{
-		localPerfHTTPSampleAdapter,
+		httpSampleAdapter,
 		vllmBenchSampleAdapter,
 	} {
 		samples, handled, err := adapter(raw)
@@ -44,7 +44,7 @@ func requestSamplesFromResultData(data []byte) ([]RequestSample, error) {
 	return nil, nil
 }
 
-func localPerfHTTPSampleAdapter(raw map[string]json.RawMessage) ([]RequestSample, bool, error) {
+func httpSampleAdapter(raw map[string]json.RawMessage) ([]RequestSample, bool, error) {
 	samplesRaw, ok := raw["request_samples"]
 	if !ok {
 		return nil, false, nil

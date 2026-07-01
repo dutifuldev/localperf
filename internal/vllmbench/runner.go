@@ -794,8 +794,8 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 }
 
 func executeLoadCommand(ctx context.Context, spec Spec, planned PlannedRun, command CommandSpec, logPath string) (commandResult, error) {
-	if planned.Workload.LoadGenerator == LoadGeneratorLocalPerfHTTP {
-		return executeLocalPerfHTTPBench(ctx, spec, planned, logPath)
+	if planned.Workload.LoadGenerator == LoadGeneratorHTTP {
+		return executeHTTPBench(ctx, spec, planned, logPath)
 	}
 	return executeCommand(ctx, command, logPath, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second, spec.Safety.MinMemAvailableGiB, time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond)
 }

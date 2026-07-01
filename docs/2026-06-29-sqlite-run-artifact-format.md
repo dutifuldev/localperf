@@ -6,7 +6,7 @@ date: 2026-06-29
 
 # SQLite Run Artifact Format
 
-LocalPerf should write one canonical run artifact:
+localperf should write one canonical run artifact:
 
 ```text
 runs/<run-id>.sqlite
@@ -42,7 +42,7 @@ format_version  1
 
 - The file extension should be `.sqlite`.
 - The database must be readable by standard SQLite tooling.
-- `PRAGMA foreign_keys=ON` must be used by LocalPerf.
+- `PRAGMA foreign_keys=ON` must be used by localperf.
 - `PRAGMA user_version=1` should be set.
 - Timestamps are UTC ISO 8601 strings with `Z`, for example
   `2026-06-29T02:30:55Z`.
@@ -544,7 +544,7 @@ Prompt and response text can leak data. Default behavior:
 - redact environment variables that look like tokens, keys, passwords, or
   credentials.
 
-`workloads.capture_payload_artifacts=1` is required before LocalPerf stores
+`workloads.capture_payload_artifacts=1` is required before localperf stores
 prompt or response payloads in `artifacts`. Request rows may link to those
 payloads through `prompt_artifact_id` and `response_artifact_id`.
 

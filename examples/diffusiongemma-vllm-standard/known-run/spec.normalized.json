@@ -1,7 +1,7 @@
 {
   "version": "1",
   "name": "diffusiongemma-vllm-standard",
-  "description": "Standard LocalPerf vLLM benchmark profile for nvidia/diffusiongemma-26B-A4B-it-NVFP4 on the DGX Spark/GB10-class local machine.",
+  "description": "Standard localperf vLLM benchmark profile for nvidia/diffusiongemma-26B-A4B-it-NVFP4 on the DGX Spark/GB10-class local machine.",
   "model": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
   "output_dir": "runs",
   "env": {

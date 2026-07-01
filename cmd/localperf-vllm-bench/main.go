@@ -7,5 +7,5 @@ import (
 )
 
 func main() {
-	benchcli.Main(os.Args[1:])
+	benchcli.VLLMBenchMain(os.Args[1:])
 }

@@ -82,7 +82,7 @@ type RequestSample struct {
 	ResponseMetadata      map[string]any `json:"response_metadata,omitempty"`
 }
 
-type localPerfHTTPJob struct {
+type httpJob struct {
 	index   int
 	request CanonicalRequest
 }
@@ -136,47 +136,47 @@ type numericStats struct {
 	Max    float64
 }
 
-func executeLocalPerfHTTPBench(ctx context.Context, spec Spec, planned PlannedRun, logPath string) (commandResult, error) {
-	if err := prepareCommandPaths(LocalPerfHTTPCommand(spec, planned), logPath); err != nil {
+func executeHTTPBench(ctx context.Context, spec Spec, planned PlannedRun, logPath string) (commandResult, error) {
+	if err := prepareCommandPaths(HTTPCommand(spec, planned), logPath); err != nil {
 		return commandResult{ExitCode: -1}, err
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second)
 	defer cancel()
-	if err := preflightLocalPerfHTTPMemory(spec, logPath); err != nil {
+	if err := preflightHTTPMemory(spec, logPath); err != nil {
 		return commandResult{ExitCode: 1}, err
 	}
 	memoryMonitor := monitorMemoryFloor(runCtx, cancel, spec.Safety.MinMemAvailableGiB, time.Duration(spec.Safety.PollIntervalMillis)*time.Millisecond)
 	start := time.Now()
-	result, runErr := runLocalPerfHTTPBenchmark(runCtx, planned)
+	result, runErr := runHTTPBenchmark(runCtx, planned)
 	duration := time.Since(start)
-	memoryErr := stopLocalPerfHTTPMemoryMonitor(cancel, memoryMonitor)
-	resultWritten, runErr := persistLocalPerfHTTPResult(planned.ResultFile, logPath, result, duration, runErr, memoryErr)
-	commandResult := commandResult{Duration: duration, ExitCode: localPerfHTTPExitCode(runCtx, runErr, memoryErr, result), ResultWritten: resultWritten}
-	return commandResult, localPerfHTTPRunError(runCtx, spec, runErr, memoryErr, result)
+	memoryErr := stopHTTPMemoryMonitor(cancel, memoryMonitor)
+	resultWritten, runErr := persistHTTPResult(planned.ResultFile, logPath, result, duration, runErr, memoryErr)
+	commandResult := commandResult{Duration: duration, ExitCode: httpExitCode(runCtx, runErr, memoryErr, result), ResultWritten: resultWritten}
+	return commandResult, httpRunError(runCtx, spec, runErr, memoryErr, result)
 }
 
-func preflightLocalPerfHTTPMemory(spec Spec, logPath string) error {
+func preflightHTTPMemory(spec Spec, logPath string) error {
 	if _, err := checkMemoryFloor(spec.Safety.MinMemAvailableGiB); err != nil {
-		_ = writeLocalPerfHTTPLog(logPath, nil, 0, nil, err)
+		_ = writeHTTPLog(logPath, nil, 0, nil, err)
 		return err
 	}
 	return nil
 }
 
-func stopLocalPerfHTTPMemoryMonitor(cancel context.CancelFunc, memoryMonitor <-chan error) error {
+func stopHTTPMemoryMonitor(cancel context.CancelFunc, memoryMonitor <-chan error) error {
 	cancel()
 	return <-memoryMonitor
 }
 
-func persistLocalPerfHTTPResult(resultFile, logPath string, result *HTTPBenchmarkResult, duration time.Duration, runErr, memoryErr error) (bool, error) {
-	resultWritten, runErr := writeLocalPerfHTTPResultFile(resultFile, result, runErr)
-	if err := writeLocalPerfHTTPLog(logPath, result, duration, runErr, memoryErr); err != nil && runErr == nil {
+func persistHTTPResult(resultFile, logPath string, result *HTTPBenchmarkResult, duration time.Duration, runErr, memoryErr error) (bool, error) {
+	resultWritten, runErr := writeHTTPResultFile(resultFile, result, runErr)
+	if err := writeHTTPLog(logPath, result, duration, runErr, memoryErr); err != nil && runErr == nil {
 		return resultWritten, err
 	}
 	return resultWritten, runErr
 }
 
-func writeLocalPerfHTTPResultFile(resultFile string, result *HTTPBenchmarkResult, runErr error) (bool, error) {
+func writeHTTPResultFile(resultFile string, result *HTTPBenchmarkResult, runErr error) (bool, error) {
 	if result == nil {
 		return false, runErr
 	}
@@ -189,7 +189,7 @@ func writeLocalPerfHTTPResultFile(resultFile string, result *HTTPBenchmarkResult
 	return true, runErr
 }
 
-func localPerfHTTPExitCode(runCtx context.Context, runErr, memoryErr error, result *HTTPBenchmarkResult) int {
+func httpExitCode(runCtx context.Context, runErr, memoryErr error, result *HTTPBenchmarkResult) int {
 	if runErr != nil || memoryErr != nil || runCtx.Err() == context.DeadlineExceeded || hasFailedHTTPRequests(result) {
 		return 1
 	}
@@ -200,7 +200,7 @@ func hasFailedHTTPRequests(result *HTTPBenchmarkResult) bool {
 	return result != nil && result.Failed > 0
 }
 
-func localPerfHTTPRunError(runCtx context.Context, spec Spec, runErr, memoryErr error, result *HTTPBenchmarkResult) error {
+func httpRunError(runCtx context.Context, spec Spec, runErr, memoryErr error, result *HTTPBenchmarkResult) error {
 	if runCtx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("localperf_http benchmark timed out after %s", time.Duration(spec.Safety.WorkloadTimeoutSec)*time.Second)
 	}
@@ -216,14 +216,14 @@ func localPerfHTTPRunError(runCtx context.Context, spec Spec, runErr, memoryErr 
 	return nil
 }
 
-func RunLocalPerfHTTPBench(ctx context.Context, spec Spec, planned PlannedRun, logPath string) error {
-	if _, err := executeLocalPerfHTTPBench(ctx, spec, planned, logPath); err != nil {
+func RunHTTPBench(ctx context.Context, spec Spec, planned PlannedRun, logPath string) error {
+	if _, err := executeHTTPBench(ctx, spec, planned, logPath); err != nil {
 		return err
 	}
 	return validateParsedResult(planned.ResultFile, "localperf_http")
 }
 
-func runLocalPerfHTTPBenchmark(ctx context.Context, planned PlannedRun) (*HTTPBenchmarkResult, error) {
+func runHTTPBenchmark(ctx context.Context, planned PlannedRun) (*HTTPBenchmarkResult, error) {
 	requests, err := plannedRunHTTPRequests(ctx, planned)
 	if err != nil {
 		return nil, err
@@ -309,7 +309,7 @@ func scheduleHTTPRequests(ctx context.Context, client openAIHTTPClient, requests
 	if err != nil {
 		return addUndispatchedHTTPSamples(nil, requests, err, time.Now().UTC()), err
 	}
-	jobs := make(chan localPerfHTTPJob)
+	jobs := make(chan httpJob)
 	results := make(chan RequestSample, len(requests))
 	var workers sync.WaitGroup
 	for i := 0; i < concurrency; i++ {
@@ -334,7 +334,7 @@ func scheduleHTTPRequests(ctx context.Context, client openAIHTTPClient, requests
 	return samples, nil
 }
 
-func feedHTTPJobs(ctx context.Context, jobs chan<- localPerfHTTPJob, requests []CanonicalRequest, delay time.Duration) error {
+func feedHTTPJobs(ctx context.Context, jobs chan<- httpJob, requests []CanonicalRequest, delay time.Duration) error {
 	defer close(jobs)
 	for i, request := range requests {
 		if i > 0 && delay > 0 {
@@ -345,7 +345,7 @@ func feedHTTPJobs(ctx context.Context, jobs chan<- localPerfHTTPJob, requests []
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case jobs <- localPerfHTTPJob{index: i, request: request}:
+		case jobs <- httpJob{index: i, request: request}:
 		}
 	}
 	return nil
@@ -734,7 +734,7 @@ func buildHTTPBenchmarkResult(planned PlannedRun, samples []RequestSample, start
 	duration := completed.Sub(started).Seconds()
 	result := &HTTPBenchmarkResult{
 		Date:           completed.Format("20060102-150405"),
-		LoadGenerator:  LoadGeneratorLocalPerfHTTP,
+		LoadGenerator:  LoadGeneratorHTTP,
 		EndpointType:   planned.Workload.Backend,
 		Backend:        planned.Workload.Backend,
 		ModelID:        planned.Profile.Model,
@@ -857,12 +857,12 @@ func percentile(sorted []float64, p float64) float64 {
 	return sorted[lower]*(1-weight) + sorted[upper]*weight
 }
 
-func writeLocalPerfHTTPLog(logPath string, result *HTTPBenchmarkResult, duration time.Duration, runErr, memoryErr error) error {
+func writeHTTPLog(logPath string, result *HTTPBenchmarkResult, duration time.Duration, runErr, memoryErr error) error {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return err
 	}
 	log := map[string]any{
-		"load_generator":   LoadGeneratorLocalPerfHTTP,
+		"load_generator":   LoadGeneratorHTTP,
 		"duration_seconds": duration.Seconds(),
 	}
 	if result != nil {

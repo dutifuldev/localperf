@@ -6,7 +6,7 @@ date: 2026-06-26
 
 # Standard vLLM Benchmarking
 
-LocalPerf now has a reusable vLLM benchmark runner:
+localperf now has a reusable vLLM benchmark runner:
 
 ```sh
 go run ./cmd/localperf-vllm-bench plan \
@@ -73,7 +73,7 @@ token-count synthetic inputs are better than prose because they make token count
 and concurrency exact. For product-like behavior, use a separate realistic chat
 set and do not mix those numbers with raw throughput claims.
 
-LocalPerf exposes the main `vllm bench serve` dataset controls directly in the
+localperf exposes the main `vllm bench serve` dataset controls directly in the
 spec so standard workloads do not depend on opaque `extra_args`. The supported
 first-class fields include:
 
@@ -144,7 +144,7 @@ sleep first on the Spark/GB10 machine because it drops GPU/unified-memory
 pressure much more aggressively than level 1.
 
 With `one_awake_profile=true`, every managed prebooted profile must also set
-`enable_sleep_mode=true`. LocalPerf rejects unsafe specs instead of keeping a
+`enable_sleep_mode=true`. localperf rejects unsafe specs instead of keeping a
 non-sleeping model resident while starting the next profile.
 
 ## OOM Avoidance

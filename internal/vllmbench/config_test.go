@@ -85,7 +85,7 @@ func TestValidateSpecAllowsUnmanagedEndpointOnlyProfile(t *testing.T) {
 		t.Fatalf("ValidateSpec endpoint vllm_bench profile = %v, want endpoint_base_url issue", err)
 	}
 
-	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].LoadGenerator = LoadGeneratorHTTP
 	for _, endpoint := range []string{"api.example.com", "https://api.example.com/v1?x=1", "https://api.example.com/v1#frag"} {
 		spec.Profiles[0].EndpointBaseURL = endpoint
 		if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "endpoint_base_url") {
@@ -123,9 +123,9 @@ func TestValidateSpecAllowsUnmanagedEndpointOnlyProfile(t *testing.T) {
 	}
 }
 
-func TestValidateLocalPerfHTTPRejectsUnsupportedDatasetName(t *testing.T) {
+func TestValidateHTTPRejectsUnsupportedDatasetName(t *testing.T) {
 	spec := testSpec()
-	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].LoadGenerator = LoadGeneratorHTTP
 	spec.Workloads[0].BenchmarkTrafficConfig.DatasetName = "sonnet"
 	spec.Workloads[0].BenchmarkTrafficConfig.RandomInputLen = 0
 	spec.Workloads[0].BenchmarkTrafficConfig.RandomOutputLen = 0
@@ -1027,12 +1027,12 @@ func TestPrepareDatasetsMaterializesShareGPTWorkload(t *testing.T) {
 	}
 }
 
-func TestLocalPerfHTTPCommandUsesPreparedCanonicalDataset(t *testing.T) {
+func TestHTTPCommandUsesPreparedCanonicalDataset(t *testing.T) {
 	dir := t.TempDir()
 	datasetPath := writeShareGPTFixture(t, dir)
 	spec := testSpec()
 	spec.Workloads = []Workload{testShareGPTWorkload(datasetPath, []string{"8k"})}
-	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].LoadGenerator = LoadGeneratorHTTP
 	spec.Workloads[0].ExtraBody = `{"guided_decoding_backend":"outlines"}`
 	ApplyDefaults(&spec)
 	if err := ValidateSpec(spec); err != nil {
@@ -1063,10 +1063,10 @@ func TestLocalPerfHTTPCommandUsesPreparedCanonicalDataset(t *testing.T) {
 	}
 }
 
-func TestLocalPerfHTTPCommandUsesDirectDatasetPath(t *testing.T) {
+func TestHTTPCommandUsesDirectDatasetPath(t *testing.T) {
 	spec := testSpec()
 	spec.Workloads = []Workload{testRandomWorkload("http-custom", []string{"8k"}, 0, 8, 1, []int{1})}
-	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].LoadGenerator = LoadGeneratorHTTP
 	spec.Workloads[0].BenchmarkTrafficConfig.DatasetName = "custom"
 	spec.Workloads[0].BenchmarkTrafficConfig.DatasetPath = "/tmp/direct.canonical.jsonl"
 	spec.Safety.WorkloadTimeoutSec = 7
@@ -1533,10 +1533,10 @@ func TestExecuteFailsWhenBenchmarkReportsRequestFailures(t *testing.T) {
 	}
 }
 
-func TestExecuteLocalPerfHTTPRecordsRequestSamples(t *testing.T) {
+func TestExecuteHTTPRecordsRequestSamples(t *testing.T) {
 	server, host, port := fakeOpenAIServer(t)
 	defer server.Close()
-	spec := localPerfHTTPTestSpec(t, host, port, "localperf-http-request-samples", 3, 2)
+	spec := httpTestSpec(t, host, port, "localperf-http-request-samples", 3, 2)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err != nil {
 		t.Fatalf("Execute error = %v", err)
@@ -1576,10 +1576,10 @@ func TestExecuteLocalPerfHTTPRecordsRequestSamples(t *testing.T) {
 	}
 }
 
-func TestExecuteLocalPerfHTTPPreservesZeroTokenArtifacts(t *testing.T) {
+func TestExecuteHTTPPreservesZeroTokenArtifacts(t *testing.T) {
 	server, host, port := fakeOpenAIServerWithUsage(t, 12, 0, 12)
 	defer server.Close()
-	spec := localPerfHTTPTestSpec(t, host, port, "localperf-http-zero-tokens", 1, 1)
+	spec := httpTestSpec(t, host, port, "localperf-http-zero-tokens", 1, 1)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err != nil {
 		t.Fatalf("Execute error = %v", err)
@@ -1595,10 +1595,10 @@ func TestExecuteLocalPerfHTTPPreservesZeroTokenArtifacts(t *testing.T) {
 	assertZeroTokenArtifactRows(t, db)
 }
 
-func TestExecuteLocalPerfHTTPFailedSamplesRemainReportable(t *testing.T) {
+func TestExecuteHTTPFailedSamplesRemainReportable(t *testing.T) {
 	server, host, port := fakeOpenAIErrorServer(t)
 	defer server.Close()
-	spec := localPerfHTTPTestSpec(t, host, port, "localperf-http-failed-samples", 1, 1)
+	spec := httpTestSpec(t, host, port, "localperf-http-failed-samples", 1, 1)
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err == nil || !strings.Contains(err.Error(), "benchmark run") {
 		t.Fatalf("Execute error = %v, want benchmark run failure", err)
@@ -1856,7 +1856,7 @@ func assertZeroTokenArtifactRows(t *testing.T, db *sql.DB) {
 	}
 }
 
-func localPerfHTTPTestSpec(t *testing.T, host string, port int, name string, numPrompts, concurrency int) Spec {
+func httpTestSpec(t *testing.T, host string, port int, name string, numPrompts, concurrency int) Spec {
 	t.Helper()
 	spec := testSpec()
 	spec.Name = name
@@ -1874,7 +1874,7 @@ func localPerfHTTPTestSpec(t *testing.T, host string, port int, name string, num
 	spec.Profiles[0].Managed = false
 	spec.Profiles[0].EnableSleepMode = false
 	spec.Workloads = []Workload{testRandomWorkload(name, []string{spec.Profiles[0].Name}, 64, 8, numPrompts, []int{concurrency})}
-	spec.Workloads[0].LoadGenerator = LoadGeneratorLocalPerfHTTP
+	spec.Workloads[0].LoadGenerator = LoadGeneratorHTTP
 	ApplyDefaults(&spec)
 	return spec
 }
@@ -1896,7 +1896,7 @@ func fakeOpenAIErrorServer(t *testing.T) (*httptest.Server, string, int) {
 	return server, host, port
 }
 
-func TestLocalPerfHTTPMergesExtraBody(t *testing.T) {
+func TestHTTPMergesExtraBody(t *testing.T) {
 	client := openAIHTTPClient{
 		profile: Profile{Model: "model"},
 		workload: Workload{BenchmarkTrafficConfig: BenchmarkTrafficConfig{
@@ -1928,7 +1928,7 @@ func TestLocalPerfHTTPMergesExtraBody(t *testing.T) {
 	}
 }
 
-func TestLocalPerfHTTPUsesCanonicalRequestMode(t *testing.T) {
+func TestHTTPUsesCanonicalRequestMode(t *testing.T) {
 	client := openAIHTTPClient{
 		profile: Profile{Model: "model"},
 		workload: Workload{BenchmarkTrafficConfig: BenchmarkTrafficConfig{
@@ -1964,7 +1964,7 @@ func TestRequestRateDelayRejectsNonFiniteValues(t *testing.T) {
 	}
 }
 
-func TestExecuteLocalPerfHTTPChecksMemoryBeforeRun(t *testing.T) {
+func TestExecuteHTTPChecksMemoryBeforeRun(t *testing.T) {
 	original := checkMemoryFloor
 	defer func() { checkMemoryFloor = original }()
 	var calls atomic.Int64
@@ -1986,9 +1986,9 @@ func TestExecuteLocalPerfHTTPChecksMemoryBeforeRun(t *testing.T) {
 		ResultFile:  filepath.Join(dir, "result.json"),
 	}
 	logPath := filepath.Join(dir, "result.log")
-	result, err := executeLocalPerfHTTPBench(context.Background(), spec, planned, logPath)
+	result, err := executeHTTPBench(context.Background(), spec, planned, logPath)
 	if err == nil || !IsMemoryFloorError(err) {
-		t.Fatalf("executeLocalPerfHTTPBench error = %v, want memory floor", err)
+		t.Fatalf("executeHTTPBench error = %v, want memory floor", err)
 	}
 	if result.ExitCode != 1 {
 		t.Fatalf("exit code = %d, want 1", result.ExitCode)

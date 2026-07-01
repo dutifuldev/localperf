@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestValidateLocalPerfHTTPResult(t *testing.T) {
+func TestValidateHTTPResult(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "good.json")
 	writeFile(t, good, `{"completed":1,"failed":0,"output_throughput":12.5}`)
@@ -29,7 +29,7 @@ func TestValidateLocalPerfHTTPResult(t *testing.T) {
 		t.Fatal("expected empty result to fail validation")
 	}
 
-	if got := localPerfHTTPExitCode(context.Background(), nil, nil, &HTTPBenchmarkResult{Failed: 1}); got != 1 {
+	if got := httpExitCode(context.Background(), nil, nil, &HTTPBenchmarkResult{Failed: 1}); got != 1 {
 		t.Fatalf("exit code for failed HTTP samples = %d, want 1", got)
 	}
 }
@@ -222,10 +222,10 @@ func TestHTTPResponsePreservesZeroUsageTokens(t *testing.T) {
 }
 
 func TestFeedHTTPJobsAndSleepContext(t *testing.T) {
-	jobs := make(chan localPerfHTTPJob)
-	done := make(chan []localPerfHTTPJob, 1)
+	jobs := make(chan httpJob)
+	done := make(chan []httpJob, 1)
 	go func() {
-		var got []localPerfHTTPJob
+		var got []httpJob
 		for job := range jobs {
 			got = append(got, job)
 		}
@@ -246,7 +246,7 @@ func TestFeedHTTPJobsAndSleepContext(t *testing.T) {
 		t.Fatalf("sleepContext error = %v, want context canceled", err)
 	}
 
-	jobs = make(chan localPerfHTTPJob)
+	jobs = make(chan httpJob)
 	if err := feedHTTPJobs(ctx, jobs, []CanonicalRequest{{ID: "blocked"}}, 0); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled feedHTTPJobs error = %v, want context canceled", err)
 	}

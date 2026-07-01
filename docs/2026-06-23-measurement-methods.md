@@ -6,7 +6,7 @@ date: 2026-06-23
 
 # Measurement Methods
 
-LocalPerf should not collapse local inference resource use into one generic
+localperf should not collapse local inference resource use into one generic
 `memory_usage` number. On unified-memory machines, especially GB10/DGX Spark
 style systems, different tools can report different slices of the same run.
 

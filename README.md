@@ -1,6 +1,6 @@
-# LocalPerf
+# localperf
 
-LocalPerf is a local LLM inference benchmark CLI.
+localperf is a local LLM inference benchmark CLI.
 It runs benchmark plans against local inference servers and stores the evidence
 in one portable run artifact.
 
@@ -90,7 +90,7 @@ sqlite3 runs/<run-id>.sqlite \
 
 ## Memory Safety
 
-Specs include a `safety.min_mem_available_gib` floor. LocalPerf checks
+Specs include a `safety.min_mem_available_gib` floor. localperf checks
 `/proc/meminfo` before major steps and while subprocesses run. If available
 memory drops below the floor, the current step is stopped and skipped/failed
 rows are recorded.
