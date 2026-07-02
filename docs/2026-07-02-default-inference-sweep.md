@@ -33,17 +33,32 @@ Run two benchmark families:
 
 - `max-throughput-reference`: minimum `4k` context, intentionally optimized for
   maximum aggregate token throughput even if the setting is not practically
-  useful.
-- `practical-context-sweep`: context windows `8k`, `16k`, `32k`, `64k`, and
-  `128k`, with concurrency `1`, `4`, `8`, `16`, and `32` where the hardware can
-  safely run them.
+  useful. These are capacity points (`context_semantics: "capacity"`).
+- `practical-context-sweep`: **active** context points `8k`, `16k`, `32k`,
+  `64k`, and `128k`, with concurrency `1`, `4`, `8`, `16`, and `32` where the
+  hardware can safely run them.
 
-The practical sweep should include both workload shapes:
+The ladder points mean active context, not server capacity: a `32k` point must
+actually move ~32k tokens per request through the KV cache. Setting
+`max_model_len=32768` while requesting a ~1k prompt is a capacity experiment,
+not a 32k-context data point; see `2026-07-02-context-semantics.md` for the
+contract and validation rules.
 
-- `prefill`: long prompt, short output, reported as aggregate prefill tok/s and
-  per-user prefill tok/s.
-- `decode`: shorter prompt, longer output, reported as aggregate output tok/s
-  and per-user output tok/s.
+Each active-context point `N` includes both workload shapes, with input
+lengths that track `N`:
+
+- `prefill`: long prompt, short output. Default shape:
+  `input = N - output - headroom`, `output = 256`.
+- `decode`: long prompt, long output within `N`. Default shape:
+  `output = min(4096, N/4)`, `input = N - output - headroom`.
+
+with `headroom = max(64, N/64)` to absorb chat template and tokenizer drift.
+Prefill rows are reported as aggregate and per-user prefill tok/s; decode rows
+as aggregate and per-user output tok/s.
+
+Default sweeps must be generated with `localperf sweep plan` once it lands;
+until then, hand-author specs to these shapes and declare `context_target` and
+`context_semantics` on every workload.
 
 ## Extension Rule
 
@@ -97,7 +112,9 @@ Every row must record:
 
 Report context and concurrency together. The primary comparison table should make
 it easy to answer: "At this context length, how many users can we run, and what
-aggregate and per-user throughput do they get?"
+aggregate and per-user throughput do they get?" Context labels in reports must
+follow `2026-07-02-context-semantics.md`: label rows by declared-and-measured
+active context or by measured token shape, never by `max_model_len` alone.
 
 ## Safety Rules
 
