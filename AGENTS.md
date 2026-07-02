@@ -34,6 +34,12 @@ go run ./cmd/localperf artifact check /tmp/localperf-onecase-dry.sqlite
 Keep benchmark safety behavior conservative. Do not lower memory floors or
 remove guardrails to make a run pass.
 
+When the user asks for a default context/concurrency sweep, follow
+`docs/2026-07-02-default-inference-sweep.md`. Use the documented `4k`
+max-throughput reference plus the practical `8k`, `16k`, `32k`, `64k`, `128k`
+context ladder with concurrency `1`, `4`, `8`, `16`, and `32`, extending by
+powers of two only when the hardware can safely take it.
+
 Keep production Go code under `cmd` and `internal`. Treat `examples`, `docs`,
 and `runs` as fixtures, documentation, or local run data rather than production
 library code.
