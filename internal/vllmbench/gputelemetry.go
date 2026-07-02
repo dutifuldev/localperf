@@ -7,13 +7,15 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-// GPU telemetry sampling during measurement phases. Source preference per
-// docs/2026-06-23-measurement-methods.md: tegrastats on unified-memory
-// systems, then nvidia-smi. Samples are emitted as run events and ingested
-// into the telemetry tables tagged with the measurement; series names follow
+// GPU telemetry sampling during measurement phases. Sources follow
+// docs/2026-06-23-measurement-methods.md (tegrastats and nvidia-smi); all
+// available sources run concurrently since each may cover fields the other
+// cannot. Samples are emitted as run events and ingested into the telemetry
+// tables tagged with the measurement; series names follow
 // docs/2026-06-29-sqlite-run-artifact-format.md.
 const gpuTelemetryInterval = 2 * time.Second
 
@@ -30,9 +32,13 @@ type gpuTelemetrySampler struct {
 
 // startGPUTelemetrySampler samples GPU utilization and memory during one
 // measurement, emitting gpu_telemetry events tagged with the planned run so
-// artifact ingestion can attach them to the measurement. Returns nil when no
-// telemetry source is available; recording nothing is honest, substituting
-// nothing is not.
+// artifact ingestion can attach them to the measurement. All available
+// sources run concurrently because they cover different fields (on
+// GB10-class machines tegrastats reports unified memory but no GR3D line,
+// while nvidia-smi reports utilization but no memory); every series is
+// tagged with its source so readers can judge each signal. Returns nil when
+// no source is available; recording nothing is honest, substituting nothing
+// is not.
 func startGPUTelemetrySampler(ctx context.Context, events *eventWriter, planned PlannedRun) *gpuTelemetrySampler {
 	sampleCtx, cancel := context.WithCancel(ctx)
 	sampler := &gpuTelemetrySampler{cancel: cancel, done: make(chan struct{})}
@@ -47,22 +53,30 @@ func startGPUTelemetrySampler(ctx context.Context, events *eventWriter, planned 
 			Details:     mustJSON(sample),
 		})
 	}
-	switch {
-	case commandAvailable("tegrastats"):
-		go func() {
-			defer close(sampler.done)
-			sampleTegrastats(sampleCtx, emit)
-		}()
-	case commandAvailable("nvidia-smi"):
-		go func() {
-			defer close(sampler.done)
-			pollNvidiaSMI(sampleCtx, emit)
-		}()
-	default:
+	sources := []func(context.Context, func(gpuTelemetrySample)){}
+	if commandAvailable("tegrastats") {
+		sources = append(sources, sampleTegrastats)
+	}
+	if commandAvailable("nvidia-smi") {
+		sources = append(sources, pollNvidiaSMI)
+	}
+	if len(sources) == 0 {
 		cancel()
 		close(sampler.done)
 		return nil
 	}
+	var wait sync.WaitGroup
+	for _, source := range sources {
+		wait.Add(1)
+		go func(run func(context.Context, func(gpuTelemetrySample))) {
+			defer wait.Done()
+			run(sampleCtx, emit)
+		}(source)
+	}
+	go func() {
+		wait.Wait()
+		close(sampler.done)
+	}()
 	return sampler
 }
 

@@ -52,6 +52,10 @@ go:
         - internal/report
         - internal/collections
         - internal/vllmbench
+        - internal/sweepplan
+    - from: internal/sweepplan
+      allow:
+        - internal/vllmbench
     - from: internal/bench
       allow: []
     - from: internal/artifact

@@ -134,7 +134,8 @@ func loadGPUTelemetryStats(db *sql.DB, doc *SQLiteReportDocument) error {
 		JOIN telemetry_series s ON s.id = ts.series_id
 		WHERE ts.measurement_id IS NOT NULL
 		  AND s.metric IN ('gpu_utilization_percent', 'gpu_memory_used_bytes')
-		GROUP BY ts.measurement_id, s.metric, s.source`)
+		GROUP BY ts.measurement_id, s.metric, s.source
+		ORDER BY s.source`)
 	if err != nil {
 		return err
 	}
