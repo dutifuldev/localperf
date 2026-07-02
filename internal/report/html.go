@@ -2,6 +2,7 @@ package report
 
 import (
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dutifuldev/localperf/internal/artifact"
@@ -423,17 +425,24 @@ func RenderHTMLReport(writer io.Writer, doc SQLiteReportDocument, opts HTMLRepor
 		Doc:   doc,
 		Raw:   opts.IncludeRaw,
 	}
-	tmpl, err := template.New("html-report").Funcs(template.FuncMap{
+	return reportTemplates().ExecuteTemplate(writer, "report.gohtml", view)
+}
+
+//go:embed templates
+var reportTemplateFS embed.FS
+
+// reportTemplates parses the embedded report templates once. The HTML and
+// CSS live under templates/ as real files (syntax highlighting, sane diffs)
+// while staying compiled into the binary, so rendered reports remain
+// standalone with no runtime file dependencies.
+var reportTemplates = sync.OnceValue(func() *template.Template {
+	return template.Must(template.New("report").Funcs(template.FuncMap{
 		"statusClass":  reportStatusClass,
 		"contextLabel": contextLabel,
 		"tokps":        tokenThroughputMetric,
 		"seconds":      compactMilliseconds,
-	}).Parse(sqliteHTMLReportTemplate)
-	if err != nil {
-		return err
-	}
-	return tmpl.Execute(writer, view)
-}
+	}).ParseFS(reportTemplateFS, "templates/report.gohtml", "templates/report.css"))
+})
 
 func WriteSQLiteHTMLReport(artifactPath, outputPath string, opts HTMLReportOptions) error {
 	resolvedOutputPath, err := htmlReportOutputPath(artifactPath, outputPath)
@@ -2111,205 +2120,3 @@ func trimTrailingZero(value string) string {
 	}
 	return value + suffix
 }
-
-const sqliteHTMLReportTemplate = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}}</title>
-<style>
-:root{color-scheme:light;--bg:#f7f8fa;--panel:#ffffff;--text:#151922;--muted:#647084;--line:#d9dee8;--bad:#b42318;--warn:#a15c07;--ok:#067647}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:13px/1.35 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-header,main{max-width:1180px;margin:0 auto}
-header{padding:14px 16px 10px;background:var(--panel);border-bottom:1px solid var(--line)}
-main{padding:0 16px 18px}
-h1{font-size:22px;line-height:1.08;margin:0 0 8px}
-h2{font-size:15px;margin:14px 0 8px}
-.meta-strip{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
-.meta-item{display:flex;gap:4px;align-items:baseline;border:1px solid var(--line);border-radius:999px;background:#fbfcfe;padding:4px 8px;max-width:100%}
-.meta-item span{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.02em}
-.meta-item strong{font-size:11px;overflow-wrap:anywhere}
-.section{margin-top:12px}
-.throughput-group{margin-top:14px}
-.group-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:10px 0 6px}
-.group-head h2{margin:0}
-.group-meta{display:flex;flex-wrap:wrap;gap:5px}
-.axis-item{display:inline-flex;gap:4px;align-items:baseline;border:1px solid var(--line);border-radius:999px;background:#fbfcfe;padding:2px 7px}
-.axis-item span{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.02em}
-.axis-item strong{font-size:10px}
-.info-box{border:1px solid var(--line);border-radius:6px;background:#fbfcfe;padding:8px 10px;color:var(--muted);font-size:11px}
-.info-box p{margin:3px 0}
-.info-box strong{color:var(--text)}
-.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
-table{width:100%;border-collapse:collapse;table-layout:fixed;min-width:0}
-th,td{border-bottom:1px solid var(--line);padding:6px 7px;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:anywhere}
-th{font-size:11px;color:var(--muted);background:#f0f3f7;font-weight:650}
-td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.baseline-row td{border-bottom:2px solid #cbd5e1}
-.heat-0{background:#fee2e2;color:#7f1d1d}
-.heat-1{background:#ffedd5;color:#7c2d12}
-.heat-2{background:#fef9c3;color:#713f12}
-.heat-3{background:#ecfccb;color:#365314}
-.heat-4{background:#dcfce7;color:#14532d}
-.heat-5{background:#bbf7d0;color:#14532d}
-.heat-neutral{background:#f8fafc}
-.pill{display:inline-block;border-radius:999px;padding:2px 7px;font-size:11px;border:1px solid var(--line);white-space:nowrap}
-.status-ok{color:var(--ok);background:#ecfdf3;border-color:#abefc6}
-.status-bad{color:var(--bad);background:#fef3f2;border-color:#fecdca}
-.status-warn{color:var(--warn);background:#fffaeb;border-color:#fedf89}
-.status-neutral{color:var(--muted);background:#f8fafc}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.wrap{white-space:normal}
-.privacy{border:1px solid var(--line);background:#fff8e6;border-radius:6px;padding:9px 11px;color:#704b00}
-.artifact-line,.secondary{display:none}
-.phone-table-wrap{display:none}
-@media (max-width:720px){
-  body{font-size:12px;background:#fff}
-  header{padding:12px 14px 8px}
-  main{padding:0 14px 14px}
-  h1{font-size:22px;margin-bottom:8px}
-  h2{font-size:15px;margin:12px 0 8px}
-  .meta-strip{gap:5px}
-  .meta-item{padding:3px 7px}
-  .group-head{display:block;margin-top:10px}
-  .group-meta{margin-top:5px}
-  .axis-item{padding:2px 6px}
-  .info-box{font-size:10px;padding:7px 8px}
-  .desktop-table{display:none}
-  .phone-table-wrap{display:block}
-  .phone-table{font-size:11px}
-  .phone-table th,.phone-table td{padding:5px 3px;line-height:1.15}
-  .phone-table th{font-size:9px;overflow-wrap:normal}
-  .phone-table td:first-child,.phone-table th:first-child{font-weight:700;text-align:right;white-space:normal}
-  .phone-table td.num,.phone-table th.num{white-space:normal}
-  .phone-table th.num{white-space:nowrap}
-}
-@media print{
-  @page{size:A4 landscape;margin:10mm}
-  body{background:#fff;font-size:10px}
-  header,main{max-width:none;margin:0;padding:0}
-  header{border-bottom:1px solid #bbb;margin-bottom:8px}
-  h1{font-size:17px;margin-bottom:8px}
-  h2{font-size:13px;margin:10px 0 6px}
-  .meta-item{padding:2px 6px;border-radius:0}
-  .meta-item span{font-size:8px}
-  .meta-item strong{font-size:9px}
-  .throughput-group{break-inside:avoid;margin-top:8px}
-  .group-head{margin:6px 0 4px}
-  .axis-item{padding:1px 4px;border-radius:0}
-  .info-box{font-size:8px;padding:4px 5px}
-  .table-wrap{overflow:visible;border-radius:0}
-  table{width:100%;min-width:0;table-layout:fixed;font-size:8px}
-  th,td{padding:3px 4px;white-space:normal;overflow-wrap:anywhere}
-  td.num,th.num{white-space:normal}
-  .phone-table-wrap,.secondary{display:none}
-}
-</style>
-</head>
-<body>
-<header>
-<h1>{{.Title}}</h1>
-<div class="meta-strip">
-{{range .Doc.MetadataItems}}<div class="meta-item"><span>{{.Label}}</span><strong>{{.Value}}</strong></div>{{end}}
-</div>
-</header>
-<main>
-<section class="section">
-<h2>Throughput</h2>
-{{range .Doc.ThroughputGroups}}
-<div class="throughput-group">
-<div class="group-head"><h2>{{.Title}}</h2>{{if .AxisItems}}<div class="group-meta">{{range .AxisItems}}<span class="axis-item"><span>{{.Label}}</span><strong>{{.Value}}</strong></span>{{end}}</div>{{end}}</div>
-<div class="table-wrap desktop-table"><table class="essential-table">
-<colgroup><col style="width:6%"><col style="width:10%"><col style="width:9%"><col style="width:10%"><col style="width:10%"><col style="width:10%"><col style="width:9%"><col style="width:10%"><col style="width:10%"><col style="width:16%"></colgroup>
-<thead><tr><th class="num">Users</th><th class="num">Decode tok/s</th><th class="num">Decode/user</th><th class="num">Decode TTFT avg</th><th class="num">Decode TTFT p95</th><th class="num">Prefill tok/s</th><th class="num">Prefill/user</th><th class="num">Prefill TTFT avg</th><th class="num">Prefill TTFT p95</th><th class="num">OK / Err</th>{{if $.Doc.HasSLO}}<th class="num">SLO / goodput</th>{{end}}</tr></thead>
-<tbody>
-{{range .Rows}}
-<tr class="{{if .Baseline}}baseline-row{{end}}"><td class="num">{{.Concurrency}}</td><td class="num {{.DecodeTokSHeat}}">{{tokps .DecodeTokS}}</td><td class="num {{.DecodeUserHeat}}">{{tokps .DecodePerUserTokS}}</td><td class="num {{.DecodeTTFTMeanHeat}}">{{seconds .DecodeTTFTMeanMS}}</td><td class="num {{.DecodeTTFTHeat}}">{{seconds .DecodeTTFTMS}}</td><td class="num {{.PrefillTokSHeat}}">{{tokps .PrefillTokS}}</td><td class="num {{.PrefillUserHeat}}">{{tokps .PrefillPerUserTokS}}</td><td class="num {{.PrefillTTFTMeanHeat}}">{{seconds .PrefillTTFTMeanMS}}</td><td class="num {{.PrefillTTFTHeat}}">{{seconds .PrefillTTFTMS}}</td><td class="num {{.ErrHeat}}">{{.Requests}}</td>{{if $.Doc.HasSLO}}<td class="num">{{.SLO}}</td>{{end}}</tr>
-{{end}}
-</tbody>
-</table></div>
-<div class="table-wrap phone-table-wrap"><table class="phone-table">
-<colgroup><col style="width:9%"><col style="width:11%"><col style="width:10%"><col style="width:17%"><col style="width:12%"><col style="width:10%"><col style="width:17%"><col style="width:14%"></colgroup>
-<thead><tr><th class="num">Users</th><th class="num">Decode</th><th class="num">D/user</th><th class="num">D avg/p95</th><th class="num">Prefill</th><th class="num">P/user</th><th class="num">P avg/p95</th><th class="num">OK/Err</th>{{if $.Doc.HasSLO}}<th class="num">SLO</th>{{end}}</tr></thead>
-<tbody>
-{{range .Rows}}
-<tr class="{{if .Baseline}}baseline-row{{end}}"><td class="num">{{.Concurrency}}</td><td class="num {{.DecodeTokSHeat}}">{{tokps .DecodeTokS}}</td><td class="num {{.DecodeUserHeat}}">{{tokps .DecodePerUserTokS}}</td><td class="num {{.DecodeTTFTHeat}}">{{seconds .DecodeTTFTMeanMS}} / {{seconds .DecodeTTFTMS}}</td><td class="num {{.PrefillTokSHeat}}">{{tokps .PrefillTokS}}</td><td class="num {{.PrefillUserHeat}}">{{tokps .PrefillPerUserTokS}}</td><td class="num {{.PrefillTTFTHeat}}">{{seconds .PrefillTTFTMeanMS}} / {{seconds .PrefillTTFTMS}}</td><td class="num {{.ErrHeat}}">{{.Requests}}</td>{{if $.Doc.HasSLO}}<td class="num">{{.SLO}}</td>{{end}}</tr>
-{{end}}
-</tbody>
-</table></div>
-</div>
-{{end}}
-<div class="info-box">
-{{range .Doc.Legend}}<p><strong>{{.Label}}</strong> = {{.Definition}}</p>
-{{end}}<p>Times are engine milliseconds rendered as compact durations. Missing data renders as "-", never a substitute number.</p>
-</div>
-</section>
-{{range .Doc.PhaseSections}}
-<section class="section secondary">
-<h2>{{.Title}} Detail</h2>
-<div class="table-wrap"><table>
-<thead><tr><th>Profile</th><th>Workload</th><th>Context</th><th class="num">Conc.</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">RPS</th><th class="num">Total tok/s</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">TTFT p50</th><th class="num">TTFT p95</th><th class="num">TTFT p99</th><th class="num">Latency p50</th><th class="num">Latency p95</th><th class="num">Latency p99</th><th class="num">TPOT mean</th><th class="num">ITL tok-wt</th><th class="num">GPU util a/p</th><th class="num">GPU mem peak</th>{{if $.Doc.HasSLO}}<th class="num">% in SLO</th><th class="num">Goodput req/s</th>{{end}}</tr></thead>
-<tbody>
-{{range .Measurements}}
-<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td>{{.ContextLabel}}{{if .ContextMismatch}} <span class="pill status-bad" title="{{.ContextMismatchNote}}">mismatch</span>{{end}}</td><td class="num">{{.Concurrency}}{{if gt .RepeatCount 1}} &times;{{.RepeatCount}}{{end}}{{if .AchievedConcurrency}} <span class="pill status-warn" title="time-weighted mean in-flight requests">{{.AchievedConcurrency}}</span>{{end}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}{{if .FailureBreakdown}} <span title="{{.FailureBreakdown}}">({{.FailureBreakdown}})</span>{{end}}</td><td class="num">{{.RPS}}</td><td class="num">{{.TotalTokS}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.TTFTP50MS}}</td><td class="num">{{.TTFTP95MS}}</td><td class="num">{{.TTFTP99MS}}</td><td class="num">{{.LatencyP50MS}}</td><td class="num">{{.LatencyP95MS}}</td><td class="num">{{.LatencyP99MS}}</td><td class="num">{{.TPOTMeanMS}}</td><td class="num">{{.ITLTokenWeightedMS}}</td><td class="num">{{.GPUUtil}}</td><td class="num">{{.GPUMemPeak}}</td>{{if $.Doc.HasSLO}}<td class="num">{{if .SLOMetPct}}<span title="{{.SLONote}}">{{.SLOMetPct}}</span>{{else}}-{{end}}</td><td class="num">{{if .GoodputRPS}}{{.GoodputRPS}}{{else}}-{{end}}</td>{{end}}</tr>
-{{end}}
-</tbody>
-</table></div>
-</section>
-{{end}}
-{{if .Doc.RepeatDetails}}
-<section class="section secondary">
-<h2>Repeats</h2>
-<details><summary>Per-repeat rows behind aggregated points</summary>
-<div class="table-wrap"><table>
-<thead><tr><th>Profile</th><th>Workload</th><th class="num">Conc.</th><th class="num">Repeat</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">Latency p95</th></tr></thead>
-<tbody>
-{{range .Doc.RepeatDetails}}
-<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td class="num">{{.Concurrency}}</td><td class="num">{{.RepeatIndex}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.LatencyP95MS}}</td></tr>
-{{end}}
-</tbody>
-</table></div>
-</details>
-</section>
-{{end}}
-<section class="section secondary">
-<h2>Run</h2>
-<div class="table-wrap"><table>
-<tbody>
-<tr><th>ID</th><td>{{.Doc.Run.ID}}</td><th>Name</th><td>{{.Doc.Run.Name}}</td></tr>
-<tr><th>Created</th><td>{{.Doc.Run.CreatedAt}}</td><th>Completed</th><td>{{.Doc.Run.CompletedAt}}</td></tr>
-<tr><th>Host</th><td>{{.Doc.Run.Hostname}}</td><th>User</th><td>{{.Doc.Run.Username}}</td></tr>
-<tr><th>CWD</th><td class="mono wrap" colspan="3">{{.Doc.Run.CWD}}</td></tr>
-</tbody>
-</table></div>
-</section>
-<section class="section secondary">
-<h2>Profiles</h2>
-<div class="table-wrap"><table>
-<thead><tr><th>Name</th><th>Model</th><th class="num">Server limit</th><th class="num">Max seqs</th><th class="num">Batched tokens</th><th class="num">GPU memory util.</th><th>KV cache</th><th>Prefix cache</th><th>Managed</th><th>Sleep</th></tr></thead>
-<tbody>{{range .Doc.Profiles}}<tr><td>{{.Name}}</td><td>{{.Model}}</td><td class="num">{{.ContextWindow}}</td><td class="num">{{.MaxNumSeqs}}</td><td class="num">{{.MaxNumBatchedTokens}}</td><td class="num">{{.GPUMemoryUtilizationS}}</td><td>{{.KVCacheDtype}}</td><td>{{.PrefixCaching}}</td><td>{{.Managed}}</td><td>{{.EnableSleepMode}}</td></tr>{{end}}</tbody>
-</table></div>
-</section>
-<section class="section secondary">
-<h2>Events</h2>
-<div class="grid summary">{{range .Doc.EventCounts}}<div class="stat"><span>{{.Name}}</span><strong>{{.Count}}</strong></div>{{end}}</div>
-{{if .Doc.NotableEvents}}<h3>Notable Events</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Level</th><th>Type</th><th>Profile</th><th>Workload</th><th>Message</th></tr></thead><tbody>{{range .Doc.NotableEvents}}<tr><td>{{.Timestamp}}</td><td>{{.Level}}</td><td>{{.Type}}</td><td>{{.Profile}}</td><td>{{.Workload}}</td><td class="wrap">{{.Message}}</td></tr>{{end}}</tbody></table></div>{{end}}
-</section>
-<section class="section secondary">
-<h2>Commands</h2>
-<div class="table-wrap"><table><thead><tr><th>Phase</th><th>Status</th><th>Exit</th><th>Started</th><th>Completed</th><th>Command</th></tr></thead><tbody>{{range .Doc.Commands}}<tr><td>{{.Phase}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td>{{.ExitCode}}</td><td>{{.StartedAt}}</td><td>{{.Completed}}</td><td class="mono wrap">{{.Argv}}</td></tr>{{end}}</tbody></table></div>
-</section>
-<section class="section secondary">
-<h2>Artifact Contents</h2>
-<div class="table-wrap"><table><thead><tr><th>Kind</th><th class="num">Count</th><th class="num">Uncompressed bytes</th></tr></thead><tbody>{{range .Doc.ArtifactSummaries}}<tr><td>{{.Kind}}</td><td class="num">{{.Count}}</td><td class="num">{{.UncompressedSizeBytes}}</td></tr>{{end}}</tbody></table></div>
-</section>
-<section class="section secondary">
-<h2>Privacy</h2>
-<div class="privacy">This standalone report is rendered from normalized SQLite metrics. It does not include raw prompts, generated text, log bodies, or raw artifact contents.</div>
-</section>
-</main>
-</body>
-</html>
-`
