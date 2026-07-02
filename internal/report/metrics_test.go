@@ -214,7 +214,8 @@ func TestMultiRunReportAggregatesAcrossRuns(t *testing.T) {
 		`INSERT INTO specs (run_id, kind, format, content, sha256, created_at)
 			VALUES ('run-2', 'normalized', 'json', '{}', '` + artifact.SHA256Hex([]byte("{}")) + `', '2026-01-02T00:00:00Z')`,
 		`INSERT INTO engines (id, run_id, name, type, managed, command, version, env_json, metadata_json)
-			VALUES ('run-2/vllm', 'run-2', 'vllm', 'vllm', 1, 'vllm', 'test', '{}', '{}')`,
+			VALUES ('run-2/vllm', 'run-2', 'vllm', 'vllm', 1, 'vllm', 'test', '{}',
+			'{"identity":{"8k":{"models":{"data":[{"id":"served/other-model"}]}}}}')`,
 		`INSERT INTO profiles (id, run_id, engine_id, name, model, port, managed, context_window, serve_json)
 			VALUES ('run-2/8k', 'run-2', 'run-2/vllm', '8k', 'nvidia/diffusiongemma-26B-A4B-it-NVFP4', 8108, 1, 8192, '{}')`,
 		`INSERT INTO workloads (id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats, save_detailed, capture_payload_artifacts)
@@ -257,6 +258,11 @@ func TestMultiRunReportAggregatesAcrossRuns(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("HTML report missing %q", want)
 		}
+	}
+	// Namespaced engine ids must not break the declared-vs-served check:
+	// run-2's probe reports a different model for profile 8k.
+	if !strings.Contains(out.String(), "Model mismatch") || !strings.Contains(out.String(), "served/other-model") {
+		t.Fatal("HTML report missing model mismatch for namespaced engine identity")
 	}
 }
 

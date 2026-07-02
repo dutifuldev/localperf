@@ -74,6 +74,7 @@ type SQLiteReportRun struct {
 }
 
 type SQLiteReportEngine struct {
+	ID              string
 	Name            string
 	Type            string
 	Managed         bool
@@ -637,7 +638,7 @@ func hardwareSummary(hostJSON string) string {
 
 func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
-		name, type, managed, COALESCE(command, ''), COALESCE(version, ''),
+		id, name, type, managed, COALESCE(command, ''), COALESCE(version, ''),
 		COALESCE(git_commit, ''), COALESCE(endpoint_base_url, ''),
 		COALESCE(metadata_json, '')
 		FROM engines ORDER BY name`)
@@ -650,7 +651,7 @@ func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 		var managed int
 		var metadataJSON string
 		if err := rows.Scan(
-			&engine.Name, &engine.Type, &managed, &engine.Command, &engine.Version,
+			&engine.ID, &engine.Name, &engine.Type, &managed, &engine.Command, &engine.Version,
 			&engine.GitCommit, &engine.EndpointBaseURL, &metadataJSON,
 		); err != nil {
 			return err
@@ -1304,7 +1305,9 @@ func servedModelMismatchItems(doc SQLiteReportDocument) []SQLiteReportMetadataIt
 	servedByEngine := map[string]map[string][]string{}
 	for _, engine := range doc.Engines {
 		if len(engine.ServedModelsByProfile) > 0 {
-			servedByEngine[engine.Name] = engine.ServedModelsByProfile
+			// Keyed by engine id: profiles.engine_id stores the id in both
+			// old (bare name) and namespaced artifacts.
+			servedByEngine[engine.ID] = engine.ServedModelsByProfile
 		}
 	}
 	if len(servedByEngine) == 0 {
