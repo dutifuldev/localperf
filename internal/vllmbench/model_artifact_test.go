@@ -124,6 +124,40 @@ func TestModelLevelArtifactRejectsBasenameCollisions(t *testing.T) {
 	assertRunCount(t, artifactPath, 1)
 }
 
+func TestModelLevelArtifactReplacesLegacyRunsWithoutRunDirLabel(t *testing.T) {
+	dir := t.TempDir()
+	artifactPath := filepath.Join(dir, "model.sqlite")
+	runDry := func() error {
+		spec := testSpec()
+		spec.OutputDir = dir
+		_, err := Execute(context.Background(), spec, RunOptions{
+			DryRun:       true,
+			RunDir:       filepath.Join(dir, "run"),
+			ArtifactPath: artifactPath,
+		})
+		return err
+	}
+	if err := runDry(); err != nil {
+		t.Fatal(err)
+	}
+	// Runs written before the run_dir label carry no provenance; re-running
+	// the same id must keep the old overwrite behavior, not refuse.
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE run SET labels_json = '{}'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runDry(); err != nil {
+		t.Fatalf("re-run over legacy run failed: %v", err)
+	}
+	assertRunCount(t, artifactPath, 1)
+}
+
 func TestMergeRejectsRunIDCollisions(t *testing.T) {
 	dir := t.TempDir()
 	makeSingle := func(parent string) string {

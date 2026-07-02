@@ -127,7 +127,7 @@ func replaceExistingRun(tx *sql.Tx, runID, runDir string) error {
 	if err != nil {
 		return err
 	}
-	if !existingDir.Valid || existingDir.String != absolutePathOrSelf(runDir) {
+	if existingDir.Valid && existingDir.String != "" && existingDir.String != absolutePathOrSelf(runDir) {
 		return fmt.Errorf("run id %q already exists in this artifact from a different run directory (%s); rename the run directory or merge into a fresh artifact", runID, existingDir.String)
 	}
 	_, err = tx.Exec(`DELETE FROM run WHERE id = ?`, runID)
@@ -244,11 +244,6 @@ func insertTelemetryAndReports(tx *sql.Tx, runID string, events []Event, phaseID
 		return err
 	}
 	return insertReports(tx, runID, artifactIDs, now)
-}
-
-func insertMetadata(tx *sql.Tx, key, value string) error {
-	_, err := tx.Exec("INSERT INTO metadata (key, value) VALUES (?, ?)", key, value)
-	return err
 }
 
 func insertSpec(tx *sql.Tx, runID, kind string, data []byte, createdAt time.Time) error {
