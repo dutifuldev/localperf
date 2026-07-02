@@ -629,7 +629,8 @@ func usageRoot() {
   localperf bench http-load --base-url http://127.0.0.1:8000 --model model --dataset-name random --random-input-len 1024 --random-output-len 128 --num-prompts 8 --max-concurrency 4 --result-filename result.json [--dataset-path canonical.jsonl] [--extra-body '{"guided_decoding_backend":"outlines"}']
   localperf bench report --run-dir runs/example [--output runs/example/report.md] [--json]
   localperf artifact check runs/example.sqlite
-  localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]`)
+  localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]
+  localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k,128k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--out spec.json]`)
 }
 
 func addOverrideFlags(flags *flag.FlagSet) *overrideFlags {
