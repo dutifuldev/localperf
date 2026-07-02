@@ -3,6 +3,7 @@ package artifact
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -21,20 +22,39 @@ type MergeSummary struct {
 // ids are offset, so single-run and model-level sources both merge cleanly.
 func Merge(dstPath string, srcPaths []string) (MergeSummary, error) {
 	summary := MergeSummary{}
+	// Validate every source before touching the destination, so a bad
+	// source cannot leave behind a freshly created empty artifact.
+	for _, srcPath := range srcPaths {
+		if err := Check(srcPath); err != nil {
+			return summary, fmt.Errorf("merge source %s: %w", srcPath, err)
+		}
+	}
+	_, statErr := os.Stat(dstPath)
+	createdFresh := statErr != nil
 	db, err := CreateOrAppend(dstPath, Schema)
 	if err != nil {
 		return summary, err
 	}
 	defer db.Close()
+	cleanupOnError := func(mergeErr error) error {
+		if createdFresh {
+			_ = db.Close()
+			_ = os.Remove(dstPath)
+		}
+		return mergeErr
+	}
 	if err := ensureFormatMetadata(db); err != nil {
-		return summary, err
+		return summary, cleanupOnError(err)
 	}
 	for _, srcPath := range srcPaths {
 		if err := mergeSource(db, srcPath, &summary); err != nil {
-			return summary, fmt.Errorf("merge %s: %w", srcPath, err)
+			return summary, cleanupOnError(fmt.Errorf("merge %s: %w", srcPath, err))
 		}
 	}
-	return summary, Check(dstPath)
+	if err := Check(dstPath); err != nil {
+		return summary, cleanupOnError(err)
+	}
+	return summary, nil
 }
 
 // ensureFormatMetadata seeds the format header on a freshly created merge
@@ -53,9 +73,6 @@ func ensureFormatMetadata(db *sql.DB) error {
 }
 
 func mergeSource(db *sql.DB, srcPath string, summary *MergeSummary) error {
-	if err := Check(srcPath); err != nil {
-		return err
-	}
 	if _, err := db.Exec(`ATTACH DATABASE ? AS src`, srcPath); err != nil {
 		return err
 	}

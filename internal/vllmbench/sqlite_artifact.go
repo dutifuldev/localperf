@@ -54,12 +54,10 @@ func writeSQLiteRun(tx *sql.Tx, runDir string, spec Spec, summary RunSummary, pl
 	if err := insertRunMetadata(tx, now); err != nil {
 		return err
 	}
-	// Re-running the same run directory replaces the previous attempt;
-	// cascades wipe all child rows.
-	if _, err := tx.Exec(`DELETE FROM run WHERE id = ?`, runID); err != nil {
+	if err := replaceExistingRun(tx, runID, runDir); err != nil {
 		return err
 	}
-	if err := insertRunRow(tx, runID, spec, summary); err != nil {
+	if err := insertRunRow(tx, runID, runDir, spec, summary); err != nil {
 		return err
 	}
 	if err := insertRunSpecs(tx, runID, runDir, spec, originalSpecPath, now); err != nil {
@@ -106,17 +104,46 @@ func insertRunMetadata(tx *sql.Tx, now time.Time) error {
 	return nil
 }
 
-func insertRunRow(tx *sql.Tx, runID string, spec Spec, summary RunSummary) error {
+// replaceExistingRun deletes a previous attempt of the same run directory
+// (cascades wipe all child rows) so retries do not duplicate. Run ids are
+// run-directory basenames, so a same-id run recorded from a *different*
+// directory is a collision, not a retry; deleting it would silently destroy
+// unrelated results.
+func replaceExistingRun(tx *sql.Tx, runID, runDir string) error {
+	var existingDir sql.NullString
+	err := tx.QueryRow(`SELECT json_extract(labels_json, '$.run_dir') FROM run WHERE id = ?`, runID).Scan(&existingDir)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !existingDir.Valid || existingDir.String != absolutePathOrSelf(runDir) {
+		return fmt.Errorf("run id %q already exists in this artifact from a different run directory (%s); rename the run directory or merge into a fresh artifact", runID, existingDir.String)
+	}
+	_, err = tx.Exec(`DELETE FROM run WHERE id = ?`, runID)
+	return err
+}
+
+func absolutePathOrSelf(path string) string {
+	if absolute, err := filepath.Abs(path); err == nil {
+		return absolute
+	}
+	return path
+}
+
+func insertRunRow(tx *sql.Tx, runID, runDir string, spec Spec, summary RunSummary) error {
 	hostname, _ := os.Hostname()
 	username := currentUsername()
 	cwd, _ := os.Getwd()
 	_, err := tx.Exec(`INSERT INTO run (
 		id, name, description, status, created_at, started_at, completed_at,
-		hostname, username, cwd, command_line_json, host_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		hostname, username, cwd, command_line_json, host_json, labels_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		runID, spec.Name, spec.Description, runStatus(summary), summary.StartedAt.Format(time.RFC3339),
 		timeOrNull(summary.StartedAt), timeOrNull(summary.FinishedAt), hostname, username, cwd,
-		mustJSONString(os.Args), mustJSONString(CollectHostInfo(context.Background())))
+		mustJSONString(os.Args), mustJSONString(CollectHostInfo(context.Background())),
+		mustJSONString(map[string]string{"run_dir": absolutePathOrSelf(runDir)}))
 	return err
 }
 

@@ -3,7 +3,9 @@ package vllmbench
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dutifuldev/localperf/internal/artifact"
@@ -94,6 +96,42 @@ func TestArtifactMergeCombinesRunsAndSkipsDuplicates(t *testing.T) {
 	}
 	if measurements != 4 || profiles != 2 {
 		t.Fatalf("merged measurements/profiles = %d/%d, want 4 measurements and 2 namespaced profiles", measurements, profiles)
+	}
+}
+
+func TestModelLevelArtifactRejectsBasenameCollisions(t *testing.T) {
+	dir := t.TempDir()
+	artifactPath := filepath.Join(dir, "model.sqlite")
+	runDry := func(parent string) error {
+		spec := testSpec()
+		spec.OutputDir = dir
+		_, err := Execute(context.Background(), spec, RunOptions{
+			DryRun:       true,
+			RunDir:       filepath.Join(dir, parent, "run"),
+			ArtifactPath: artifactPath,
+		})
+		return err
+	}
+	if err := runDry("a"); err != nil {
+		t.Fatal(err)
+	}
+	// Same basename "run" from a different parent directory is a collision,
+	// not a retry; replacing it would silently destroy unrelated results.
+	err := runDry("b")
+	if err == nil || !strings.Contains(err.Error(), "different run directory") {
+		t.Fatalf("Execute error = %v, want run-id collision refusal", err)
+	}
+	assertRunCount(t, artifactPath, 1)
+}
+
+func TestMergeDoesNotLeaveEmptyDestinationOnBadSource(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "model.sqlite")
+	if _, err := artifact.Merge(dst, []string{filepath.Join(dir, "missing.sqlite")}); err == nil {
+		t.Fatal("merge with missing source succeeded")
+	}
+	if _, err := os.Stat(dst); err == nil {
+		t.Fatal("failed merge left a destination artifact behind")
 	}
 }
 
