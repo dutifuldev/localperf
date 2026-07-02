@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,9 +78,10 @@ type SQLiteReportEngine struct {
 	Version         string
 	GitCommit       string
 	EndpointBaseURL string
-	// ServedModelByProfile is the self-reported model per probed profile,
-	// from the engine identity stored under metadata_json.identity.
-	ServedModelByProfile map[string]string
+	// ServedModelsByProfile lists every model the server reported per
+	// probed profile, from the engine identity stored under
+	// metadata_json.identity. Multi-model servers report all of them.
+	ServedModelsByProfile map[string][]string
 }
 
 type SQLiteReportProfile struct {
@@ -618,13 +620,13 @@ func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 			return err
 		}
 		engine.Managed = managed != 0
-		engine.ServedModelByProfile = servedModelsByProfile(metadataJSON)
+		engine.ServedModelsByProfile = servedModelsByProfile(metadataJSON)
 		doc.Engines = append(doc.Engines, engine)
 	}
 	return rows.Err()
 }
 
-func servedModelsByProfile(metadataJSON string) map[string]string {
+func servedModelsByProfile(metadataJSON string) map[string][]string {
 	var metadata struct {
 		Identity map[string]struct {
 			Models struct {
@@ -637,10 +639,12 @@ func servedModelsByProfile(metadataJSON string) map[string]string {
 	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
 		return nil
 	}
-	served := map[string]string{}
+	served := map[string][]string{}
 	for profile, identity := range metadata.Identity {
-		if len(identity.Models.Data) > 0 && identity.Models.Data[0].ID != "" {
-			served[profile] = identity.Models.Data[0].ID
+		for _, model := range identity.Models.Data {
+			if model.ID != "" {
+				served[profile] = append(served[profile], model.ID)
+			}
 		}
 	}
 	return served
@@ -1260,10 +1264,10 @@ func sqliteReportMetadataItems(doc SQLiteReportDocument) []SQLiteReportMetadataI
 // disagreements from the engine identity probe. Declared, checked, then
 // shown: a silent mismatch is how a benchmark reports the wrong model.
 func servedModelMismatchItems(doc SQLiteReportDocument) []SQLiteReportMetadataItem {
-	servedByEngine := map[string]map[string]string{}
+	servedByEngine := map[string]map[string][]string{}
 	for _, engine := range doc.Engines {
-		if len(engine.ServedModelByProfile) > 0 {
-			servedByEngine[engine.Name] = engine.ServedModelByProfile
+		if len(engine.ServedModelsByProfile) > 0 {
+			servedByEngine[engine.Name] = engine.ServedModelsByProfile
 		}
 	}
 	if len(servedByEngine) == 0 {
@@ -1272,17 +1276,21 @@ func servedModelMismatchItems(doc SQLiteReportDocument) []SQLiteReportMetadataIt
 	var items []SQLiteReportMetadataItem
 	seen := map[string]bool{}
 	for _, profile := range doc.Profiles {
-		// Compare each profile only against the model its own probe
-		// reported; cross-profile or cross-engine comparisons would
-		// fabricate mismatches on valid multi-model runs.
-		servedModel := servedByEngine[profile.Engine][profile.Name]
-		if profile.Model == "" || servedModel == "" || servedModel == profile.Model || seen[profile.Model+servedModel] {
+		// Compare each profile only against its own probe result, and only
+		// warn when the declared model is absent from everything the server
+		// reported; multi-model servers may list it anywhere.
+		servedModels := servedByEngine[profile.Engine][profile.Name]
+		if profile.Model == "" || len(servedModels) == 0 || slices.Contains(servedModels, profile.Model) {
 			continue
 		}
-		seen[profile.Model+servedModel] = true
+		served := strings.Join(servedModels, ", ")
+		if seen[profile.Model+served] {
+			continue
+		}
+		seen[profile.Model+served] = true
 		items = append(items, SQLiteReportMetadataItem{
 			Label: "Model mismatch",
-			Value: fmt.Sprintf("spec declares %s, server reports %s", profile.Model, servedModel),
+			Value: fmt.Sprintf("spec declares %s, server reports %s", profile.Model, served),
 		})
 	}
 	return items

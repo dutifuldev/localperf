@@ -525,6 +525,14 @@ func combineRepeats(members []SQLiteReportMeasurement) SQLiteReportMeasurement {
 	for _, field := range fields {
 		field.set(&combined, meanSpreadDisplay(members, field.get))
 	}
+	// Re-derive the context label from the combined token totals: the
+	// aggregate must not inherit repeat 0's verification when other repeats
+	// failed or measured outside the band.
+	combined.ContextVerified = false
+	combined.ContextMismatch = false
+	combined.ContextMismatchNote = ""
+	combined.ActiveRange = ""
+	applyContextLabel(&combined)
 	return combined
 }
 
