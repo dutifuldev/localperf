@@ -54,10 +54,10 @@ func startGPUTelemetrySampler(ctx context.Context, events *eventWriter, planned 
 		})
 	}
 	sources := []func(context.Context, func(gpuTelemetrySample)){}
-	if commandAvailable("tegrastats") {
+	if _, err := exec.LookPath("tegrastats"); err == nil {
 		sources = append(sources, sampleTegrastats)
 	}
-	if commandAvailable("nvidia-smi") {
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
 		sources = append(sources, pollNvidiaSMI)
 	}
 	if len(sources) == 0 {
@@ -86,11 +86,6 @@ func (sampler *gpuTelemetrySampler) Stop() {
 	}
 	sampler.cancel()
 	<-sampler.done
-}
-
-func commandAvailable(name string) bool {
-	_, err := exec.LookPath(name)
-	return err == nil
 }
 
 var (
