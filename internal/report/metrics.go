@@ -200,11 +200,12 @@ func loadTokenWeightedITL(db *sql.DB, doc *SQLiteReportDocument) error {
 
 // loadAchievedConcurrency derives the time-weighted mean number of in-flight
 // requests: the integral of in-flight count over the measurement span equals
-// the sum of request durations, so achieved = sum(durations) / span.
+// the sum of request durations, so achieved = sum(durations) / span. Failed
+// requests occupied a slot while running, so every timed request counts.
 func loadAchievedConcurrency(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT measurement_id, started_at, completed_at
 		FROM requests
-		WHERE status = 'completed' AND started_at IS NOT NULL AND completed_at IS NOT NULL`)
+		WHERE started_at IS NOT NULL AND completed_at IS NOT NULL`)
 	if err != nil {
 		return err
 	}
@@ -533,6 +534,25 @@ func combineRepeats(members []SQLiteReportMeasurement) SQLiteReportMeasurement {
 	combined.ContextMismatchNote = ""
 	combined.ActiveRange = ""
 	applyContextLabel(&combined)
+	// Averaged totals can land back inside the band even when a repeat
+	// contradicted the claim; a verified aggregate requires every repeat to
+	// verify on its own.
+	if combined.ContextVerified {
+		unverified := 0
+		for _, member := range members {
+			if !member.ContextVerified {
+				unverified++
+			}
+		}
+		if unverified > 0 {
+			combined.ContextVerified = false
+			combined.ContextMismatch = true
+			combined.ContextLabel = measuredShapeLabel(combined)
+			combined.ContextMismatchNote = fmt.Sprintf(
+				"declared %s active, but %d of %d repeats did not verify",
+				contextLabel(combined.ContextTarget), unverified, len(members))
+		}
+	}
 	return combined
 }
 
