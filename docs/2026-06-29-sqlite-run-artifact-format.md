@@ -546,12 +546,15 @@ or the format version; absent values simply render as unavailable.
   external engines are verified rather than trusted.
 - `profiles.serve_json`: includes `enable_prefix_caching` when known, since
   prefix caching changes how prefill numbers must be read.
-- `workloads.metadata_json`: may carry an optional `slo` object (for example
+- `workloads.metadata_json`: the single home for declared workload claims,
+  keyed by claim type. `context`
+  (`{"target": 32768, "semantics": "active"}`) per
+  `2026-07-02-context-semantics.md`, and optionally `slo` (for example
   `{"ttft_p95_ms": 500, "e2el_p95_ms": 30000}`) used to derive goodput at
   report time.
-- Context semantics fields on workloads (`context_target`,
-  `context_semantics`) live in the normalized spec and workload JSON per
-  `2026-07-02-context-semantics.md`.
+- `workloads.traffic_json` stays strictly the engine input
+  (`BenchmarkTrafficConfig`). Declared claims never ride in it, and warmup
+  traffic carries no claims.
 
 ## Artifact Kinds
 

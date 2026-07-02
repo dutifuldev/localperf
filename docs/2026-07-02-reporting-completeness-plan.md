@@ -85,17 +85,34 @@ themselves). Rules:
 These are hard errors from `ValidateSpec`, so invalid specs die before any
 server starts.
 
-The fields flow into the artifact automatically: `insertWorkloads` in
-`internal/vllmbench/sqlite_artifact.go` serializes the embedded traffic
-config into `workloads.traffic_json`, and the normalized spec row keeps the
-full workload JSON. No schema change.
+Artifact storage — a deliberate decision, because the obvious paths are
+both wrong:
+
+- The fields must NOT live on `BenchmarkTrafficConfig`: `traffic_json` is
+  serialized from that embedded struct
+  (`internal/vllmbench/sqlite_artifact.go`, `insertWorkloads`) and means
+  "what was sent to the engine"; claims are not engine input. Worse,
+  `WarmupConfig` embeds the same struct, and warmup must never carry a
+  context claim.
+- They therefore stay on `Workload` and are stored in
+  `workloads.metadata_json`, which exists in the schema but is not yet in
+  the `insertWorkloads` INSERT. Phase 1 adds the column to that INSERT,
+  writing declared claims keyed by type:
+
+```json
+{"context": {"target": 32768, "semantics": "active"}}
+```
+
+  Writing an existing column is not a schema change. `metadata_json` is
+  the single home for declared workload claims; phase 4's `slo` block
+  joins it under its own key.
 
 ### Report labeling (`internal/report/html.go`)
 
 Load two new inputs per measurement:
 
-- declared claim: parse `context_target`/`context_semantics` out of
-  `workloads.traffic_json` in the existing workload query.
+- declared claim: read the `context` object from `workloads.metadata_json`
+  in the existing workload query.
 - measured active context, detailed path:
 
 ```sql
@@ -350,8 +367,10 @@ type SLOConfig struct {
 SLO *SLOConfig `json:"slo,omitempty"`
 ```
 
-Serialized into `workloads.metadata_json` by `insertWorkloads`; no schema
-change. Validation: values must be positive when set.
+Serialized into `workloads.metadata_json` by `insertWorkloads` under the
+`slo` key, joining the `context` claim under the declared-claims
+convention established in phase 1; no schema change. Validation: values
+must be positive when set.
 
 Render-time derivation, detailed path only:
 
