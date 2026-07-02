@@ -185,6 +185,11 @@ func TestSLOGoodputDerivation(t *testing.T) {
 	if !strings.Contains(out.String(), "% in SLO") || !strings.Contains(out.String(), "Goodput req/s") {
 		t.Fatal("HTML report missing SLO columns when an SLO is declared")
 	}
+	// Goodput must be visible in the headline table, not only the hidden
+	// detail sections.
+	if !strings.Contains(out.String(), "SLO / goodput") || !strings.Contains(out.String(), "50% / 1.000") {
+		t.Fatal("HTML report missing visible SLO/goodput in the throughput table")
+	}
 }
 
 func insertDerivedRequest(t *testing.T, db *sql.DB, measurementID int64, index int, status, startedAt, completedAt string, itlMeanMS float64, completionTokens int, errorType string) {

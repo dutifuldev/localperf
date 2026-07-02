@@ -529,6 +529,9 @@ func combineRepeats(members []SQLiteReportMeasurement) SQLiteReportMeasurement {
 	combined.InputTokSSpread = meanSpreadDisplay(members, func(m SQLiteReportMeasurement) string {
 		return inputThroughput(m)
 	})
+	combined.InputPerUserSpread = meanSpreadDisplay(members, func(m SQLiteReportMeasurement) string {
+		return perUserMetric(inputThroughput(m), m.Concurrency)
+	})
 	// Re-derive the context label from the combined token totals: the
 	// aggregate must not inherit repeat 0's verification when other repeats
 	// failed or measured outside the band.

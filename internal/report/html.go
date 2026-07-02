@@ -150,6 +150,7 @@ type SQLiteReportMeasurement struct {
 	PerUserOutputTokS     string
 	TotalTokS             string
 	InputTokSSpread       string
+	InputPerUserSpread    string
 	RPS                   string
 	LatencyMeanMS         string
 	LatencyP50MS          string
@@ -211,6 +212,7 @@ type SQLiteReportThroughputRow struct {
 	TTFTMeanMS        string
 	TTFTP95MS         string
 	LatencyP95MS      string
+	SLODisplay        string
 	CompletedRequests int
 	FailedRequests    int
 	Status            string
@@ -257,6 +259,7 @@ type SQLiteReportThroughputComparisonRow struct {
 	OK                  int
 	Err                 int
 	Requests            string
+	SLO                 string
 	DecodeTokSHeat      string
 	DecodeUserHeat      string
 	DecodeTTFTMeanHeat  string
@@ -1318,6 +1321,9 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 			inputTokS = measurement.InputTokSSpread
 		}
 		throughputTokS, perUserTokS := phaseThroughputMetrics(mode, inputTokS, measurement)
+		if mode == "prefill" && measurement.InputPerUserSpread != "" {
+			perUserTokS = measurement.InputPerUserSpread
+		}
 		rows = append(rows, SQLiteReportThroughputRow{
 			Phase:             bench.PhaseTitle(bench.NormalizeReportPhase(measurement.Phase)),
 			Mode:              mode,
@@ -1340,6 +1346,7 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 			TTFTMeanMS:        measurement.TTFTMeanMS,
 			TTFTP95MS:         measurement.TTFTP95MS,
 			LatencyP95MS:      measurement.LatencyP95MS,
+			SLODisplay:        sloRowDisplay(measurement),
 			CompletedRequests: measurement.CompletedRequests,
 			FailedRequests:    measurement.FailedRequests,
 			Status:            measurement.Status,
@@ -1357,6 +1364,16 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 		return rows[i].Concurrency < rows[j].Concurrency
 	})
 	return rows
+}
+
+// sloRowDisplay renders "% in SLO / goodput req/s" for rows whose workload
+// declared an SLO; goodput must stay visible in the headline table, not only
+// in hidden detail sections.
+func sloRowDisplay(measurement SQLiteReportMeasurement) string {
+	if measurement.SLONote == "" {
+		return ""
+	}
+	return measurement.SLOMetPct + " / " + measurement.GoodputRPS
 }
 
 // throughputRowShape renders the measured token shape, extended with the
@@ -1534,6 +1551,12 @@ func applyThroughputComparisonSource(target *SQLiteReportThroughputComparisonRow
 	target.OK = target.DecodeOK + target.PrefillOK
 	target.Err = target.DecodeErr + target.PrefillErr
 	target.Requests = fmt.Sprintf("%d / %d", target.OK, target.Err)
+	if source.SLODisplay != "" {
+		target.SLO = source.SLODisplay
+	}
+	if target.SLO == "" {
+		target.SLO = "-"
+	}
 }
 
 func throughputAxisVisibilityForRows(rows []SQLiteReportThroughputRow) throughputAxisVisibility {
@@ -2185,10 +2208,10 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 <div class="group-head"><h2>{{.Title}}</h2>{{if .AxisItems}}<div class="group-meta">{{range .AxisItems}}<span class="axis-item"><span>{{.Label}}</span><strong>{{.Value}}</strong></span>{{end}}</div>{{end}}</div>
 <div class="table-wrap desktop-table"><table class="essential-table">
 <colgroup><col style="width:6%"><col style="width:10%"><col style="width:9%"><col style="width:10%"><col style="width:10%"><col style="width:10%"><col style="width:9%"><col style="width:10%"><col style="width:10%"><col style="width:16%"></colgroup>
-<thead><tr><th class="num">Users</th><th class="num">Decode tok/s</th><th class="num">Decode/user</th><th class="num">Decode TTFT avg</th><th class="num">Decode TTFT p95</th><th class="num">Prefill tok/s</th><th class="num">Prefill/user</th><th class="num">Prefill TTFT avg</th><th class="num">Prefill TTFT p95</th><th class="num">OK / Err</th></tr></thead>
+<thead><tr><th class="num">Users</th><th class="num">Decode tok/s</th><th class="num">Decode/user</th><th class="num">Decode TTFT avg</th><th class="num">Decode TTFT p95</th><th class="num">Prefill tok/s</th><th class="num">Prefill/user</th><th class="num">Prefill TTFT avg</th><th class="num">Prefill TTFT p95</th><th class="num">OK / Err</th>{{if $.Doc.HasSLO}}<th class="num">SLO / goodput</th>{{end}}</tr></thead>
 <tbody>
 {{range .Rows}}
-<tr class="{{if .Baseline}}baseline-row{{end}}"><td class="num">{{.Concurrency}}</td><td class="num {{.DecodeTokSHeat}}">{{tokps .DecodeTokS}}</td><td class="num {{.DecodeUserHeat}}">{{tokps .DecodePerUserTokS}}</td><td class="num {{.DecodeTTFTMeanHeat}}">{{seconds .DecodeTTFTMeanMS}}</td><td class="num {{.DecodeTTFTHeat}}">{{seconds .DecodeTTFTMS}}</td><td class="num {{.PrefillTokSHeat}}">{{tokps .PrefillTokS}}</td><td class="num {{.PrefillUserHeat}}">{{tokps .PrefillPerUserTokS}}</td><td class="num {{.PrefillTTFTMeanHeat}}">{{seconds .PrefillTTFTMeanMS}}</td><td class="num {{.PrefillTTFTHeat}}">{{seconds .PrefillTTFTMS}}</td><td class="num {{.ErrHeat}}">{{.Requests}}</td></tr>
+<tr class="{{if .Baseline}}baseline-row{{end}}"><td class="num">{{.Concurrency}}</td><td class="num {{.DecodeTokSHeat}}">{{tokps .DecodeTokS}}</td><td class="num {{.DecodeUserHeat}}">{{tokps .DecodePerUserTokS}}</td><td class="num {{.DecodeTTFTMeanHeat}}">{{seconds .DecodeTTFTMeanMS}}</td><td class="num {{.DecodeTTFTHeat}}">{{seconds .DecodeTTFTMS}}</td><td class="num {{.PrefillTokSHeat}}">{{tokps .PrefillTokS}}</td><td class="num {{.PrefillUserHeat}}">{{tokps .PrefillPerUserTokS}}</td><td class="num {{.PrefillTTFTMeanHeat}}">{{seconds .PrefillTTFTMeanMS}}</td><td class="num {{.PrefillTTFTHeat}}">{{seconds .PrefillTTFTMS}}</td><td class="num {{.ErrHeat}}">{{.Requests}}</td>{{if $.Doc.HasSLO}}<td class="num">{{.SLO}}</td>{{end}}</tr>
 {{end}}
 </tbody>
 </table></div>
