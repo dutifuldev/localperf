@@ -175,6 +175,21 @@ Keep the workload shape explicit:
 - endpoint type,
 - tool/reasoning settings if enabled.
 
+## SLOs and Goodput
+
+A workload may declare latency targets:
+
+```json
+"slo": {"ttft_p95_ms": 500, "e2el_p95_ms": 30000}
+```
+
+Goodput is derived at report time from detailed request rows: the fraction
+of completed requests meeting every set target, and goodput as SLO-met
+requests per second. The report renders the `% in SLO` and `Goodput req/s`
+columns only when a workload declares an SLO; it never invents a quality
+bar. High throughput with low goodput means requests completed too slowly
+to be useful.
+
 ## Reporting Rules
 
 Reports should present memory columns with specific names:

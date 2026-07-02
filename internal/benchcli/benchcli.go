@@ -15,6 +15,7 @@ import (
 	"github.com/dutifuldev/localperf/internal/artifact"
 	"github.com/dutifuldev/localperf/internal/collections"
 	"github.com/dutifuldev/localperf/internal/report"
+	"github.com/dutifuldev/localperf/internal/sweepplan"
 	"github.com/dutifuldev/localperf/internal/vllmbench"
 )
 
@@ -25,11 +26,112 @@ type commandHandlers map[string]func([]string)
 var rootHandlers = commandHandlers{
 	"bench":    VLLMBenchMain,
 	"artifact": runArtifact,
+	"sweep":    runSweep,
 }
 
 var artifactHandlers = commandHandlers{
 	"check":  runArtifactCheck,
 	"render": runArtifactRender,
+}
+
+var sweepHandlers = commandHandlers{
+	"plan": runSweepPlan,
+}
+
+func runSweep(args []string) {
+	dispatchCommand(args, usageRoot, sweepHandlers)
+}
+
+// runSweepPlan emits the default context/concurrency sweep spec with
+// contract-compliant shapes and declared context semantics; see
+// docs/2026-07-02-default-inference-sweep.md.
+func runSweepPlan(args []string) {
+	flags := flag.NewFlagSet("sweep plan", flag.ExitOnError)
+	model := flags.String("model", "", "model identifier to benchmark (required)")
+	contexts := flags.String("contexts", "8k,16k,32k,64k,128k", "comma-separated active-context ladder (e.g. 8k,16k,32k)")
+	concurrency := flags.String("concurrency", "1,4,8,16,32", "comma-separated concurrency levels")
+	repeats := flags.Int("repeats", 1, "repeats per measurement")
+	numPrompts := flags.Int("num-prompts", 0, "prompts per measurement (default 32)")
+	reference := flags.Bool("reference", true, "include the 4k max-throughput-reference capacity family")
+	memFloor := flags.Float64("min-mem-available-gib", 0, "safety memory floor in GiB (default 40)")
+	out := flags.String("out", "", "output spec path (default stdout)")
+	_ = flags.Parse(args)
+	contextValues, err := parseTokenList(*contexts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	concurrencyValues, err := parseIntList(*concurrency)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	spec, err := sweepplan.Plan(sweepplan.PlanRequest{
+		Model:              *model,
+		Contexts:           contextValues,
+		Concurrency:        concurrencyValues,
+		Repeats:            *repeats,
+		NumPrompts:         *numPrompts,
+		IncludeReference:   *reference,
+		MinMemAvailableGiB: *memFloor,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	encoded, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	encoded = append(encoded, '\n')
+	if strings.TrimSpace(*out) == "" {
+		_, _ = os.Stdout.Write(encoded)
+		return
+	}
+	if err := os.WriteFile(*out, encoded, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("spec: %s\n", *out)
+}
+
+// parseTokenList parses values such as "8k,16k,32768" into token counts.
+func parseTokenList(value string) ([]int, error) {
+	var values []int
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(strings.ToLower(part))
+		if part == "" {
+			continue
+		}
+		multiplier := 1
+		if strings.HasSuffix(part, "k") {
+			multiplier = 1024
+			part = strings.TrimSuffix(part, "k")
+		}
+		parsed, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid context value %q", part)
+		}
+		values = append(values, parsed*multiplier)
+	}
+	return values, nil
+}
+
+func parseIntList(value string) ([]int, error) {
+	var values []int
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid concurrency value %q", part)
+		}
+		values = append(values, parsed)
+	}
+	return values, nil
 }
 
 func VLLMBenchMain(args []string) {

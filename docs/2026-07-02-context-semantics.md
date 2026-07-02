@@ -140,11 +140,10 @@ validation. The default grid and shape derivation live in
 
 ## Implementation status
 
-Specified but not yet implemented. Pending, in build order:
+Implemented:
 
-1. Spec fields and validation in `internal/vllmbench/config.go`.
-2. Report labeling rules in `internal/report/html.go`.
-3. `localperf sweep plan` generator.
-
-Until validation lands, treat rule 1 as a manual review requirement for any
-new spec.
+1. Spec fields and validation in `internal/vllmbench/config.go`
+   (`validateWorkloadContextSemantics`).
+2. Report labeling rules in `internal/report/html.go`
+   (`applyContextLabel`).
+3. `localperf sweep plan` generator in `internal/sweepplan`.

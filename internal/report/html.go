@@ -51,6 +51,7 @@ type SQLiteReportDocument struct {
 	RequestDerived     map[int64]sqliteRequestDerived
 	RepeatDetails      []SQLiteReportMeasurement
 	Legend             []MetricDef
+	HasSLO             bool
 }
 
 type SQLiteReportRun struct {
@@ -159,6 +160,11 @@ type SQLiteReportMeasurement struct {
 	FailureBreakdown      string
 	GPUUtil               string
 	GPUMemPeak            string
+	SLOTTFTMillis         float64
+	SLOE2ELMillis         float64
+	SLONote               string
+	SLOMetPct             string
+	GoodputRPS            string
 	RepeatCount           int
 	ErrorType             string
 	ErrorMessage          string
@@ -362,6 +368,7 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 		loadSQLiteReportMetrics,
 		loadSQLiteReportRequestDerived,
 		loadSQLiteReportMeasurements,
+		loadSLOGoodput,
 		loadSQLiteReportRequestSummary,
 		loadSQLiteReportEventCounts,
 		loadSQLiteReportNotableEvents,
@@ -671,6 +678,8 @@ func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 		m.id, p.name, w.name, w.phase, COALESCE(p.context_window, 0),
 		COALESCE(json_extract(w.metadata_json, '$.context.target'), 0),
 		COALESCE(json_extract(w.metadata_json, '$.context.semantics'), ''),
+		COALESCE(json_extract(w.metadata_json, '$.slo.ttft_p95_ms'), 0),
+		COALESCE(json_extract(w.metadata_json, '$.slo.e2el_p95_ms'), 0),
 		m.repeat_index,
 		m.concurrency, m.samples_requested, m.status, m.started_at, m.completed_at,
 		m.wall_time_ms, m.completed_requests, m.failed_requests, m.prompt_tokens,
@@ -692,6 +701,7 @@ func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 		if err := rows.Scan(
 			&measurement.ID, &measurement.Profile, &measurement.Workload, &measurement.Phase,
 			&measurement.ContextWindow, &measurement.ContextTarget, &measurement.ContextSemantics,
+			&measurement.SLOTTFTMillis, &measurement.SLOE2ELMillis,
 			&measurement.RepeatIndex, &measurement.Concurrency,
 			&measurement.SamplesRequested, &measurement.Status, &startedAt, &completedAt,
 			&wallTime, &measurement.CompletedRequests, &measurement.FailedRequests,
@@ -2147,10 +2157,10 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 <section class="section secondary">
 <h2>{{.Title}} Detail</h2>
 <div class="table-wrap"><table>
-<thead><tr><th>Profile</th><th>Workload</th><th>Context</th><th class="num">Conc.</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">RPS</th><th class="num">Total tok/s</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">TTFT p50</th><th class="num">TTFT p95</th><th class="num">TTFT p99</th><th class="num">Latency p50</th><th class="num">Latency p95</th><th class="num">Latency p99</th><th class="num">TPOT mean</th><th class="num">ITL tok-wt</th><th class="num">GPU util a/p</th><th class="num">GPU mem peak</th></tr></thead>
+<thead><tr><th>Profile</th><th>Workload</th><th>Context</th><th class="num">Conc.</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">RPS</th><th class="num">Total tok/s</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">TTFT p50</th><th class="num">TTFT p95</th><th class="num">TTFT p99</th><th class="num">Latency p50</th><th class="num">Latency p95</th><th class="num">Latency p99</th><th class="num">TPOT mean</th><th class="num">ITL tok-wt</th><th class="num">GPU util a/p</th><th class="num">GPU mem peak</th>{{if $.Doc.HasSLO}}<th class="num">% in SLO</th><th class="num">Goodput req/s</th>{{end}}</tr></thead>
 <tbody>
 {{range .Measurements}}
-<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td>{{.ContextLabel}}{{if .ContextMismatch}} <span class="pill status-bad" title="{{.ContextMismatchNote}}">mismatch</span>{{end}}</td><td class="num">{{.Concurrency}}{{if gt .RepeatCount 1}} &times;{{.RepeatCount}}{{end}}{{if .AchievedConcurrency}} <span class="pill status-warn" title="time-weighted mean in-flight requests">{{.AchievedConcurrency}}</span>{{end}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}{{if .FailureBreakdown}} <span title="{{.FailureBreakdown}}">({{.FailureBreakdown}})</span>{{end}}</td><td class="num">{{.RPS}}</td><td class="num">{{.TotalTokS}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.TTFTP50MS}}</td><td class="num">{{.TTFTP95MS}}</td><td class="num">{{.TTFTP99MS}}</td><td class="num">{{.LatencyP50MS}}</td><td class="num">{{.LatencyP95MS}}</td><td class="num">{{.LatencyP99MS}}</td><td class="num">{{.TPOTMeanMS}}</td><td class="num">{{.ITLTokenWeightedMS}}</td><td class="num">{{.GPUUtil}}</td><td class="num">{{.GPUMemPeak}}</td></tr>
+<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td>{{.ContextLabel}}{{if .ContextMismatch}} <span class="pill status-bad" title="{{.ContextMismatchNote}}">mismatch</span>{{end}}</td><td class="num">{{.Concurrency}}{{if gt .RepeatCount 1}} &times;{{.RepeatCount}}{{end}}{{if .AchievedConcurrency}} <span class="pill status-warn" title="time-weighted mean in-flight requests">{{.AchievedConcurrency}}</span>{{end}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}{{if .FailureBreakdown}} <span title="{{.FailureBreakdown}}">({{.FailureBreakdown}})</span>{{end}}</td><td class="num">{{.RPS}}</td><td class="num">{{.TotalTokS}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.TTFTP50MS}}</td><td class="num">{{.TTFTP95MS}}</td><td class="num">{{.TTFTP99MS}}</td><td class="num">{{.LatencyP50MS}}</td><td class="num">{{.LatencyP95MS}}</td><td class="num">{{.LatencyP99MS}}</td><td class="num">{{.TPOTMeanMS}}</td><td class="num">{{.ITLTokenWeightedMS}}</td><td class="num">{{.GPUUtil}}</td><td class="num">{{.GPUMemPeak}}</td>{{if $.Doc.HasSLO}}<td class="num">{{if .SLOMetPct}}<span title="{{.SLONote}}">{{.SLOMetPct}}</span>{{else}}-{{end}}</td><td class="num">{{if .GoodputRPS}}{{.GoodputRPS}}{{else}}-{{end}}</td>{{end}}</tr>
 {{end}}
 </tbody>
 </table></div>

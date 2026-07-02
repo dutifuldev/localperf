@@ -122,6 +122,60 @@ func TestRepeatAggregationRendersSpreadAndRepeatRows(t *testing.T) {
 	}
 }
 
+func TestSLOGoodputDerivation(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
+	createTestSQLiteHTMLArtifact(t, artifactPath, "SLO")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE workloads SET metadata_json = '{"slo":{"ttft_p95_ms":500}}' WHERE id = 'workload-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM requests`); err != nil {
+		t.Fatal(err)
+	}
+	for index, ttft := range []float64{100, 900} {
+		if _, err := db.Exec(`INSERT INTO requests (
+			measurement_id, request_index, status, streamed, started_at, completed_at,
+			ttft_ms, latency_ms, prompt_tokens, completion_tokens
+		) VALUES (1, ?, 'completed', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:05Z', ?, 5000, 100, 10)`,
+			index, ttft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !doc.HasSLO {
+		t.Fatal("HasSLO = false, want true when a workload declares an SLO")
+	}
+	measurement := doc.Measurements[0]
+	if measurement.SLOMetPct != "50%" {
+		t.Fatalf("SLO met = %q, want 50%%", measurement.SLOMetPct)
+	}
+	// 1 SLO-met request over 1000ms wall time.
+	if measurement.GoodputRPS != "1.000" {
+		t.Fatalf("goodput = %q, want 1.000", measurement.GoodputRPS)
+	}
+	if measurement.SLONote != "ttft<=500ms" {
+		t.Fatalf("SLO note = %q, want ttft<=500ms", measurement.SLONote)
+	}
+	var out strings.Builder
+	if err := RenderHTMLReport(&out, doc, HTMLReportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "% in SLO") || !strings.Contains(out.String(), "Goodput req/s") {
+		t.Fatal("HTML report missing SLO columns when an SLO is declared")
+	}
+}
+
 func insertDerivedRequest(t *testing.T, db *sql.DB, measurementID int64, index int, status, startedAt, completedAt string, itlMeanMS float64, completionTokens int, errorType string) {
 	t.Helper()
 	var itl any

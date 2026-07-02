@@ -62,6 +62,10 @@ var ReportMetrics = []MetricDef{
 		Definition: "completed requests / failed requests, with failures broken down by error type.",
 	},
 	{
+		Key: "goodput", Label: "goodput", Unit: "req/s", Weighting: "aggregate",
+		Definition: "requests per second that met every declared SLO target (see the % in SLO column); rendered only when the workload declares an slo block. High throughput with low goodput means requests completed too slowly to be useful.",
+	},
+	{
 		Key: "gpu_util", Label: "GPU util a/p", Unit: "percent", Weighting: "aggregate",
 		Definition: "average / peak GPU utilization sampled every 2s during the measurement, with the telemetry source named; on unified-memory systems cross-check GPU memory against system memory drop.",
 	},
@@ -281,6 +285,53 @@ func loadFailureBreakdown(db *sql.DB, doc *SQLiteReportDocument) error {
 		doc.RequestDerived[measurementID] = derived
 	}
 	return nil
+}
+
+// loadSLOGoodput derives goodput for measurements whose workload declared an
+// SLO: the fraction of completed requests meeting every set target, and
+// SLO-met requests per second. Runs after measurements load; requires
+// detailed request rows.
+func loadSLOGoodput(db *sql.DB, doc *SQLiteReportDocument) error {
+	for index := range doc.Measurements {
+		measurement := &doc.Measurements[index]
+		if measurement.SLOTTFTMillis <= 0 && measurement.SLOE2ELMillis <= 0 {
+			continue
+		}
+		doc.HasSLO = true
+		measurement.SLONote = sloNote(measurement.SLOTTFTMillis, measurement.SLOE2ELMillis)
+		measurement.SLOMetPct = "-"
+		measurement.GoodputRPS = "-"
+		var total, met sql.NullInt64
+		err := db.QueryRow(`SELECT COUNT(*),
+			SUM(CASE WHEN (? <= 0 OR (ttft_ms IS NOT NULL AND ttft_ms <= ?))
+			          AND (? <= 0 OR (latency_ms IS NOT NULL AND latency_ms <= ?)) THEN 1 ELSE 0 END)
+			FROM requests WHERE measurement_id = ? AND status = 'completed'`,
+			measurement.SLOTTFTMillis, measurement.SLOTTFTMillis,
+			measurement.SLOE2ELMillis, measurement.SLOE2ELMillis,
+			measurement.ID).Scan(&total, &met)
+		if err != nil {
+			return err
+		}
+		if !total.Valid || total.Int64 == 0 || !met.Valid {
+			continue
+		}
+		measurement.SLOMetPct = fmt.Sprintf("%.0f%%", 100*float64(met.Int64)/float64(total.Int64))
+		if measurement.WallTimeMSKnown && measurement.WallTimeMSValue > 0 {
+			measurement.GoodputRPS = displayFloat(float64(met.Int64) / (measurement.WallTimeMSValue / 1000))
+		}
+	}
+	return nil
+}
+
+func sloNote(ttftMillis, e2elMillis float64) string {
+	parts := []string{}
+	if ttftMillis > 0 {
+		parts = append(parts, fmt.Sprintf("ttft<=%.0fms", ttftMillis))
+	}
+	if e2elMillis > 0 {
+		parts = append(parts, fmt.Sprintf("e2el<=%.0fms", e2elMillis))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func applyRequestDerived(measurement *SQLiteReportMeasurement, derived sqliteRequestDerived) {

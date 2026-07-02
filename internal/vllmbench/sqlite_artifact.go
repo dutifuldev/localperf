@@ -363,6 +363,9 @@ func workloadClaimsJSON(workload Workload) any {
 			"semantics": workload.ContextSemantics,
 		}
 	}
+	if workload.SLO != nil {
+		claims["slo"] = workload.SLO
+	}
 	if len(claims) == 0 {
 		return nil
 	}

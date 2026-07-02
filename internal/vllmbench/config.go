@@ -113,6 +113,7 @@ type Workload struct {
 	Phase                   string                 `json:"phase,omitempty"`
 	ContextTarget           int                    `json:"context_target"`
 	ContextSemantics        string                 `json:"context_semantics"`
+	SLO                     *SLOConfig             `json:"slo,omitempty"`
 	LoadGenerator           string                 `json:"load_generator,omitempty"`
 	Dataset                 DatasetSpec            `json:"dataset,omitempty"`
 	Request                 RequestSpec            `json:"request,omitempty"`
@@ -138,6 +139,15 @@ type ServeConfig struct {
 	AttentionBackend     string  `json:"attention_backend,omitempty"`
 	MoEBackend           string  `json:"moe_backend,omitempty"`
 	EnablePrefixCaching  *bool   `json:"enable_prefix_caching,omitempty"`
+}
+
+// SLOConfig declares latency targets for goodput derivation: the fraction of
+// completed requests meeting every set target, and goodput as SLO-met
+// requests per second. Rendered only when declared; the report never invents
+// a quality bar.
+type SLOConfig struct {
+	TTFTP95Millis float64 `json:"ttft_p95_ms,omitempty"`
+	E2ELP95Millis float64 `json:"e2el_p95_ms,omitempty"`
 }
 
 type BenchmarkTrafficConfig struct {
@@ -826,6 +836,7 @@ func validateWorkloads(workloads []Workload, profileNames map[string]bool, profi
 		prefix := fmt.Sprintf("workloads[%d]", i)
 		issues = append(issues, validateWorkload(prefix, workload, profileNames, names, slugs)...)
 		issues = append(issues, validateWorkloadContextSemantics(prefix, workload, profiles)...)
+		issues = append(issues, validateWorkloadSLO(prefix, workload)...)
 	}
 	return issues
 }
@@ -857,6 +868,23 @@ func validateWorkloadContextSemantics(prefix string, workload Workload, profiles
 	default:
 		return []string{prefix + `: context_semantics must be "active" or "capacity"`}
 	}
+}
+
+func validateWorkloadSLO(prefix string, workload Workload) []string {
+	if workload.SLO == nil {
+		return nil
+	}
+	var issues []string
+	if workload.SLO.TTFTP95Millis < 0 {
+		issues = append(issues, prefix+": slo.ttft_p95_ms must not be negative")
+	}
+	if workload.SLO.E2ELP95Millis < 0 {
+		issues = append(issues, prefix+": slo.e2el_p95_ms must not be negative")
+	}
+	if workload.SLO.TTFTP95Millis == 0 && workload.SLO.E2ELP95Millis == 0 {
+		issues = append(issues, prefix+": slo must set at least one target")
+	}
+	return issues
 }
 
 func validateActiveContextClaim(prefix string, workload Workload, profiles []Profile) []string {
