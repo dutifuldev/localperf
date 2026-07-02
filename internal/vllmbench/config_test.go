@@ -244,6 +244,8 @@ func TestLoadSpecSupportsEngineNeutralShape(t *testing.T) {
     {
       "name": "decode",
       "profiles": ["4k"],
+      "context_target": 4096,
+      "context_semantics": "capacity",
       "traffic": {
         "backend": "openai-chat",
         "dataset_name": "random",
@@ -523,6 +525,117 @@ func TestValidateSpecRejectsDuplicateWorkloadProfileReferences(t *testing.T) {
 	}
 }
 
+func TestValidateContextSemantics(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Workload)
+		wantErr string
+	}{
+		{
+			name:    "missing fields",
+			mutate:  func(w *Workload) { w.ContextTarget = 0; w.ContextSemantics = "" },
+			wantErr: "context_target and context_semantics are required",
+		},
+		{
+			name:    "target without semantics",
+			mutate:  func(w *Workload) { w.ContextTarget = 8192; w.ContextSemantics = "" },
+			wantErr: "context_target and context_semantics are required",
+		},
+		{
+			name:    "unknown semantics",
+			mutate:  func(w *Workload) { w.ContextTarget = 8192; w.ContextSemantics = "peak" },
+			wantErr: `context_semantics must be "active" or "capacity"`,
+		},
+		{
+			// The exact conflation from the old Gemma sweep: a 32k capacity
+			// server running a ~5k active workload, claimed as 32k active.
+			name: "gemma shape refused",
+			mutate: func(w *Workload) {
+				w.ContextTarget = 32768
+				w.ContextSemantics = ContextSemanticsActive
+				w.RandomInputLen = 1024
+				w.RandomOutputLen = 4096
+			},
+			wantErr: "claims active context 32768 but requests 1024+4096=5120 tokens (16% of target)",
+		},
+		{
+			name: "active below band",
+			mutate: func(w *Workload) {
+				w.ContextTarget = 8192
+				w.ContextSemantics = ContextSemanticsActive
+				w.RandomInputLen = 7168
+				w.RandomOutputLen = 16
+			},
+			wantErr: "claims active context 8192",
+		},
+		{
+			name: "active above target",
+			mutate: func(w *Workload) {
+				w.ContextTarget = 8192
+				w.ContextSemantics = ContextSemanticsActive
+				w.RandomInputLen = 8192
+				w.RandomOutputLen = 128
+			},
+			wantErr: "claims active context 8192",
+		},
+		{
+			name: "active target above server limit",
+			mutate: func(w *Workload) {
+				w.ContextTarget = 16384
+				w.ContextSemantics = ContextSemanticsActive
+				w.RandomInputLen = 16000
+				w.RandomOutputLen = 128
+			},
+			wantErr: "max_model_len 8192 is below context_target 16384",
+		},
+		{
+			name: "capacity target must match server limit",
+			mutate: func(w *Workload) {
+				w.ContextTarget = 4096
+				w.ContextSemantics = ContextSemanticsCapacity
+			},
+			wantErr: "requires context_target to equal profile 8k max_model_len 8192",
+		},
+		{
+			name: "active requires random dataset",
+			mutate: func(w *Workload) {
+				w.ContextTarget = 8192
+				w.ContextSemantics = ContextSemanticsActive
+				w.DatasetName = "sharegpt"
+				w.DatasetPath = "sharegpt.json"
+			},
+			wantErr: `context_semantics "active" requires the random dataset`,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			spec := testSpec()
+			testCase.mutate(&spec.Workloads[0])
+			err := ValidateSpec(spec)
+			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
+				t.Fatalf("ValidateSpec error = %v, want %q", err, testCase.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateContextSemanticsAcceptsCompliantClaims(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads[0].ContextTarget = 8192
+	spec.Workloads[0].ContextSemantics = ContextSemanticsActive
+	spec.Workloads[0].RandomInputLen = 8063
+	spec.Workloads[0].RandomOutputLen = 1
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec error = %v, want valid active claim", err)
+	}
+	spec.Workloads[0].ContextSemantics = ContextSemanticsCapacity
+	spec.Workloads[0].RandomInputLen = 128
+	spec.Workloads[0].RandomOutputLen = 16
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec error = %v, want valid capacity claim", err)
+	}
+}
+
 func TestApplyDefaultsHonorsSleepLevelZero(t *testing.T) {
 	spec := testSpec()
 	spec.Profiles[0].SleepLevel = testIntPointer(0)
@@ -601,8 +714,10 @@ func TestApplyFilterDropsWorkloadsWithoutMatchingProfile(t *testing.T) {
 func TestApplyFilterDropsWorkloadsWithoutMatchingConcurrency(t *testing.T) {
 	spec := testSpec()
 	spec.Workloads = append(spec.Workloads, Workload{
-		Name:     "claim-repro",
-		Profiles: []string{"8k"},
+		Name:             "claim-repro",
+		Profiles:         []string{"8k"},
+		ContextTarget:    8192,
+		ContextSemantics: ContextSemanticsCapacity,
 		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
 			Backend:         "openai-chat",
 			DatasetName:     "random",
@@ -740,6 +855,8 @@ func TestExecuteDryRunStoresOriginalSpecAndPlannedCommandStatus(t *testing.T) {
     {
       "name": "decode",
       "profiles": ["4k"],
+      "context_target": 4096,
+      "context_semantics": "capacity",
       "traffic": {
         "dataset_name": "random",
         "random_input_len": 128,
@@ -814,6 +931,13 @@ func TestExecuteDryRunStoresOriginalSpecAndPlannedCommandStatus(t *testing.T) {
 	}
 	if status != "planned" || exitCode.Valid {
 		t.Fatalf("planned command status=%q exit_valid=%t, want planned with null exit", status, exitCode.Valid)
+	}
+	var workloadClaims string
+	if err := db.QueryRow("SELECT json_extract(metadata_json, '$.context.target') || ':' || json_extract(metadata_json, '$.context.semantics') FROM workloads WHERE name = 'decode'").Scan(&workloadClaims); err != nil {
+		t.Fatal(err)
+	}
+	if workloadClaims != "4096:capacity" {
+		t.Fatalf("workload context claim = %q, want 4096:capacity", workloadClaims)
 	}
 	var workloadPhase string
 	if err := db.QueryRow("SELECT phase FROM workloads WHERE name = 'decode'").Scan(&workloadPhase); err != nil {
@@ -1370,8 +1494,10 @@ func TestExecuteStructuredSyntheticDatasetEnrichesSummaryRows(t *testing.T) {
 	spec.Profiles[0].Port = freeTestPort()
 	spec.Profiles[0].EnableSleepMode = false
 	spec.Workloads = []Workload{{
-		Name:     "structured-synthetic",
-		Profiles: []string{spec.Profiles[0].Name},
+		Name:             "structured-synthetic",
+		Profiles:         []string{spec.Profiles[0].Name},
+		ContextTarget:    8192,
+		ContextSemantics: ContextSemanticsCapacity,
 		Dataset: DatasetSpec{
 			Type:         "synthetic",
 			SampleCount:  1,
@@ -2878,8 +3004,10 @@ func testSpec() Spec {
 		},
 		Workloads: []Workload{
 			{
-				Name:     "prefill-8k",
-				Profiles: []string{"8k"},
+				Name:             "prefill-8k",
+				Profiles:         []string{"8k"},
+				ContextTarget:    8192,
+				ContextSemantics: ContextSemanticsCapacity,
 				BenchmarkTrafficConfig: BenchmarkTrafficConfig{
 					Backend:         "openai-chat",
 					DatasetName:     "random",
@@ -2942,8 +3070,10 @@ func testServerHostPort(t *testing.T, server *httptest.Server) (string, int) {
 
 func testRandomWorkload(name string, profiles []string, inputLen, outputLen, numPrompts int, concurrencies []int) Workload {
 	return Workload{
-		Name:     name,
-		Profiles: profiles,
+		Name:             name,
+		Profiles:         profiles,
+		ContextTarget:    8192,
+		ContextSemantics: ContextSemanticsCapacity,
 		BenchmarkTrafficConfig: BenchmarkTrafficConfig{
 			Backend:         "openai-chat",
 			DatasetName:     "random",
@@ -2960,9 +3090,11 @@ func testShareGPTWorkload(path string, profiles []string) Workload {
 	seed := 1
 	temp := 0.0
 	return Workload{
-		Name:     "sharegpt-chat-smoke",
-		Phase:    "decode",
-		Profiles: profiles,
+		Name:             "sharegpt-chat-smoke",
+		Phase:            "decode",
+		Profiles:         profiles,
+		ContextTarget:    8192,
+		ContextSemantics: ContextSemanticsCapacity,
 		Dataset: DatasetSpec{
 			Type:        "sharegpt",
 			Path:        path,
@@ -2986,9 +3118,11 @@ func testShareGPTWorkload(path string, profiles []string) Workload {
 
 func testCustomJSONLWorkload(name, path string, profiles []string) Workload {
 	return Workload{
-		Name:     name,
-		Phase:    "decode",
-		Profiles: profiles,
+		Name:             name,
+		Phase:            "decode",
+		Profiles:         profiles,
+		ContextTarget:    8192,
+		ContextSemantics: ContextSemanticsCapacity,
 		Dataset: DatasetSpec{
 			Type:        "custom_jsonl",
 			Path:        path,
@@ -3008,9 +3142,11 @@ func testCustomJSONLWorkload(name, path string, profiles []string) Workload {
 
 func testRawPayloadWorkload(name, path string, profiles []string) Workload {
 	return Workload{
-		Name:     name,
-		Phase:    "decode",
-		Profiles: profiles,
+		Name:             name,
+		Phase:            "decode",
+		Profiles:         profiles,
+		ContextTarget:    8192,
+		ContextSemantics: ContextSemanticsCapacity,
 		Dataset: DatasetSpec{
 			Type:        "raw_payload",
 			Path:        path,

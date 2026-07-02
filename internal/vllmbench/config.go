@@ -22,6 +22,16 @@ const (
 	LoadGeneratorHTTP      = "localperf_http"
 )
 
+// Context semantics contract; see docs/2026-07-02-context-semantics.md.
+const (
+	ContextSemanticsActive   = "active"
+	ContextSemanticsCapacity = "capacity"
+	// ContextTargetMinFrac is the strict lower bound of the active-context
+	// band: requested (and later measured) tokens must land within
+	// [0.90, 1.00] of context_target. Widen only via the contract doc.
+	ContextTargetMinFrac = 0.90
+)
+
 type Spec struct {
 	Version     string            `json:"version"`
 	Name        string            `json:"name"`
@@ -100,6 +110,8 @@ type Workload struct {
 	BenchmarkTrafficConfig
 	Name                    string                 `json:"name"`
 	Phase                   string                 `json:"phase,omitempty"`
+	ContextTarget           int                    `json:"context_target"`
+	ContextSemantics        string                 `json:"context_semantics"`
 	LoadGenerator           string                 `json:"load_generator,omitempty"`
 	Dataset                 DatasetSpec            `json:"dataset,omitempty"`
 	Request                 RequestSpec            `json:"request,omitempty"`
@@ -538,7 +550,7 @@ func ValidateSpec(spec Spec) error {
 	issues = append(issues, profileIssues...)
 	issues = append(issues, validateEndpointBaseURLProfileUsage(spec)...)
 	issues = append(issues, validateWarmup(spec.Warmup)...)
-	issues = append(issues, validateWorkloads(spec.Workloads, profileNames)...)
+	issues = append(issues, validateWorkloads(spec.Workloads, profileNames, spec.Profiles)...)
 	if len(issues) > 0 {
 		return errors.New(strings.Join(issues, "\n"))
 	}
@@ -798,7 +810,7 @@ func validateWarmup(warmup WarmupConfig) []string {
 	return append(issues, validateTrafficConfig("warmup", warmup.BenchmarkTrafficConfig)...)
 }
 
-func validateWorkloads(workloads []Workload, profileNames map[string]bool) []string {
+func validateWorkloads(workloads []Workload, profileNames map[string]bool, profiles []Profile) []string {
 	var issues []string
 	names := map[string]bool{}
 	slugs := map[string]string{}
@@ -808,6 +820,7 @@ func validateWorkloads(workloads []Workload, profileNames map[string]bool) []str
 	for i, workload := range workloads {
 		prefix := fmt.Sprintf("workloads[%d]", i)
 		issues = append(issues, validateWorkload(prefix, workload, profileNames, names, slugs)...)
+		issues = append(issues, validateWorkloadContextSemantics(prefix, workload, profiles)...)
 	}
 	return issues
 }
@@ -821,6 +834,88 @@ func validateWorkload(prefix string, workload Workload, profileNames, names map[
 	issues = append(issues, validateConcurrencyValues(prefix, workload.MaxConcurrency)...)
 	issues = append(issues, validateProfileRefs(prefix, workload.Profiles, profileNames)...)
 	return append(issues, validateTrafficConfig(prefix, workload.BenchmarkTrafficConfig)...)
+}
+
+// validateWorkloadContextSemantics enforces the contract in
+// docs/2026-07-02-context-semantics.md: every workload declares whether its
+// context number means active context or server capacity, and an active
+// claim must be backed by the requested token shape.
+func validateWorkloadContextSemantics(prefix string, workload Workload, profiles []Profile) []string {
+	if workload.ContextTarget <= 0 || strings.TrimSpace(workload.ContextSemantics) == "" {
+		return []string{prefix + ": context_target and context_semantics are required on every workload; see docs/2026-07-02-context-semantics.md"}
+	}
+	switch workload.ContextSemantics {
+	case ContextSemanticsActive:
+		return validateActiveContextClaim(prefix, workload, profiles)
+	case ContextSemanticsCapacity:
+		return validateCapacityContextClaim(prefix, workload, profiles)
+	default:
+		return []string{prefix + `: context_semantics must be "active" or "capacity"`}
+	}
+}
+
+func validateActiveContextClaim(prefix string, workload Workload, profiles []Profile) []string {
+	if workload.DatasetName != "random" {
+		return []string{prefix + `: context_semantics "active" requires the random dataset so requested token counts are exact`}
+	}
+	var issues []string
+	requested := workload.RandomInputLen + workload.RandomOutputLen
+	target := workload.ContextTarget
+	if float64(requested) < ContextTargetMinFrac*float64(target) || requested > target {
+		issues = append(issues, fmt.Sprintf(
+			"%s: claims active context %d but requests %d+%d=%d tokens (%.0f%% of target); this measures a ~%s active workload on a %s-capacity server. Either set context_target to %d, adjust random_input_len, or declare context_semantics: %q",
+			prefix, target, workload.RandomInputLen, workload.RandomOutputLen, requested,
+			100*float64(requested)/float64(target), TokenCountLabel(requested), TokenCountLabel(target), requested, ContextSemanticsCapacity))
+	}
+	for _, profile := range pairedProfiles(workload, profiles) {
+		// A profile without a declared max_model_len (endpoint-only,
+		// unmanaged) has no locally checkable limit; skip the comparison
+		// rather than guess.
+		if profile.MaxModelLen > 0 && profile.MaxModelLen < target {
+			issues = append(issues, fmt.Sprintf("%s: profile %s max_model_len %d is below context_target %d", prefix, profile.Name, profile.MaxModelLen, target))
+		}
+	}
+	return issues
+}
+
+func validateCapacityContextClaim(prefix string, workload Workload, profiles []Profile) []string {
+	var issues []string
+	for _, profile := range pairedProfiles(workload, profiles) {
+		if profile.MaxModelLen > 0 && profile.MaxModelLen != workload.ContextTarget {
+			issues = append(issues, fmt.Sprintf(
+				"%s: context_semantics %q requires context_target to equal profile %s max_model_len %d, got %d",
+				prefix, ContextSemanticsCapacity, profile.Name, profile.MaxModelLen, workload.ContextTarget))
+		}
+	}
+	return issues
+}
+
+// pairedProfiles mirrors plannedProfileNames: an empty profile list pairs
+// the workload with every profile in the spec.
+func pairedProfiles(workload Workload, profiles []Profile) []Profile {
+	if len(workload.Profiles) == 0 {
+		return profiles
+	}
+	wanted := map[string]bool{}
+	for _, name := range workload.Profiles {
+		wanted[name] = true
+	}
+	var paired []Profile
+	for _, profile := range profiles {
+		if wanted[profile.Name] {
+			paired = append(paired, profile)
+		}
+	}
+	return paired
+}
+
+// TokenCountLabel renders a token count as a compact label such as "5k" or
+// "32k"; small values render as plain numbers.
+func TokenCountLabel(value int) string {
+	if value >= 1024 {
+		return fmt.Sprintf("%.0fk", float64(value)/1024)
+	}
+	return fmt.Sprint(value)
 }
 
 func validateWorkloadFields(prefix string, workload Workload) []string {

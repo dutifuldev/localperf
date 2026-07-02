@@ -426,10 +426,24 @@ func httpLoadWorkload(backend, datasetName, requestRate, endpoint, datasetPath, 
 		}
 		temp = &parsed
 	}
+	// This synthetic single-workload spec exists only to validate the exec
+	// boundary of `bench http-load`; it is never persisted to an artifact.
+	// The real context claim lives in the parent spec that planned the run,
+	// so declare the only thing knowable here: for random traffic the active
+	// context is exactly the requested shape; otherwise a capacity point
+	// against a profile with no locally declared limit.
+	contextTarget := 1
+	contextSemantics := vllmbench.ContextSemanticsCapacity
+	if datasetName == "random" && randomInputLen+randomOutputLen > 0 {
+		contextTarget = randomInputLen + randomOutputLen
+		contextSemantics = vllmbench.ContextSemanticsActive
+	}
 	workload := vllmbench.Workload{
-		Name:          "http-load",
-		Profiles:      []string{"http-load"},
-		LoadGenerator: vllmbench.LoadGeneratorHTTP,
+		Name:             "http-load",
+		Profiles:         []string{"http-load"},
+		ContextTarget:    contextTarget,
+		ContextSemantics: contextSemantics,
+		LoadGenerator:    vllmbench.LoadGeneratorHTTP,
 		BenchmarkTrafficConfig: vllmbench.BenchmarkTrafficConfig{
 			Backend:         backend,
 			DatasetName:     datasetName,

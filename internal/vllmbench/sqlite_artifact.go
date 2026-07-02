@@ -327,12 +327,13 @@ func insertWorkloads(tx *sql.Tx, runID string, spec Spec) error {
 		concurrencyJSON := mustJSONString(workload.MaxConcurrency)
 		if _, err := tx.Exec(`INSERT INTO workloads (
 			id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
-			save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json, metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			workload.Name, runID, workload.Name, workload.Phase, trafficJSON, concurrencyJSON, workload.NumPrompts,
 			workload.Repeats, boolToInt(boolValue(workload.BenchmarkTrafficConfig.SaveDetailed)),
 			boolToInt(workload.CapturePayloadArtifacts), structuredWorkloadJSON(workload, workload.Dataset),
-			structuredWorkloadJSON(workload, workload.Request), structuredWorkloadJSON(workload, workload.Load)); err != nil {
+			structuredWorkloadJSON(workload, workload.Request), structuredWorkloadJSON(workload, workload.Load),
+			workloadClaimsJSON(workload)); err != nil {
 			return err
 		}
 	}
@@ -344,6 +345,23 @@ func structuredWorkloadJSON(workload Workload, value any) any {
 		return nil
 	}
 	return nullableJSON(value)
+}
+
+// workloadClaimsJSON stores declared workload claims keyed by claim type in
+// workloads.metadata_json; traffic_json stays strictly engine input. See
+// docs/2026-07-02-context-semantics.md.
+func workloadClaimsJSON(workload Workload) any {
+	claims := map[string]any{}
+	if workload.ContextTarget > 0 && workload.ContextSemantics != "" {
+		claims["context"] = map[string]any{
+			"target":    workload.ContextTarget,
+			"semantics": workload.ContextSemantics,
+		}
+	}
+	if len(claims) == 0 {
+		return nil
+	}
+	return nullableJSON(claims)
 }
 
 func insertCanonicalDatasets(tx *sql.Tx, runID, runDir string, spec Spec) error {
