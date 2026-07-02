@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -96,7 +97,7 @@ type sqliteRequestDerived struct {
 	ITLTokenWeightedOK   bool
 	AchievedConcurrency  float64
 	AchievedConcurrencyK bool
-	FailureBreakdown     string
+	FailureCounts        map[string]int
 	GPUUtilAvg           float64
 	GPUUtilPeak          float64
 	GPUUtilKnown         bool
@@ -262,12 +263,11 @@ func parseRequestTime(value string) (time.Time, error) {
 
 func loadFailureBreakdown(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT measurement_id, COALESCE(NULLIF(error_type, ''), 'unknown'), COUNT(*)
-		FROM requests WHERE status != 'completed' GROUP BY 1, 2 ORDER BY 3 DESC, 2`)
+		FROM requests WHERE status != 'completed' GROUP BY 1, 2`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	parts := map[int64][]string{}
 	for rows.Next() {
 		var measurementID int64
 		var errorType string
@@ -275,17 +275,14 @@ func loadFailureBreakdown(db *sql.DB, doc *SQLiteReportDocument) error {
 		if err := rows.Scan(&measurementID, &errorType, &count); err != nil {
 			return err
 		}
-		parts[measurementID] = append(parts[measurementID], fmt.Sprintf("%d %s", count, errorType))
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for measurementID, breakdown := range parts {
 		derived := doc.RequestDerived[measurementID]
-		derived.FailureBreakdown = strings.Join(breakdown, ", ")
+		if derived.FailureCounts == nil {
+			derived.FailureCounts = map[string]int{}
+		}
+		derived.FailureCounts[errorType] += count
 		doc.RequestDerived[measurementID] = derived
 	}
-	return nil
+	return rows.Err()
 }
 
 // loadSLOGoodput derives goodput for measurements whose workload declared an
@@ -299,9 +296,6 @@ func loadSLOGoodput(db *sql.DB, doc *SQLiteReportDocument) error {
 			continue
 		}
 		doc.HasSLO = true
-		measurement.SLONote = sloNote(measurement.SLOTTFTMillis, measurement.SLOE2ELMillis)
-		measurement.SLOMetPct = "-"
-		measurement.GoodputRPS = "-"
 		var total, met sql.NullInt64
 		err := db.QueryRow(`SELECT COUNT(*),
 			SUM(CASE WHEN (? <= 0 OR (ttft_ms IS NOT NULL AND ttft_ms <= ?))
@@ -313,13 +307,11 @@ func loadSLOGoodput(db *sql.DB, doc *SQLiteReportDocument) error {
 		if err != nil {
 			return err
 		}
-		if !total.Valid || total.Int64 == 0 || !met.Valid {
-			continue
+		if total.Valid && met.Valid {
+			measurement.SLORequestCount = total.Int64
+			measurement.SLOMetCount = met.Int64
 		}
-		measurement.SLOMetPct = fmt.Sprintf("%.0f%%", 100*float64(met.Int64)/float64(total.Int64))
-		if measurement.WallTimeMSKnown && measurement.WallTimeMSValue > 0 {
-			measurement.GoodputRPS = displayFloat(float64(met.Int64) / (measurement.WallTimeMSValue / 1000))
-		}
+		formatSLODisplays(measurement)
 	}
 	return nil
 }
@@ -341,28 +333,82 @@ func applyRequestDerived(measurement *SQLiteReportMeasurement, derived sqliteReq
 	} else {
 		measurement.ITLTokenWeightedMS = "-"
 	}
-	if derived.AchievedConcurrencyK && measurement.Concurrency > 0 {
+	measurement.AchievedValue = derived.AchievedConcurrency
+	measurement.AchievedKnown = derived.AchievedConcurrencyK
+	measurement.FailureCounts = derived.FailureCounts
+	measurement.GPUUtilAvgValue = derived.GPUUtilAvg
+	measurement.GPUUtilPeakValue = derived.GPUUtilPeak
+	measurement.GPUUtilKnown = derived.GPUUtilKnown
+	measurement.GPUUtilSource = derived.GPUUtilSource
+	measurement.GPUMemPeakValue = derived.GPUMemPeakBytes
+	measurement.GPUMemKnown = derived.GPUMemKnown
+	formatDerivedDisplays(measurement)
+}
+
+// formatDerivedDisplays renders the display strings for derived fields from
+// their numeric values; repeat aggregation recomputes the values and calls
+// this again so aggregated rows never show a single repeat's data.
+func formatDerivedDisplays(measurement *SQLiteReportMeasurement) {
+	measurement.AchievedConcurrency = ""
+	if measurement.AchievedKnown && measurement.Concurrency > 0 {
 		requested := float64(measurement.Concurrency)
-		if math.Abs(derived.AchievedConcurrency-requested)/requested > 0.10 {
-			measurement.AchievedConcurrency = fmt.Sprintf("~%.0f (of %d)", derived.AchievedConcurrency, measurement.Concurrency)
+		if math.Abs(measurement.AchievedValue-requested)/requested > 0.10 {
+			measurement.AchievedConcurrency = fmt.Sprintf("~%.0f (of %d)", measurement.AchievedValue, measurement.Concurrency)
 		}
 	}
-	measurement.FailureBreakdown = derived.FailureBreakdown
+	measurement.FailureBreakdown = formatFailureCounts(measurement.FailureCounts)
 	if measurement.WallTimeMSKnown && measurement.WallTimeMSValue > 0 && measurement.CompletedRequests > 0 {
 		measurement.RPS = displayFloat(float64(measurement.CompletedRequests) / (measurement.WallTimeMSValue / 1000))
 	} else {
 		measurement.RPS = "-"
 	}
-	if derived.GPUUtilKnown {
-		measurement.GPUUtil = fmt.Sprintf("%.0f / %.0f%% (%s)", derived.GPUUtilAvg, derived.GPUUtilPeak, derived.GPUUtilSource)
+	if measurement.GPUUtilKnown {
+		measurement.GPUUtil = fmt.Sprintf("%.0f / %.0f%% (%s)", measurement.GPUUtilAvgValue, measurement.GPUUtilPeakValue, measurement.GPUUtilSource)
 	} else {
 		measurement.GPUUtil = "-"
 	}
-	if derived.GPUMemKnown {
-		measurement.GPUMemPeak = fmt.Sprintf("%.1f GiB", derived.GPUMemPeakBytes/(1024*1024*1024))
+	if measurement.GPUMemKnown {
+		measurement.GPUMemPeak = fmt.Sprintf("%.1f GiB", measurement.GPUMemPeakValue/(1024*1024*1024))
 	} else {
 		measurement.GPUMemPeak = "-"
 	}
+	formatSLODisplays(measurement)
+}
+
+func formatSLODisplays(measurement *SQLiteReportMeasurement) {
+	if measurement.SLOTTFTMillis <= 0 && measurement.SLOE2ELMillis <= 0 {
+		return
+	}
+	measurement.SLONote = sloNote(measurement.SLOTTFTMillis, measurement.SLOE2ELMillis)
+	measurement.SLOMetPct = "-"
+	measurement.GoodputRPS = "-"
+	if measurement.SLORequestCount > 0 {
+		measurement.SLOMetPct = fmt.Sprintf("%.0f%%", 100*float64(measurement.SLOMetCount)/float64(measurement.SLORequestCount))
+		if measurement.WallTimeMSKnown && measurement.WallTimeMSValue > 0 {
+			measurement.GoodputRPS = displayFloat(float64(measurement.SLOMetCount) / (measurement.WallTimeMSValue / 1000))
+		}
+	}
+}
+
+func formatFailureCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	types := make([]string, 0, len(counts))
+	for errorType := range counts {
+		types = append(types, errorType)
+	}
+	sort.Slice(types, func(i, j int) bool {
+		if counts[types[i]] != counts[types[j]] {
+			return counts[types[i]] > counts[types[j]]
+		}
+		return types[i] < types[j]
+	})
+	parts := make([]string, 0, len(types))
+	for _, errorType := range types {
+		parts = append(parts, fmt.Sprintf("%d %s", counts[errorType], errorType))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // aggregateRepeatMeasurements collapses repeats of the same
@@ -432,6 +478,7 @@ func combineRepeats(members []SQLiteReportMeasurement) SQLiteReportMeasurement {
 	} else {
 		combined.WallTimeMS = "-"
 	}
+	combineDerivedValues(&combined, members)
 	mean, known := meanOverRepeats(members, func(m SQLiteReportMeasurement) (float64, bool) {
 		return m.OutputTokSValue, m.OutputTokSKnown
 	})
@@ -445,7 +492,6 @@ func combineRepeats(members []SQLiteReportMeasurement) SQLiteReportMeasurement {
 		{func(m SQLiteReportMeasurement) string { return m.OutputTokS }, func(m *SQLiteReportMeasurement, v string) { m.OutputTokS = v }},
 		{func(m SQLiteReportMeasurement) string { return m.TotalTokS }, func(m *SQLiteReportMeasurement, v string) { m.TotalTokS = v }},
 		{func(m SQLiteReportMeasurement) string { return m.PerUserOutputTokS }, func(m *SQLiteReportMeasurement, v string) { m.PerUserOutputTokS = v }},
-		{func(m SQLiteReportMeasurement) string { return m.RPS }, func(m *SQLiteReportMeasurement, v string) { m.RPS = v }},
 		{func(m SQLiteReportMeasurement) string { return m.TTFTMeanMS }, func(m *SQLiteReportMeasurement, v string) { m.TTFTMeanMS = v }},
 		{func(m SQLiteReportMeasurement) string { return m.TTFTP50MS }, func(m *SQLiteReportMeasurement, v string) { m.TTFTP50MS = v }},
 		{func(m SQLiteReportMeasurement) string { return m.TTFTP95MS }, func(m *SQLiteReportMeasurement, v string) { m.TTFTP95MS = v }},
@@ -461,6 +507,42 @@ func combineRepeats(members []SQLiteReportMeasurement) SQLiteReportMeasurement {
 		field.set(&combined, meanSpreadDisplay(members, field.get))
 	}
 	return combined
+}
+
+// combineDerivedValues recomputes derived numeric fields across all repeats
+// before displays are formatted: an aggregated row must never carry a single
+// repeat's goodput, GPU, achieved-concurrency, or failure data.
+func combineDerivedValues(combined *SQLiteReportMeasurement, members []SQLiteReportMeasurement) {
+	combined.AchievedValue, combined.AchievedKnown = meanOverRepeats(members, func(m SQLiteReportMeasurement) (float64, bool) {
+		return m.AchievedValue, m.AchievedKnown
+	})
+	combined.GPUUtilAvgValue, combined.GPUUtilKnown = meanOverRepeats(members, func(m SQLiteReportMeasurement) (float64, bool) {
+		return m.GPUUtilAvgValue, m.GPUUtilKnown
+	})
+	combined.GPUUtilPeakValue = 0
+	combined.GPUMemPeakValue = 0
+	combined.GPUMemKnown = false
+	combined.SLOMetCount = 0
+	combined.SLORequestCount = 0
+	combined.FailureCounts = map[string]int{}
+	for _, member := range members {
+		if member.GPUUtilKnown && member.GPUUtilPeakValue > combined.GPUUtilPeakValue {
+			combined.GPUUtilPeakValue = member.GPUUtilPeakValue
+			combined.GPUUtilSource = member.GPUUtilSource
+		}
+		if member.GPUMemKnown {
+			combined.GPUMemKnown = true
+			if member.GPUMemPeakValue > combined.GPUMemPeakValue {
+				combined.GPUMemPeakValue = member.GPUMemPeakValue
+			}
+		}
+		combined.SLOMetCount += member.SLOMetCount
+		combined.SLORequestCount += member.SLORequestCount
+		for errorType, count := range member.FailureCounts {
+			combined.FailureCounts[errorType] += count
+		}
+	}
+	formatDerivedDisplays(combined)
 }
 
 func meanOverRepeats(members []SQLiteReportMeasurement, value func(SQLiteReportMeasurement) (float64, bool)) (float64, bool) {

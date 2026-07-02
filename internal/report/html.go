@@ -158,15 +158,27 @@ type SQLiteReportMeasurement struct {
 	ITLMeanMS             string
 	ITLTokenWeightedMS    string
 	AchievedConcurrency   string
+	AchievedValue         float64
+	AchievedKnown         bool
 	FailureBreakdown      string
+	FailureCounts         map[string]int
 	GPUUtil               string
+	GPUUtilAvgValue       float64
+	GPUUtilPeakValue      float64
+	GPUUtilKnown          bool
+	GPUUtilSource         string
 	GPUMemPeak            string
+	GPUMemPeakValue       float64
+	GPUMemKnown           bool
 	SLOTTFTMillis         float64
 	SLOE2ELMillis         float64
 	SLONote               string
 	SLOMetPct             string
+	SLOMetCount           int64
+	SLORequestCount       int64
 	GoodputRPS            string
 	RepeatCount           int
+	ContextVerified       bool
 	ErrorType             string
 	ErrorMessage          string
 }
@@ -740,6 +752,7 @@ func applyContextLabel(measurement *SQLiteReportMeasurement) {
 	case measurement.ContextSemantics == "active" && measurement.ContextTarget > 0:
 		switch {
 		case measured && withinContextBand(activeEnd, measurement.ContextTarget):
+			measurement.ContextVerified = true
 			measurement.ContextLabel = contextLabel(measurement.ContextTarget) + " active context"
 			if longOutput {
 				measurement.ActiveRange = activeRangeLabel(activeStart, activeEnd)
@@ -751,7 +764,10 @@ func applyContextLabel(measurement *SQLiteReportMeasurement) {
 				"declared %s active, measured %s",
 				contextLabel(measurement.ContextTarget), activeRangeLabel(activeStart, activeEnd))
 		default:
-			measurement.ContextLabel = contextLabel(measurement.ContextTarget) + " active (unverified)"
+			// No measured tokens (failed, planned, dry run): the claim is
+			// declared but unconfirmed, so say so and never count it as a
+			// verified active context.
+			measurement.ContextLabel = "unverified (declared " + contextLabel(measurement.ContextTarget) + " active)"
 		}
 	case measurement.ContextSemantics == "capacity" && measurement.ContextTarget > 0:
 		measurement.ContextLabel = contextLabel(measurement.ContextTarget) + " capacity"
@@ -1201,7 +1217,7 @@ func sqliteReportMetadataItems(doc SQLiteReportDocument) []SQLiteReportMetadataI
 		// Active contexts come only from declared-and-verified claims; the
 		// server limit is reported separately and never as a context.
 		{Label: "Active contexts", Value: formatContextList(measurementPositiveInts(doc.Measurements, func(measurement SQLiteReportMeasurement) int {
-			if measurement.ContextSemantics == "active" && !measurement.ContextMismatch {
+			if measurement.ContextVerified {
 				return measurement.ContextTarget
 			}
 			return 0
