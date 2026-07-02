@@ -30,14 +30,23 @@ func WriteSQLiteArtifact(runDir, artifactPath string, spec Spec, summary RunSumm
 	if strings.TrimSpace(artifactPath) == "" {
 		return nil
 	}
+	_, statErr := os.Stat(artifactPath)
+	createdFresh := statErr != nil
 	db, err := createSQLiteArtifact(artifactPath)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	return withSQLiteTx(db, func(tx *sql.Tx) error {
+	writeErr := withSQLiteTx(db, func(tx *sql.Tx) error {
 		return writeSQLiteRun(tx, runDir, spec, summary, plan, originalSpecPath)
 	})
+	if writeErr != nil && createdFresh {
+		// A failed first write must not strand a schema-only file that
+		// later appends would reject.
+		_ = db.Close()
+		_ = os.Remove(artifactPath)
+	}
+	return writeErr
 }
 
 func createSQLiteArtifact(path string) (*sql.DB, error) {

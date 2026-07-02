@@ -108,8 +108,16 @@ func mergeAttachedRuns(tx *sql.Tx, summary *MergeSummary) error {
 	return nil
 }
 
+// splitMergeRuns classifies source runs: absent from the destination means
+// merge; present with matching provenance (created_at and recorded run
+// directory) means an idempotent skip; present with different provenance is
+// a run-id collision that would silently drop results, so it is an error.
 func splitMergeRuns(tx *sql.Tx) (merged, skipped []string, err error) {
-	rows, err := tx.Query(`SELECT s.id, EXISTS (SELECT 1 FROM main.run m WHERE m.id = s.id)
+	rows, err := tx.Query(`SELECT s.id,
+		EXISTS (SELECT 1 FROM main.run m WHERE m.id = s.id),
+		EXISTS (SELECT 1 FROM main.run m WHERE m.id = s.id
+			AND m.created_at = s.created_at
+			AND COALESCE(json_extract(m.labels_json, '$.run_dir'), '') = COALESCE(json_extract(s.labels_json, '$.run_dir'), ''))
 		FROM src.run s ORDER BY s.created_at, s.id`)
 	if err != nil {
 		return nil, nil, err
@@ -117,15 +125,18 @@ func splitMergeRuns(tx *sql.Tx) (merged, skipped []string, err error) {
 	defer rows.Close()
 	for rows.Next() {
 		var id string
-		var exists bool
-		if err := rows.Scan(&id, &exists); err != nil {
+		var exists, sameProvenance bool
+		if err := rows.Scan(&id, &exists, &sameProvenance); err != nil {
 			return nil, nil, err
 		}
-		if exists {
+		switch {
+		case !exists:
+			merged = append(merged, id)
+		case sameProvenance:
 			skipped = append(skipped, id)
-			continue
+		default:
+			return nil, nil, fmt.Errorf("run id %q already exists in the destination with different provenance; rename the run directory before merging", id)
 		}
-		merged = append(merged, id)
 	}
 	return merged, skipped, rows.Err()
 }

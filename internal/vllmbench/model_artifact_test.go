@@ -124,6 +124,32 @@ func TestModelLevelArtifactRejectsBasenameCollisions(t *testing.T) {
 	assertRunCount(t, artifactPath, 1)
 }
 
+func TestMergeRejectsRunIDCollisions(t *testing.T) {
+	dir := t.TempDir()
+	makeSingle := func(parent string) string {
+		spec := testSpec()
+		spec.OutputDir = dir
+		path := filepath.Join(dir, parent+".sqlite")
+		if _, err := Execute(context.Background(), spec, RunOptions{
+			DryRun:       true,
+			RunDir:       filepath.Join(dir, parent, "run"),
+			ArtifactPath: path,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	first := makeSingle("a")
+	second := makeSingle("b")
+	dst := filepath.Join(dir, "model.sqlite")
+	// Both sources carry run id "run" from different directories: merging
+	// must refuse rather than silently drop the second run as a duplicate.
+	_, err := artifact.Merge(dst, []string{first, second})
+	if err == nil || !strings.Contains(err.Error(), "different provenance") {
+		t.Fatalf("merge error = %v, want provenance collision refusal", err)
+	}
+}
+
 func TestMergeDoesNotLeaveEmptyDestinationOnBadSource(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "model.sqlite")
