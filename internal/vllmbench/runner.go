@@ -803,9 +803,12 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	})
 	sampler := startGPUTelemetrySampler(ctx, events, planned)
 	result, err := executeLoadCommand(ctx, spec, planned, command, logPath)
+	// Capture the finish time before waiting for the sampler: an in-flight
+	// telemetry sample must not stretch the recorded wall time.
+	finishedAt := time.Now().UTC()
 	sampler.Stop()
 	event := Event{
-		Timestamp:       time.Now().UTC(),
+		Timestamp:       finishedAt,
 		Type:            "workload_finish",
 		Profile:         planned.Profile.Name,
 		Workload:        planned.Workload.Name,

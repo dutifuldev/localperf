@@ -260,6 +260,8 @@ type SQLiteReportThroughputComparisonRow struct {
 	Err                 int
 	Requests            string
 	SLO                 string
+	DecodeSLO           string
+	PrefillSLO          string
 	DecodeTokSHeat      string
 	DecodeUserHeat      string
 	DecodeTTFTMeanHeat  string
@@ -1552,9 +1554,22 @@ func applyThroughputComparisonSource(target *SQLiteReportThroughputComparisonRow
 	target.Err = target.DecodeErr + target.PrefillErr
 	target.Requests = fmt.Sprintf("%d / %d", target.OK, target.Err)
 	if source.SLODisplay != "" {
-		target.SLO = source.SLODisplay
+		if source.Mode == "prefill" {
+			target.PrefillSLO = source.SLODisplay
+		} else {
+			target.DecodeSLO = source.SLODisplay
+		}
 	}
-	if target.SLO == "" {
+	// Both phases can declare SLOs; neither result may silently overwrite
+	// the other.
+	switch {
+	case target.DecodeSLO != "" && target.PrefillSLO != "":
+		target.SLO = "D " + target.DecodeSLO + " · P " + target.PrefillSLO
+	case target.DecodeSLO != "":
+		target.SLO = target.DecodeSLO
+	case target.PrefillSLO != "":
+		target.SLO = target.PrefillSLO
+	default:
 		target.SLO = "-"
 	}
 }
