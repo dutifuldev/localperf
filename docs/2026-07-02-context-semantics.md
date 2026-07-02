@@ -40,10 +40,20 @@ capacity with active context and misleads every reader of the report.
   experimental variable, but it is never a workload measurement.
 - **Active context**: the number of tokens in the KV cache for a request. It
   starts at the prompt length after prefill and grows to prompt length plus
-  output length by the end of decode. For a measurement, the reference value
-  is the measured per-request mean:
-  `active_end = avg(prompt_tokens) + avg(completion_tokens)` over completed
-  requests.
+  output length by the end of decode. Because it changes over the run, a
+  measurement has three reference values, all per-request means over
+  completed requests:
+  - `active_start = avg(prompt_tokens)`: context during prefill and at the
+    first decode step.
+  - `active_end = avg(prompt_tokens) + avg(completion_tokens)`: peak context
+    at the last decode step.
+  - `active_avg = avg(prompt_tokens) + avg(completion_tokens) / 2`: mean
+    context across decode steps, the value sustained decode throughput is
+    most representative of.
+
+  `context_target` always refers to `active_end` (peak KV usage). For
+  long-output workloads the three values differ materially, so reports must
+  not collapse them into one bare number; see the labeling rules.
 - **Requested shape**: `random_input_len` and `random_output_len` on the
   workload. These are intents; measured token counts are the ground truth.
 
@@ -68,7 +78,7 @@ Workloads declare what their context number means:
 Validation rules, enforced as hard errors at spec load:
 
 1. `context_semantics: "active"` requires
-   `random_input_len + random_output_len` to be within 75% to 100% of
+   `random_input_len + random_output_len` to be within 90% to 100% of
    `context_target`, and every profile the workload runs against must have
    `max_model_len >= context_target`.
 2. `context_semantics: "capacity"` requires `context_target` to equal the
@@ -88,24 +98,32 @@ a 32k-capacity server. Either set context_target to 5120, raise
 random_input_len, or declare context_semantics: "capacity".
 ```
 
-The 75% floor leaves room for chat template overhead and tokenizer drift
-between requested and measured token counts. Widen it only deliberately and
-in this doc, not ad hoc in code.
+The 90% floor leaves room for chat template overhead and tokenizer drift
+between requested and measured token counts while keeping the label strict: a
+24k workload cannot pass as a 32k point. The default sweep shapes land at
+roughly 98% of target, so well-formed specs clear the floor with margin.
+Widen the band only deliberately and in this doc, not ad hoc in code.
 
 ## Report labeling rules
 
 1. A context label in a group title or heading may only come from a declared
-   `context_target` whose measured `active_end` also lands within the 75% to
+   `context_target` whose measured `active_end` also lands within the 90% to
    100% band of the target. Declared and confirmed by measurement, or not
    shown.
-2. Rows without a declared target, and rows whose measurement disagrees with
+2. `context_target` names the peak (`active_end`). Rows whose output length
+   is more than a few tokens must also display the measured active range
+   `active_start -> active_end`, for example `28k -> 32k active`, so a
+   long-output decode row is not read as decoding at a constant 32k context.
+   Prefill rows with minimal output may display a single number, since start
+   and end coincide.
+3. Rows without a declared target, and rows whose measurement disagrees with
    the declared target, are labeled by measured shape instead, for example
    `~1k in / 4k out`. A declared-but-contradicted target renders as an
    explicit mismatch warning, never as the label.
-3. `max_model_len` always renders as a server limit attribute (for example
+4. `max_model_len` always renders as a server limit attribute (for example
    `server limit: 32k`), never as a group title, and never on the report's
    "Contexts" summary line. The summary line reports active-context points.
-4. Prefill throughput is interpreted from measured prompt tokens and TTFT;
+5. Prefill throughput is interpreted from measured prompt tokens and TTFT;
    decode throughput from measured completion tokens. Neither is ever
    attributed to the server limit.
 

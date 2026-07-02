@@ -47,10 +47,15 @@ contract and validation rules.
 Each active-context point `N` includes both workload shapes, with input
 lengths that track `N`:
 
-- `prefill`: long prompt, short output. Default shape:
-  `input = N - output - headroom`, `output = 256`.
+- `prefill`: long prompt, minimal output, measured through TTFT. Default
+  shape: `input = N - headroom`, `output = 1`. Keep output at 1 (at most a
+  few tokens); anything larger spends run time decoding and pollutes the
+  prefill numbers.
 - `decode`: long prompt, long output within `N`. Default shape:
-  `output = min(4096, N/4)`, `input = N - output - headroom`.
+  `output = min(4096, N/4)`, `input = N - output - headroom`. A decode row
+  sweeps an active context range from `input` up to `N` as output tokens
+  accumulate; reports label it with that range per
+  `2026-07-02-context-semantics.md`.
 
 with `headroom = max(64, N/64)` to absorb chat template and tokenizer drift.
 Prefill rows are reported as aggregate and per-user prefill tok/s; decode rows
