@@ -92,18 +92,21 @@ var ReportMetrics = []MetricDef{
 // requests table at render time. Absent when the measurement was recorded
 // without detailed request rows; the fallback is "-", never a substitute
 // number.
+// GPUUtilStat is one telemetry source's utilization aggregate for a
+// measurement.
+type GPUUtilStat struct {
+	Avg  float64
+	Peak float64
+}
+
 type sqliteRequestDerived struct {
 	ITLTokenWeightedMS   float64
 	ITLTokenWeightedOK   bool
 	AchievedConcurrency  float64
 	AchievedConcurrencyK bool
 	FailureCounts        map[string]int
-	GPUUtilAvg           float64
-	GPUUtilPeak          float64
-	GPUUtilKnown         bool
-	GPUUtilSource        string
-	GPUMemPeakBytes      float64
-	GPUMemKnown          bool
+	GPUUtilBySource      map[string]GPUUtilStat
+	GPUMemPeakBySource   map[string]float64
 }
 
 func loadSQLiteReportRequestDerived(db *sql.DB, doc *SQLiteReportDocument) error {
@@ -151,13 +154,15 @@ func loadGPUTelemetryStats(db *sql.DB, doc *SQLiteReportDocument) error {
 		derived := doc.RequestDerived[measurementID]
 		switch metric {
 		case "gpu_utilization_percent":
-			derived.GPUUtilAvg = avg
-			derived.GPUUtilPeak = peak
-			derived.GPUUtilKnown = true
-			derived.GPUUtilSource = source
+			if derived.GPUUtilBySource == nil {
+				derived.GPUUtilBySource = map[string]GPUUtilStat{}
+			}
+			derived.GPUUtilBySource[source] = GPUUtilStat{Avg: avg, Peak: peak}
 		case "gpu_memory_used_bytes":
-			derived.GPUMemPeakBytes = peak
-			derived.GPUMemKnown = true
+			if derived.GPUMemPeakBySource == nil {
+				derived.GPUMemPeakBySource = map[string]float64{}
+			}
+			derived.GPUMemPeakBySource[source] = peak
 		}
 		doc.RequestDerived[measurementID] = derived
 	}
@@ -336,12 +341,8 @@ func applyRequestDerived(measurement *SQLiteReportMeasurement, derived sqliteReq
 	measurement.AchievedValue = derived.AchievedConcurrency
 	measurement.AchievedKnown = derived.AchievedConcurrencyK
 	measurement.FailureCounts = derived.FailureCounts
-	measurement.GPUUtilAvgValue = derived.GPUUtilAvg
-	measurement.GPUUtilPeakValue = derived.GPUUtilPeak
-	measurement.GPUUtilKnown = derived.GPUUtilKnown
-	measurement.GPUUtilSource = derived.GPUUtilSource
-	measurement.GPUMemPeakValue = derived.GPUMemPeakBytes
-	measurement.GPUMemKnown = derived.GPUMemKnown
+	measurement.GPUUtilBySource = derived.GPUUtilBySource
+	measurement.GPUMemPeakBySource = derived.GPUMemPeakBySource
 	formatDerivedDisplays(measurement)
 }
 
@@ -362,17 +363,35 @@ func formatDerivedDisplays(measurement *SQLiteReportMeasurement) {
 	} else {
 		measurement.RPS = "-"
 	}
-	if measurement.GPUUtilKnown {
-		measurement.GPUUtil = fmt.Sprintf("%.0f / %.0f%% (%s)", measurement.GPUUtilAvgValue, measurement.GPUUtilPeakValue, measurement.GPUUtilSource)
-	} else {
-		measurement.GPUUtil = "-"
+	// Every source renders separately: hiding one signal behind another is
+	// how disagreements between them go unnoticed.
+	measurement.GPUUtil = "-"
+	if len(measurement.GPUUtilBySource) > 0 {
+		parts := make([]string, 0, len(measurement.GPUUtilBySource))
+		for _, source := range sortedKeys(measurement.GPUUtilBySource) {
+			stat := measurement.GPUUtilBySource[source]
+			parts = append(parts, fmt.Sprintf("%.0f / %.0f%% (%s)", stat.Avg, stat.Peak, source))
+		}
+		measurement.GPUUtil = strings.Join(parts, "; ")
 	}
-	if measurement.GPUMemKnown {
-		measurement.GPUMemPeak = fmt.Sprintf("%.1f GiB", measurement.GPUMemPeakValue/(1024*1024*1024))
-	} else {
-		measurement.GPUMemPeak = "-"
+	measurement.GPUMemPeak = "-"
+	if len(measurement.GPUMemPeakBySource) > 0 {
+		parts := make([]string, 0, len(measurement.GPUMemPeakBySource))
+		for _, source := range sortedKeys(measurement.GPUMemPeakBySource) {
+			parts = append(parts, fmt.Sprintf("%.1f GiB (%s)", measurement.GPUMemPeakBySource[source]/(1024*1024*1024), source))
+		}
+		measurement.GPUMemPeak = strings.Join(parts, "; ")
 	}
 	formatSLODisplays(measurement)
+}
+
+func sortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func formatSLODisplays(measurement *SQLiteReportMeasurement) {
@@ -516,24 +535,25 @@ func combineDerivedValues(combined *SQLiteReportMeasurement, members []SQLiteRep
 	combined.AchievedValue, combined.AchievedKnown = meanOverRepeats(members, func(m SQLiteReportMeasurement) (float64, bool) {
 		return m.AchievedValue, m.AchievedKnown
 	})
-	combined.GPUUtilAvgValue, combined.GPUUtilKnown = meanOverRepeats(members, func(m SQLiteReportMeasurement) (float64, bool) {
-		return m.GPUUtilAvgValue, m.GPUUtilKnown
-	})
-	combined.GPUUtilPeakValue = 0
-	combined.GPUMemPeakValue = 0
-	combined.GPUMemKnown = false
 	combined.SLOMetCount = 0
 	combined.SLORequestCount = 0
 	combined.FailureCounts = map[string]int{}
+	combined.GPUUtilBySource = map[string]GPUUtilStat{}
+	combined.GPUMemPeakBySource = map[string]float64{}
+	utilCounts := map[string]int{}
 	for _, member := range members {
-		if member.GPUUtilKnown && member.GPUUtilPeakValue > combined.GPUUtilPeakValue {
-			combined.GPUUtilPeakValue = member.GPUUtilPeakValue
-			combined.GPUUtilSource = member.GPUUtilSource
+		for source, stat := range member.GPUUtilBySource {
+			current := combined.GPUUtilBySource[source]
+			current.Avg += stat.Avg
+			if stat.Peak > current.Peak {
+				current.Peak = stat.Peak
+			}
+			combined.GPUUtilBySource[source] = current
+			utilCounts[source]++
 		}
-		if member.GPUMemKnown {
-			combined.GPUMemKnown = true
-			if member.GPUMemPeakValue > combined.GPUMemPeakValue {
-				combined.GPUMemPeakValue = member.GPUMemPeakValue
+		for source, peak := range member.GPUMemPeakBySource {
+			if peak > combined.GPUMemPeakBySource[source] {
+				combined.GPUMemPeakBySource[source] = peak
 			}
 		}
 		combined.SLOMetCount += member.SLOMetCount
@@ -541,6 +561,11 @@ func combineDerivedValues(combined *SQLiteReportMeasurement, members []SQLiteRep
 		for errorType, count := range member.FailureCounts {
 			combined.FailureCounts[errorType] += count
 		}
+	}
+	for source, count := range utilCounts {
+		current := combined.GPUUtilBySource[source]
+		current.Avg /= float64(count)
+		combined.GPUUtilBySource[source] = current
 	}
 	formatDerivedDisplays(combined)
 }

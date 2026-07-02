@@ -1060,11 +1060,14 @@ func applyEngineIdentityEvents(tx *sql.Tx, runID string, spec Spec, events []Eve
 		if err := json.Unmarshal(event.Details, &identity); err != nil {
 			continue
 		}
+		// Key the identity by profile: one engine definition can serve
+		// several profiles with different models, and the last probe must
+		// not overwrite the others.
 		if _, err := tx.Exec(`UPDATE engines SET
 			version = COALESCE(NULLIF(?, ''), version),
-			metadata_json = json_patch(COALESCE(metadata_json, '{}'), json_object('identity', json(?)))
+			metadata_json = json_patch(COALESCE(metadata_json, '{}'), json_object('identity', json_object(?, json(?))))
 			WHERE run_id = ? AND id = ?`,
-			identity.Version, string(event.Details), runID, engineName); err != nil {
+			identity.Version, event.Profile, string(event.Details), runID, engineName); err != nil {
 			return err
 		}
 	}

@@ -606,6 +606,26 @@ func TestValidateContextSemantics(t *testing.T) {
 			},
 			wantErr: `context_semantics "active" requires the random dataset`,
 		},
+		{
+			name: "active rejects ranged random lengths",
+			mutate: func(w *Workload) {
+				w.ContextTarget = 8192
+				w.ContextSemantics = ContextSemanticsActive
+				w.RandomInputLen = 8063
+				w.RandomOutputLen = 1
+				w.RandomRangeRatio = "0.5"
+			},
+			wantErr: `context_semantics "active" requires random_range_ratio 0`,
+		},
+		{
+			name: "slo rejects explicit save_detailed false",
+			mutate: func(w *Workload) {
+				w.SLO = &SLOConfig{TTFTP95Millis: 500}
+				saveDetailed := false
+				w.SaveDetailed = &saveDetailed
+			},
+			wantErr: "slo requires save_detailed",
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -328,6 +329,12 @@ func applyWorkloadDefault(workload *Workload) {
 	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
 	applyLoadGeneratorDefault(workload)
 	workload.Phase = workloadPhase(*workload)
+	// Goodput derivation needs per-request rows; an SLO without detailed
+	// output would silently render "-" for every run.
+	if workload.SLO != nil && workload.SaveDetailed == nil {
+		saveDetailed := true
+		workload.SaveDetailed = &saveDetailed
+	}
 }
 
 func applyWorkloadCompatibilityDefaults(workload *Workload) {
@@ -884,12 +891,18 @@ func validateWorkloadSLO(prefix string, workload Workload) []string {
 	if workload.SLO.TTFTP95Millis == 0 && workload.SLO.E2ELP95Millis == 0 {
 		issues = append(issues, prefix+": slo must set at least one target")
 	}
+	if workload.SaveDetailed != nil && !*workload.SaveDetailed {
+		issues = append(issues, prefix+": slo requires save_detailed (goodput is derived from per-request rows)")
+	}
 	return issues
 }
 
 func validateActiveContextClaim(prefix string, workload Workload, profiles []Profile) []string {
 	if workload.DatasetName != "random" {
 		return []string{prefix + `: context_semantics "active" requires the random dataset so requested token counts are exact`}
+	}
+	if !zeroRangeRatio(workload.RandomRangeRatio) {
+		return []string{prefix + `: context_semantics "active" requires random_range_ratio 0 so every request stays inside the claimed band`}
 	}
 	var issues []string
 	requested := workload.RandomInputLen + workload.RandomOutputLen
@@ -921,6 +934,17 @@ func validateCapacityContextClaim(prefix string, workload Workload, profiles []P
 		}
 	}
 	return issues
+}
+
+// zeroRangeRatio reports whether random_range_ratio is unset or exactly
+// zero; any other value makes requested token counts a range, not a number.
+func zeroRangeRatio(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	return err == nil && parsed == 0
 }
 
 // pairedProfiles mirrors plannedProfileNames: an empty profile list pairs

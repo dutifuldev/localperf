@@ -77,7 +77,9 @@ type SQLiteReportEngine struct {
 	Version         string
 	GitCommit       string
 	EndpointBaseURL string
-	ServedModel     string
+	// ServedModelByProfile is the self-reported model per probed profile,
+	// from the engine identity stored under metadata_json.identity.
+	ServedModelByProfile map[string]string
 }
 
 type SQLiteReportProfile struct {
@@ -163,13 +165,9 @@ type SQLiteReportMeasurement struct {
 	FailureBreakdown      string
 	FailureCounts         map[string]int
 	GPUUtil               string
-	GPUUtilAvgValue       float64
-	GPUUtilPeakValue      float64
-	GPUUtilKnown          bool
-	GPUUtilSource         string
+	GPUUtilBySource       map[string]GPUUtilStat
 	GPUMemPeak            string
-	GPUMemPeakValue       float64
-	GPUMemKnown           bool
+	GPUMemPeakBySource    map[string]float64
 	SLOTTFTMillis         float64
 	SLOE2ELMillis         float64
 	SLONote               string
@@ -603,7 +601,7 @@ func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
 		name, type, managed, COALESCE(command, ''), COALESCE(version, ''),
 		COALESCE(git_commit, ''), COALESCE(endpoint_base_url, ''),
-		COALESCE(json_extract(metadata_json, '$.identity.models.data[0].id'), '')
+		COALESCE(metadata_json, '')
 		FROM engines ORDER BY name`)
 	if err != nil {
 		return err
@@ -612,16 +610,40 @@ func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 	for rows.Next() {
 		var engine SQLiteReportEngine
 		var managed int
+		var metadataJSON string
 		if err := rows.Scan(
 			&engine.Name, &engine.Type, &managed, &engine.Command, &engine.Version,
-			&engine.GitCommit, &engine.EndpointBaseURL, &engine.ServedModel,
+			&engine.GitCommit, &engine.EndpointBaseURL, &metadataJSON,
 		); err != nil {
 			return err
 		}
 		engine.Managed = managed != 0
+		engine.ServedModelByProfile = servedModelsByProfile(metadataJSON)
 		doc.Engines = append(doc.Engines, engine)
 	}
 	return rows.Err()
+}
+
+func servedModelsByProfile(metadataJSON string) map[string]string {
+	var metadata struct {
+		Identity map[string]struct {
+			Models struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			} `json:"models"`
+		} `json:"identity"`
+	}
+	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
+		return nil
+	}
+	served := map[string]string{}
+	for profile, identity := range metadata.Identity {
+		if len(identity.Models.Data) > 0 && identity.Models.Data[0].ID != "" {
+			served[profile] = identity.Models.Data[0].ID
+		}
+	}
+	return served
 }
 
 func loadSQLiteReportProfiles(db *sql.DB, doc *SQLiteReportDocument) error {
@@ -1238,22 +1260,22 @@ func sqliteReportMetadataItems(doc SQLiteReportDocument) []SQLiteReportMetadataI
 // disagreements from the engine identity probe. Declared, checked, then
 // shown: a silent mismatch is how a benchmark reports the wrong model.
 func servedModelMismatchItems(doc SQLiteReportDocument) []SQLiteReportMetadataItem {
-	served := map[string]string{}
+	servedByEngine := map[string]map[string]string{}
 	for _, engine := range doc.Engines {
-		if engine.ServedModel != "" {
-			served[engine.Name] = engine.ServedModel
+		if len(engine.ServedModelByProfile) > 0 {
+			servedByEngine[engine.Name] = engine.ServedModelByProfile
 		}
 	}
-	if len(served) == 0 {
+	if len(servedByEngine) == 0 {
 		return nil
 	}
 	var items []SQLiteReportMetadataItem
 	seen := map[string]bool{}
 	for _, profile := range doc.Profiles {
-		// Compare each profile only against the model reported by its own
-		// engine; cross-engine comparisons would fabricate mismatches on
-		// valid multi-engine runs.
-		servedModel := served[profile.Engine]
+		// Compare each profile only against the model its own probe
+		// reported; cross-profile or cross-engine comparisons would
+		// fabricate mismatches on valid multi-model runs.
+		servedModel := servedByEngine[profile.Engine][profile.Name]
 		if profile.Model == "" || servedModel == "" || servedModel == profile.Model || seen[profile.Model+servedModel] {
 			continue
 		}

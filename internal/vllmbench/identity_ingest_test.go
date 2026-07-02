@@ -81,8 +81,8 @@ func TestArtifactIngestsIdentityAndGPUTelemetryEvents(t *testing.T) {
 	defer db.Close()
 	var version, servedModel string
 	if err := db.QueryRow(`SELECT COALESCE(version, ''),
-		COALESCE(json_extract(metadata_json, '$.identity.models.data[0].id'), '')
-		FROM engines LIMIT 1`).Scan(&version, &servedModel); err != nil {
+		COALESCE(json_extract(metadata_json, '$.identity.' || ? || '.models.data[0].id'), '')
+		FROM engines LIMIT 1`, planned.Profile.Name).Scan(&version, &servedModel); err != nil {
 		t.Fatal(err)
 	}
 	if version != "0.11.0" || servedModel != "served/other-model" {
