@@ -9,16 +9,30 @@ It is currently focused on vLLM-managed runs, with an engine-neutral benchmark
 spec and CLI shape:
 
 ```sh
-go run ./cmd/localperf sweep plan --model <model-id> --out spec.json
-go run ./cmd/localperf bench run  --spec spec.json --artifact runs/models/<model-slug>.sqlite
-go run ./cmd/localperf artifact render runs/models/<model-slug>.sqlite
+localperf sweep plan --model <model-id> --out spec.json
+localperf bench run  --spec spec.json --artifact runs/models/<model-slug>.sqlite
+localperf artifact render runs/models/<model-slug>.sqlite
 ```
+
+## Install
+
+Install with Go:
+
+```sh
+go install github.com/dutifuldev/localperf/cmd/localperf@v0.1.0
+```
+
+Or download a prebuilt binary (linux/darwin, amd64/arm64) from the
+[latest release](https://github.com/dutifuldev/localperf/releases/latest).
+From a repo checkout, `go run ./cmd/localperf` works everywhere `localperf`
+appears below.
 
 ## Requirements
 
-- Go 1.26 or newer.
 - vLLM installed and available as `vllm` for real managed benchmark runs.
 - Enough available system memory for the model profile you run.
+- Go 1.26 or newer only when installing via `go install` or running from
+  source.
 - `sqlite3` if you want to inspect artifacts from the shell.
 
 The included DiffusionGemma example targets
@@ -31,7 +45,7 @@ Generate the default context/concurrency sweep spec instead of hand-writing
 the grid:
 
 ```sh
-go run ./cmd/localperf sweep plan \
+localperf sweep plan \
   --model nvidia/diffusiongemma-26B-A4B-it-NVFP4 \
   --contexts 8k,16k,32k --concurrency 1,4,8 \
   --out spec.json
@@ -40,13 +54,13 @@ go run ./cmd/localperf sweep plan \
 Preview the planned runs without starting a model:
 
 ```sh
-go run ./cmd/localperf bench plan --spec spec.json
+localperf bench plan --spec spec.json
 ```
 
 Run one dry benchmark case and validate the artifact:
 
 ```sh
-go run ./cmd/localperf bench run \
+localperf bench run \
   --dry-run \
   --spec examples/diffusiongemma-vllm-standard/spec.json \
   --profile 4k-reference \
@@ -54,21 +68,21 @@ go run ./cmd/localperf bench run \
   --concurrency 1 \
   --run-dir /tmp/localperf-onecase-dry
 
-go run ./cmd/localperf artifact check /tmp/localperf-onecase-dry.sqlite
+localperf artifact check /tmp/localperf-onecase-dry.sqlite
 ```
 
 Run the full spec only when the machine is ready for it, pointing batches at
 one model-level artifact:
 
 ```sh
-go run ./cmd/localperf bench run --spec spec.json --timeout 4h \
+localperf bench run --spec spec.json --timeout 4h \
   --artifact runs/models/<model-slug>.sqlite
 ```
 
 Render the HTML report:
 
 ```sh
-go run ./cmd/localperf artifact render runs/models/<model-slug>.sqlite
+localperf artifact render runs/models/<model-slug>.sqlite
 ```
 
 ## Model-Level Artifacts
@@ -79,7 +93,7 @@ appends the new run; re-running the same run directory replaces that run.
 Combine existing per-run artifacts with:
 
 ```sh
-go run ./cmd/localperf artifact merge \
+localperf artifact merge \
   --into runs/models/<model-slug>.sqlite runs/batch-1.sqlite runs/batch-2.sqlite
 ```
 
