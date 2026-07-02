@@ -531,6 +531,28 @@ Use stable telemetry series names where possible.
 Unknown telemetry is allowed, but it must use a clear `source`, `name`, and
 `unit`.
 
+## Column Conventions
+
+Additive conventions for existing columns, introduced by
+`2026-07-02-reporting-completeness-plan.md`. None of these change the schema
+or the format version; absent values simply render as unavailable.
+
+- `run.host_json`: hardware inventory captured at run start. Expected keys:
+  `cpu`, `ram_gib`, and `gpus` (a list of `{name, vram_gib, driver}`), plus
+  which telemetry sources were available.
+- `engines.version` and `engines.metadata_json`: filled from startup identity
+  probes (`/version` for vLLM, `/v1/models` for any OpenAI-compatible
+  server). `metadata_json` stores the server's self-reported identity so
+  external engines are verified rather than trusted.
+- `profiles.serve_json`: includes `enable_prefix_caching` when known, since
+  prefix caching changes how prefill numbers must be read.
+- `workloads.metadata_json`: may carry an optional `slo` object (for example
+  `{"ttft_p95_ms": 500, "e2el_p95_ms": 30000}`) used to derive goodput at
+  report time.
+- Context semantics fields on workloads (`context_target`,
+  `context_semantics`) live in the normalized spec and workload JSON per
+  `2026-07-02-context-semantics.md`.
+
 ## Artifact Kinds
 
 `artifacts.kind` should use these values first:

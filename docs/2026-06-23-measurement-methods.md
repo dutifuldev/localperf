@@ -147,15 +147,25 @@ blank.
 For each load phase, record:
 
 - requested concurrency,
+- achieved concurrency when it diverges from requested,
 - successful responses,
-- failed responses,
+- failed responses, broken down by error type,
 - wall time,
 - prompt tokens,
 - completion tokens,
 - total tokens,
 - output tokens per second,
 - total tokens per second,
-- latency p50/p95/p99 when enough samples exist.
+- latency p50/p95/p99 when enough samples exist,
+- TTFT mean/p50/p95/p99 when streaming,
+- TPOT as the request-weighted mean of per-request means,
+- ITL as the token-weighted mean over all inter-token gaps.
+
+TPOT and ITL differ in weighting and must not be presented as
+interchangeable: TPOT treats every request equally and describes per-user
+experience; ITL weights by generated tokens and describes steady-state system
+behavior. State the weighting wherever either number is shown; the reporting
+implementation follows `2026-07-02-reporting-completeness-plan.md`.
 
 Keep the workload shape explicit:
 
@@ -230,6 +240,11 @@ Use:
 
 A configuration can fit but still be slow. A configuration can be fast for short
 requests but unsafe for long-context load. Keep those conclusions separate.
+
+The per-row version of this rule is the capacity-versus-active-context
+contract in `2026-07-02-context-semantics.md`: a performance row is never
+labeled with a capacity number (`max_model_len`); it is labeled by the active
+context the workload actually exercised.
 
 ## Minimum Run Record
 

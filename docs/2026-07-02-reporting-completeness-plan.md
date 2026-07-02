@@ -77,8 +77,14 @@ Runner changes; benefits future runs, older artifacts render "-":
   header gains a Hardware line. Degrade gracefully without nvidia-smi.
 - GPU telemetry into the existing (currently unused) `telemetry_series` and
   `telemetry_samples` tables: utilization and memory-used sampled about
-  every 2s during measurement phases, tagged with `measurement_id`. Report
-  shows avg/peak GPU utilization and peak VRAM per row.
+  every 2s during measurement phases, tagged with `measurement_id`. Follow
+  the source preference order in `2026-06-23-measurement-methods.md`
+  (`tegrastats` on unified-memory systems, then NVML/DCGM, then
+  `nvidia-smi`) and the series names in
+  `2026-06-29-sqlite-run-artifact-format.md`. On unified-memory systems GPU
+  memory counters may be unreliable; record the source and cross-check
+  against `MemAvailable` drop rather than trusting one signal. Report shows
+  avg/peak GPU utilization and peak VRAM per row, with the source named.
 - Engine identity probes: GET `/version` (vLLM) and `/v1/models` (any
   OpenAI-compatible server, including LM Studio and llama.cpp) at startup.
   Fill the currently always-NULL `engines.version` and store the server's
@@ -95,8 +101,12 @@ Runner changes; benefits future runs, older artifacts render "-":
   `workloads.metadata_json`; no schema change. At render time, compute the
   fraction of completed requests meeting the SLO and goodput as SLO-met
   requests per second. Rendered only when declared; the report never invents
-  a quality bar. Add an SLO section to
-  `2026-06-23-measurement-methods.md` before implementing.
+  a quality bar. Note: the spec already passes a `goodput` field through to
+  `vllm bench serve` (see `2026-06-26-standard-vllm-benchmarking.md`); the
+  render-time derivation is the canonical one because it is engine-agnostic
+  and re-derivable, but the two must agree on SLO definitions, not compete.
+  Add an SLO section to `2026-06-23-measurement-methods.md` before
+  implementing.
 - `localperf sweep plan`: emits the default context/concurrency grid with
   contract-compliant shapes and declared context semantics, per
   `2026-07-02-default-inference-sweep.md`.

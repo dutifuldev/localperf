@@ -62,11 +62,16 @@ Use separate workloads for separate questions.
 
 | Question | Dataset shape | Output length | Primary metric |
 | --- | --- | ---: | --- |
-| Prefill speed | `random` with long input | 16 or 32 | total token/s and TTFT |
+| Prefill speed | `random` with long input | 1 | prefill token/s from prompt tokens and TTFT |
 | Decode throughput | `random` with short or medium input | 256 or 512 | output token/s |
 | Claim reproduction | exact published prompt/output/concurrency shape | as claimed | per-user and aggregate output token/s |
 | Realistic chat | ShareGPT or a checked-in custom prompt set | task-dependent | latency and success rate |
 | Prefix cache | `prefix_repetition` | task-dependent | cache hit benefit |
+
+Prefill output length must stay at 1 (at most a few tokens); anything larger
+spends run time decoding and pollutes prefill numbers. Context-ladder shapes
+and their declared semantics follow `2026-07-02-default-inference-sweep.md`
+and `2026-07-02-context-semantics.md`.
 
 There is no single standard prompt. For controlled prefill and decode, fixed
 token-count synthetic inputs are better than prose because they make token count
@@ -218,6 +223,11 @@ The generated report separates:
 - per-user output token/s,
 - total token/s,
 - TTFT when vLLM reports it.
+
+The configured context window is a server limit, never a workload
+measurement. Context labels follow `2026-07-02-context-semantics.md`: rows
+are labeled by declared-and-measured active context or by measured token
+shape, not by `max_model_len`.
 
 Every `run` finalization and every `report` command writes three report
 artifacts together:

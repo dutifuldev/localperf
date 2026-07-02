@@ -332,6 +332,8 @@ Acceptance:
 
 - Introduce `localperf.bench/v1`.
 - Add strict validation with clear errors for unsafe or ambiguous specs.
+- Enforce context semantics (`context_target`, `context_semantics`) per
+  `2026-07-02-context-semantics.md` as part of that validation.
 - Add compatibility conversion from the current vLLM-only spec.
 - Document all stable fields.
 
@@ -348,6 +350,9 @@ Acceptance:
 - Show engine-to-engine throughput, latency, failures, memory pressure, and
   variance.
 - Include a machine-readable `comparison.json` and human `comparison.md`.
+- Label context and define metrics per `2026-07-02-context-semantics.md` and
+  `2026-07-02-reporting-completeness-plan.md` (token-weighted ITL,
+  percentiles, repeat variance, achieved concurrency).
 
 Acceptance:
 
