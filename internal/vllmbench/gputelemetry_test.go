@@ -2,8 +2,74 @@ package vllmbench
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
+
+// TestGPUTelemetrySamplerWithFakeTools covers the full sampler lifecycle
+// (source detection, concurrent sampling, event emission, stop) using fake
+// tegrastats and nvidia-smi binaries on PATH, so coverage does not depend on
+// GPU tooling being installed on the test machine.
+func TestGPUTelemetrySamplerWithFakeTools(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeTool(t, binDir, "tegrastats", "#!/bin/sh\nwhile true; do echo 'RAM 100/200MB GR3D_FREQ 10%'; sleep 0.05; done\n")
+	writeFakeTool(t, binDir, "nvidia-smi", "#!/bin/sh\necho '50, 100'\n")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	eventsPath := filepath.Join(t.TempDir(), "events.jsonl")
+	events, err := newEventWriter(eventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planned := PlannedRun{Profile: Profile{Name: "p"}, Workload: Workload{Name: "w"}, Concurrency: 2}
+	sampler := startGPUTelemetrySampler(context.Background(), events, planned)
+	if sampler == nil {
+		t.Fatal("sampler = nil, want sampler with fake tools on PATH")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	seen := map[string]bool{}
+	for time.Now().Before(deadline) && (!seen["tegrastats"] || !seen["nvidia-smi"]) {
+		time.Sleep(50 * time.Millisecond)
+		data, err := os.ReadFile(eventsPath)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			var event Event
+			if line == "" || json.Unmarshal([]byte(line), &event) != nil {
+				continue
+			}
+			if sample, ok := parseGPUTelemetryEvent(event); ok {
+				seen[sample.Source] = true
+			}
+		}
+	}
+	sampler.Stop()
+	if !seen["tegrastats"] || !seen["nvidia-smi"] {
+		t.Fatalf("sources seen = %v, want samples from both fake tools", seen)
+	}
+}
+
+func TestStartGPUTelemetrySamplerWithoutTools(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if sampler := startGPUTelemetrySampler(context.Background(), nil, PlannedRun{}); sampler != nil {
+		t.Fatal("sampler != nil with no telemetry tools on PATH")
+	}
+	// Stop on a nil sampler is a no-op.
+	var sampler *gpuTelemetrySampler
+	sampler.Stop()
+}
+
+func writeFakeTool(t *testing.T, dir, name, script string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestParseTegrastatsLine(t *testing.T) {
 	line := "11-30-2026 12:00:00 RAM 41234/119896MB (lfb 8x4MB) SWAP 0/0MB CPU [1%@2000] GR3D_FREQ 47% VIC_FREQ 0% APE 200"
