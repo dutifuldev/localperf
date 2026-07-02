@@ -59,7 +59,7 @@ without changing the profile.
 
 ## Model-Level Artifacts
 
-For a specific model, keep repeated runs in one SQLite artifact and one HTML
+For a specific model, keep repeated runs in one SQLite artifact and 1 HTML
 report per model. Use model-scoped paths such as:
 
 ```text
@@ -78,7 +78,7 @@ cannot append directly yet, append or merge the new run into the model-level
 artifact before treating the sweep as complete.
 
 The final step of every default sweep is to render the completed SQLite
-artifact into one standalone HTML report per model. Do not call the sweep
+artifact into 1 standalone HTML report per model. Do not call the sweep
 complete until the model-level SQLite artifact and the matching model-level HTML
 report both exist.
 
