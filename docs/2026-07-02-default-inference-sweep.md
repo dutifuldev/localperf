@@ -78,9 +78,9 @@ cannot append directly yet, append or merge the new run into the model-level
 artifact before treating the sweep as complete.
 
 The final step of every default sweep is to render the completed SQLite
-artifact into 1 standalone HTML report per model. Do not call the sweep
-complete until the model-level SQLite artifact and the matching model-level HTML
-report both exist.
+artifact into 1 HTML report per model. Do not call the sweep complete until the
+model-level SQLite artifact and the matching model-level HTML report both
+exist.
 
 ## Reporting Requirements
 

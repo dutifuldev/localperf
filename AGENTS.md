@@ -41,9 +41,9 @@ context ladder with concurrency `1`, `4`, `8`, `16`, and `32`, extending by
 powers of two only when the hardware can safely take it.
 
 For repeated benchmark runs of the same model, keep results in one model-level
-SQLite artifact and render 1 model-level HTML report per model. Do not split retry
-runs, context lengths, or concurrency points into separate final artifacts
-unless the split is temporary debugging data; see
+SQLite artifact and render 1 HTML report per model. Do not split retry runs,
+context lengths, or concurrency points into separate final artifacts unless the
+split is temporary debugging data; see
 `docs/2026-07-02-default-inference-sweep.md`.
 
 Keep production Go code under `cmd` and `internal`. Treat `examples`, `docs`,
