@@ -2,6 +2,7 @@ package vllmbench
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -89,7 +90,7 @@ func insertRunRow(tx *sql.Tx, runID string, spec Spec, summary RunSummary) error
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		runID, spec.Name, spec.Description, runStatus(summary), summary.StartedAt.Format(time.RFC3339),
 		timeOrNull(summary.StartedAt), timeOrNull(summary.FinishedAt), hostname, username, cwd,
-		mustJSONString(os.Args), mustJSONString(map[string]string{"hostname": hostname}))
+		mustJSONString(os.Args), mustJSONString(CollectHostInfo(context.Background())))
 	return err
 }
 
@@ -148,6 +149,9 @@ func insertRunDimensions(tx *sql.Tx, runID, runDir string, spec Spec) error {
 }
 
 func insertRunExecutionData(tx *sql.Tx, runID, runDir string, spec Spec, plan []PlannedRun, events []Event, now time.Time) error {
+	if err := applyEngineIdentityEvents(tx, runID, spec, events); err != nil {
+		return err
+	}
 	artifactIDs, err := insertRunArtifacts(tx, runID, runDir, spec, events)
 	if err != nil {
 		return err
@@ -302,6 +306,7 @@ func insertProfiles(tx *sql.Tx, runID string, spec Spec) error {
 			"kv_cache_dtype":         profile.KVCacheDType,
 			"attention_backend":      profile.AttentionBackend,
 			"moe_backend":            profile.MoEBackend,
+			"enable_prefix_caching":  profile.EnablePrefixCaching,
 			"enable_sleep_mode":      profile.EnableSleepMode,
 			"sleep_level":            SleepLevelValue(profile),
 		})
@@ -976,6 +981,9 @@ func insertTelemetry(tx *sql.Tx, runID string, events []Event, phaseIDs, measure
 		return err
 	}
 	for _, event := range events {
+		if err := insertGPUTelemetryEvent(tx, runID, event, phaseIDs, measurementIDs); err != nil {
+			return err
+		}
 		if event.MemAvailableGiB == 0 {
 			continue
 		}
@@ -986,6 +994,74 @@ func insertTelemetry(tx *sql.Tx, runID string, events []Event, phaseIDs, measure
 			seriesID, event.Timestamp.Format(time.RFC3339), event.MemAvailableGiB*1024*1024*1024,
 			zeroNullInt(phaseIDs[key]), zeroNullInt(measurementIDs[key]))
 		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertGPUTelemetryEvent(tx *sql.Tx, runID string, event Event, phaseIDs, measurementIDs map[string]int64) error {
+	if event.Type != "gpu_telemetry" || len(event.Details) == 0 {
+		return nil
+	}
+	var sample gpuTelemetrySample
+	if err := json.Unmarshal(event.Details, &sample); err != nil || sample.Source == "" {
+		return nil
+	}
+	key := eventMeasurementKey(event)
+	metrics := []struct {
+		name  string
+		unit  string
+		value *float64
+	}{
+		{"gpu_utilization_percent", "percent", sample.GPUUtilizationPct},
+		{"gpu_memory_used_bytes", "bytes", sample.GPUMemoryUsedBytes},
+	}
+	for _, metric := range metrics {
+		if metric.value == nil {
+			continue
+		}
+		seriesID, err := ensureTelemetrySeries(tx, runID, sample.Source, metric.name, metric.unit, "run", "{}")
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO telemetry_samples (
+			series_id, timestamp, value, phase_id, measurement_id
+		) VALUES (?, ?, ?, ?, ?)`,
+			seriesID, event.Timestamp.Format(time.RFC3339), *metric.value,
+			zeroNullInt(phaseIDs[key]), zeroNullInt(measurementIDs[key])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyEngineIdentityEvents fills engines.version and stores the server's
+// self-reported identity under metadata_json.identity, so the artifact
+// records what the engine said about itself, not only what the spec
+// declared.
+func applyEngineIdentityEvents(tx *sql.Tx, runID string, spec Spec, events []Event) error {
+	engineByProfile := map[string]string{}
+	for _, profile := range spec.Profiles {
+		engineByProfile[profile.Name] = profile.Engine
+	}
+	for _, event := range events {
+		if event.Type != "engine_identity" || len(event.Details) == 0 {
+			continue
+		}
+		engineName := engineByProfile[event.Profile]
+		if engineName == "" {
+			continue
+		}
+		var identity engineIdentity
+		if err := json.Unmarshal(event.Details, &identity); err != nil {
+			continue
+		}
+		if _, err := tx.Exec(`UPDATE engines SET
+			version = COALESCE(NULLIF(?, ''), version),
+			metadata_json = json_patch(COALESCE(metadata_json, '{}'), json_object('identity', json(?)))
+			WHERE run_id = ? AND id = ?`,
+			identity.Version, string(event.Details), runID, engineName); err != nil {
 			return err
 		}
 	}

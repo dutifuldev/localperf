@@ -65,6 +65,7 @@ type SQLiteReportRun struct {
 	Username    string
 	CWD         string
 	GitCommit   string
+	Hardware    string
 }
 
 type SQLiteReportEngine struct {
@@ -75,6 +76,7 @@ type SQLiteReportEngine struct {
 	Version         string
 	GitCommit       string
 	EndpointBaseURL string
+	ServedModel     string
 }
 
 type SQLiteReportProfile struct {
@@ -89,6 +91,7 @@ type SQLiteReportProfile struct {
 	Managed               bool
 	EnableSleepMode       bool
 	KVCacheDtype          string
+	PrefixCaching         string
 }
 
 type SQLiteReportWorkload struct {
@@ -154,6 +157,8 @@ type SQLiteReportMeasurement struct {
 	ITLTokenWeightedMS    string
 	AchievedConcurrency   string
 	FailureBreakdown      string
+	GPUUtil               string
+	GPUMemPeak            string
 	RepeatCount           int
 	ErrorType             string
 	ErrorMessage          string
@@ -513,13 +518,13 @@ func loadSQLiteReportMetadata(db *sql.DB, doc *SQLiteReportDocument) error {
 }
 
 func loadSQLiteReportRun(db *sql.DB, doc *SQLiteReportDocument) error {
-	var description, startedAt, completedAt, hostname, username, cwd, gitCommit sql.NullString
+	var description, startedAt, completedAt, hostname, username, cwd, gitCommit, hostJSON sql.NullString
 	err := db.QueryRow(`SELECT
 		id, name, description, status, created_at, started_at, completed_at,
-		hostname, username, cwd, localperf_git_commit
+		hostname, username, cwd, localperf_git_commit, host_json
 		FROM run LIMIT 1`).Scan(
 		&doc.Run.ID, &doc.Run.Name, &description, &doc.Run.Status, &doc.Run.CreatedAt,
-		&startedAt, &completedAt, &hostname, &username, &cwd, &gitCommit)
+		&startedAt, &completedAt, &hostname, &username, &cwd, &gitCommit, &hostJSON)
 	if err != nil {
 		return err
 	}
@@ -530,13 +535,55 @@ func loadSQLiteReportRun(db *sql.DB, doc *SQLiteReportDocument) error {
 	doc.Run.Username = nullStringValue(username)
 	doc.Run.CWD = nullStringValue(cwd)
 	doc.Run.GitCommit = nullStringValue(gitCommit)
+	doc.Run.Hardware = hardwareSummary(nullStringValue(hostJSON))
 	return nil
+}
+
+// hardwareSummary renders the host_json hardware inventory, for example
+// "NVIDIA GB10 (119 GiB, driver 580.95) / 273 GiB RAM". Absent inventory
+// renders "-": missing data is information.
+func hardwareSummary(hostJSON string) string {
+	var host struct {
+		CPU    string  `json:"cpu"`
+		RAMGiB float64 `json:"ram_gib"`
+		GPUs   []struct {
+			Name    string  `json:"name"`
+			VRAMGiB float64 `json:"vram_gib"`
+			Driver  string  `json:"driver"`
+		} `json:"gpus"`
+	}
+	if err := json.Unmarshal([]byte(hostJSON), &host); err != nil {
+		return "-"
+	}
+	parts := []string{}
+	for _, gpu := range host.GPUs {
+		detail := []string{}
+		if gpu.VRAMGiB > 0 {
+			detail = append(detail, fmt.Sprintf("%.0f GiB", gpu.VRAMGiB))
+		}
+		if gpu.Driver != "" {
+			detail = append(detail, "driver "+gpu.Driver)
+		}
+		if len(detail) > 0 {
+			parts = append(parts, fmt.Sprintf("%s (%s)", gpu.Name, strings.Join(detail, ", ")))
+			continue
+		}
+		parts = append(parts, gpu.Name)
+	}
+	if host.RAMGiB > 0 {
+		parts = append(parts, fmt.Sprintf("%.0f GiB RAM", host.RAMGiB))
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, " / ")
 }
 
 func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
 		name, type, managed, COALESCE(command, ''), COALESCE(version, ''),
-		COALESCE(git_commit, ''), COALESCE(endpoint_base_url, '')
+		COALESCE(git_commit, ''), COALESCE(endpoint_base_url, ''),
+		COALESCE(json_extract(metadata_json, '$.identity.models.data[0].id'), '')
 		FROM engines ORDER BY name`)
 	if err != nil {
 		return err
@@ -547,7 +594,7 @@ func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 		var managed int
 		if err := rows.Scan(
 			&engine.Name, &engine.Type, &managed, &engine.Command, &engine.Version,
-			&engine.GitCommit, &engine.EndpointBaseURL,
+			&engine.GitCommit, &engine.EndpointBaseURL, &engine.ServedModel,
 		); err != nil {
 			return err
 		}
@@ -562,7 +609,8 @@ func loadSQLiteReportProfiles(db *sql.DB, doc *SQLiteReportDocument) error {
 		id, name, model, COALESCE(context_window, 0), COALESCE(max_num_seqs, 0),
 		COALESCE(max_num_batched_tokens, 0), COALESCE(gpu_memory_utilization, 0),
 		managed, COALESCE(enable_sleep_mode, 0),
-		COALESCE(json_extract(serve_json, '$.kv_cache_dtype'), '')
+		COALESCE(json_extract(serve_json, '$.kv_cache_dtype'), ''),
+		json_extract(serve_json, '$.enable_prefix_caching')
 		FROM profiles ORDER BY context_window, name`)
 	if err != nil {
 		return err
@@ -571,16 +619,27 @@ func loadSQLiteReportProfiles(db *sql.DB, doc *SQLiteReportDocument) error {
 	for rows.Next() {
 		var profile SQLiteReportProfile
 		var managed, sleep int
+		var prefixCaching sql.NullInt64
 		if err := rows.Scan(
 			&profile.ID, &profile.Name, &profile.Model, &profile.ContextWindow,
 			&profile.MaxNumSeqs, &profile.MaxNumBatchedTokens, &profile.GPUMemoryUtilization,
-			&managed, &sleep, &profile.KVCacheDtype,
+			&managed, &sleep, &profile.KVCacheDtype, &prefixCaching,
 		); err != nil {
 			return err
 		}
 		profile.GPUMemoryUtilizationS = displayFloat(profile.GPUMemoryUtilization)
 		profile.Managed = managed != 0
 		profile.EnableSleepMode = sleep != 0
+		// Tri-state: prefix caching changes how prefill numbers must be
+		// read, and "unknown" (unmanaged engines) must stay visible.
+		switch {
+		case !prefixCaching.Valid:
+			profile.PrefixCaching = "unknown"
+		case prefixCaching.Int64 != 0:
+			profile.PrefixCaching = "on"
+		default:
+			profile.PrefixCaching = "off"
+		}
 		doc.Profiles = append(doc.Profiles, profile)
 	}
 	return rows.Err()
@@ -1125,6 +1184,7 @@ func sqliteReportCharts(measurements []SQLiteReportMeasurement) []SQLiteReportCh
 func sqliteReportMetadataItems(doc SQLiteReportDocument) []SQLiteReportMetadataItem {
 	items := []SQLiteReportMetadataItem{
 		{Label: "Engine", Value: joinUnique(engineSummaries(doc.Engines), ", ")},
+		{Label: "Hardware", Value: bench.FirstNonEmpty(doc.Run.Hardware, "-")},
 		{Label: "Quant", Value: bench.FirstNonEmpty(inferQuantization(doc.Profiles), "-")},
 		{Label: "KV", Value: bench.FirstNonEmpty(joinUnique(profileKVDtypes(doc.Profiles), ", "), "-")},
 		// Active contexts come only from declared-and-verified claims; the
@@ -1142,6 +1202,37 @@ func sqliteReportMetadataItems(doc SQLiteReportDocument) []SQLiteReportMetadataI
 			return measurement.Concurrency
 		}))},
 		{Label: "Requests", Value: fmt.Sprintf("%d ok / %d err", doc.RequestSummary.Completed, doc.RequestSummary.Failed)},
+	}
+	items = append(items, servedModelMismatchItems(doc)...)
+	return items
+}
+
+// servedModelMismatchItems surfaces declared-versus-self-reported model
+// disagreements from the engine identity probe. Declared, checked, then
+// shown: a silent mismatch is how a benchmark reports the wrong model.
+func servedModelMismatchItems(doc SQLiteReportDocument) []SQLiteReportMetadataItem {
+	served := map[string]string{}
+	for _, engine := range doc.Engines {
+		if engine.ServedModel != "" {
+			served[engine.Name] = engine.ServedModel
+		}
+	}
+	if len(served) == 0 {
+		return nil
+	}
+	var items []SQLiteReportMetadataItem
+	seen := map[string]bool{}
+	for _, profile := range doc.Profiles {
+		for _, servedModel := range served {
+			if profile.Model == "" || servedModel == profile.Model || seen[profile.Model+servedModel] {
+				continue
+			}
+			seen[profile.Model+servedModel] = true
+			items = append(items, SQLiteReportMetadataItem{
+				Label: "Model mismatch",
+				Value: fmt.Sprintf("spec declares %s, server reports %s", profile.Model, servedModel),
+			})
+		}
 	}
 	return items
 }
@@ -2056,10 +2147,10 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 <section class="section secondary">
 <h2>{{.Title}} Detail</h2>
 <div class="table-wrap"><table>
-<thead><tr><th>Profile</th><th>Workload</th><th>Context</th><th class="num">Conc.</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">RPS</th><th class="num">Total tok/s</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">TTFT p50</th><th class="num">TTFT p95</th><th class="num">TTFT p99</th><th class="num">Latency p50</th><th class="num">Latency p95</th><th class="num">Latency p99</th><th class="num">TPOT mean</th><th class="num">ITL tok-wt</th></tr></thead>
+<thead><tr><th>Profile</th><th>Workload</th><th>Context</th><th class="num">Conc.</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">RPS</th><th class="num">Total tok/s</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">TTFT p50</th><th class="num">TTFT p95</th><th class="num">TTFT p99</th><th class="num">Latency p50</th><th class="num">Latency p95</th><th class="num">Latency p99</th><th class="num">TPOT mean</th><th class="num">ITL tok-wt</th><th class="num">GPU util a/p</th><th class="num">GPU mem peak</th></tr></thead>
 <tbody>
 {{range .Measurements}}
-<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td>{{.ContextLabel}}{{if .ContextMismatch}} <span class="pill status-bad" title="{{.ContextMismatchNote}}">mismatch</span>{{end}}</td><td class="num">{{.Concurrency}}{{if gt .RepeatCount 1}} &times;{{.RepeatCount}}{{end}}{{if .AchievedConcurrency}} <span class="pill status-warn" title="time-weighted mean in-flight requests">{{.AchievedConcurrency}}</span>{{end}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}{{if .FailureBreakdown}} <span title="{{.FailureBreakdown}}">({{.FailureBreakdown}})</span>{{end}}</td><td class="num">{{.RPS}}</td><td class="num">{{.TotalTokS}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.TTFTP50MS}}</td><td class="num">{{.TTFTP95MS}}</td><td class="num">{{.TTFTP99MS}}</td><td class="num">{{.LatencyP50MS}}</td><td class="num">{{.LatencyP95MS}}</td><td class="num">{{.LatencyP99MS}}</td><td class="num">{{.TPOTMeanMS}}</td><td class="num">{{.ITLTokenWeightedMS}}</td></tr>
+<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td>{{.ContextLabel}}{{if .ContextMismatch}} <span class="pill status-bad" title="{{.ContextMismatchNote}}">mismatch</span>{{end}}</td><td class="num">{{.Concurrency}}{{if gt .RepeatCount 1}} &times;{{.RepeatCount}}{{end}}{{if .AchievedConcurrency}} <span class="pill status-warn" title="time-weighted mean in-flight requests">{{.AchievedConcurrency}}</span>{{end}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}{{if .FailureBreakdown}} <span title="{{.FailureBreakdown}}">({{.FailureBreakdown}})</span>{{end}}</td><td class="num">{{.RPS}}</td><td class="num">{{.TotalTokS}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.TTFTP50MS}}</td><td class="num">{{.TTFTP95MS}}</td><td class="num">{{.TTFTP99MS}}</td><td class="num">{{.LatencyP50MS}}</td><td class="num">{{.LatencyP95MS}}</td><td class="num">{{.LatencyP99MS}}</td><td class="num">{{.TPOTMeanMS}}</td><td class="num">{{.ITLTokenWeightedMS}}</td><td class="num">{{.GPUUtil}}</td><td class="num">{{.GPUMemPeak}}</td></tr>
 {{end}}
 </tbody>
 </table></div>
@@ -2094,8 +2185,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 <section class="section secondary">
 <h2>Profiles</h2>
 <div class="table-wrap"><table>
-<thead><tr><th>Name</th><th>Model</th><th class="num">Server limit</th><th class="num">Max seqs</th><th class="num">Batched tokens</th><th class="num">GPU memory util.</th><th>KV cache</th><th>Managed</th><th>Sleep</th></tr></thead>
-<tbody>{{range .Doc.Profiles}}<tr><td>{{.Name}}</td><td>{{.Model}}</td><td class="num">{{.ContextWindow}}</td><td class="num">{{.MaxNumSeqs}}</td><td class="num">{{.MaxNumBatchedTokens}}</td><td class="num">{{.GPUMemoryUtilizationS}}</td><td>{{.KVCacheDtype}}</td><td>{{.Managed}}</td><td>{{.EnableSleepMode}}</td></tr>{{end}}</tbody>
+<thead><tr><th>Name</th><th>Model</th><th class="num">Server limit</th><th class="num">Max seqs</th><th class="num">Batched tokens</th><th class="num">GPU memory util.</th><th>KV cache</th><th>Prefix cache</th><th>Managed</th><th>Sleep</th></tr></thead>
+<tbody>{{range .Doc.Profiles}}<tr><td>{{.Name}}</td><td>{{.Model}}</td><td class="num">{{.ContextWindow}}</td><td class="num">{{.MaxNumSeqs}}</td><td class="num">{{.MaxNumBatchedTokens}}</td><td class="num">{{.GPUMemoryUtilizationS}}</td><td>{{.KVCacheDtype}}</td><td>{{.PrefixCaching}}</td><td>{{.Managed}}</td><td>{{.EnableSleepMode}}</td></tr>{{end}}</tbody>
 </table></div>
 </section>
 <section class="section secondary">

@@ -101,6 +101,7 @@ type Profile struct {
 	KVCacheDType         string            `json:"kv_cache_dtype,omitempty"`
 	AttentionBackend     string            `json:"attention_backend,omitempty"`
 	MoEBackend           string            `json:"moe_backend,omitempty"`
+	EnablePrefixCaching  *bool             `json:"enable_prefix_caching,omitempty"`
 	Env                  map[string]string `json:"env,omitempty"`
 	Args                 []string          `json:"args,omitempty"`
 	EngineArgs           []string          `json:"engine_args,omitempty"`
@@ -136,6 +137,7 @@ type ServeConfig struct {
 	KVCacheDType         string  `json:"kv_cache_dtype,omitempty"`
 	AttentionBackend     string  `json:"attention_backend,omitempty"`
 	MoEBackend           string  `json:"moe_backend,omitempty"`
+	EnablePrefixCaching  *bool   `json:"enable_prefix_caching,omitempty"`
 }
 
 type BenchmarkTrafficConfig struct {
@@ -478,6 +480,9 @@ func applyServeDefaults(profile *Profile) {
 	}
 	if strings.TrimSpace(profile.MoEBackend) == "" {
 		profile.MoEBackend = profile.Serve.MoEBackend
+	}
+	if profile.EnablePrefixCaching == nil {
+		profile.EnablePrefixCaching = profile.Serve.EnablePrefixCaching
 	}
 }
 

@@ -62,6 +62,18 @@ var ReportMetrics = []MetricDef{
 		Definition: "completed requests / failed requests, with failures broken down by error type.",
 	},
 	{
+		Key: "gpu_util", Label: "GPU util a/p", Unit: "percent", Weighting: "aggregate",
+		Definition: "average / peak GPU utilization sampled every 2s during the measurement, with the telemetry source named; on unified-memory systems cross-check GPU memory against system memory drop.",
+	},
+	{
+		Key: "gpu_mem_peak", Label: "GPU mem peak", Unit: "GiB", Weighting: "aggregate",
+		Definition: "peak sampled GPU memory used during the measurement.",
+	},
+	{
+		Key: "prefix_cache", Label: "prefix cache", Unit: "", Weighting: "",
+		Definition: "whether engine prefix caching was enabled (on / off / unknown). When on, prefill throughput can be partly served from cache and must be read accordingly.",
+	},
+	{
 		Key: "repeats", Label: "± spread", Unit: "", Weighting: "across repeats",
 		Definition: "when a point ran multiple repeats, values render as mean ± sample standard deviation across repeats and per-repeat rows move to the Repeats section.",
 	},
@@ -81,6 +93,12 @@ type sqliteRequestDerived struct {
 	AchievedConcurrency  float64
 	AchievedConcurrencyK bool
 	FailureBreakdown     string
+	GPUUtilAvg           float64
+	GPUUtilPeak          float64
+	GPUUtilKnown         bool
+	GPUUtilSource        string
+	GPUMemPeakBytes      float64
+	GPUMemKnown          bool
 }
 
 func loadSQLiteReportRequestDerived(db *sql.DB, doc *SQLiteReportDocument) error {
@@ -97,7 +115,47 @@ func loadSQLiteReportRequestDerived(db *sql.DB, doc *SQLiteReportDocument) error
 	if err := loadAchievedConcurrency(db, doc); err != nil {
 		return err
 	}
+	if err := loadGPUTelemetryStats(db, doc); err != nil {
+		return err
+	}
 	return loadFailureBreakdown(db, doc)
+}
+
+// loadGPUTelemetryStats aggregates sampled GPU telemetry per measurement;
+// the source (tegrastats, nvidia-smi, nvml) is kept so readers can judge the
+// signal, which matters on unified-memory systems.
+func loadGPUTelemetryStats(db *sql.DB, doc *SQLiteReportDocument) error {
+	rows, err := db.Query(`SELECT ts.measurement_id, s.metric, s.source, AVG(ts.value), MAX(ts.value)
+		FROM telemetry_samples ts
+		JOIN telemetry_series s ON s.id = ts.series_id
+		WHERE ts.measurement_id IS NOT NULL
+		  AND s.metric IN ('gpu_utilization_percent', 'gpu_memory_used_bytes')
+		GROUP BY ts.measurement_id, s.metric, s.source`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var measurementID int64
+		var metric, source string
+		var avg, peak float64
+		if err := rows.Scan(&measurementID, &metric, &source, &avg, &peak); err != nil {
+			return err
+		}
+		derived := doc.RequestDerived[measurementID]
+		switch metric {
+		case "gpu_utilization_percent":
+			derived.GPUUtilAvg = avg
+			derived.GPUUtilPeak = peak
+			derived.GPUUtilKnown = true
+			derived.GPUUtilSource = source
+		case "gpu_memory_used_bytes":
+			derived.GPUMemPeakBytes = peak
+			derived.GPUMemKnown = true
+		}
+		doc.RequestDerived[measurementID] = derived
+	}
+	return rows.Err()
 }
 
 // loadTokenWeightedITL computes sum(all gaps)/count(all gaps) exactly from
@@ -242,6 +300,16 @@ func applyRequestDerived(measurement *SQLiteReportMeasurement, derived sqliteReq
 		measurement.RPS = displayFloat(float64(measurement.CompletedRequests) / (measurement.WallTimeMSValue / 1000))
 	} else {
 		measurement.RPS = "-"
+	}
+	if derived.GPUUtilKnown {
+		measurement.GPUUtil = fmt.Sprintf("%.0f / %.0f%% (%s)", derived.GPUUtilAvg, derived.GPUUtilPeak, derived.GPUUtilSource)
+	} else {
+		measurement.GPUUtil = "-"
+	}
+	if derived.GPUMemKnown {
+		measurement.GPUMemPeak = fmt.Sprintf("%.1f GiB", derived.GPUMemPeakBytes/(1024*1024*1024))
+	} else {
+		measurement.GPUMemPeak = "-"
 	}
 }
 
