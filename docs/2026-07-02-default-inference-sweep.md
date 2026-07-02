@@ -61,9 +61,16 @@ with `headroom = max(64, N/64)` to absorb chat template and tokenizer drift.
 Prefill rows are reported as aggregate and per-user prefill tok/s; decode rows
 as aggregate and per-user output tok/s.
 
-Default sweeps must be generated with `localperf sweep plan` once it lands;
-until then, hand-author specs to these shapes and declare `context_target` and
-`context_semantics` on every workload.
+Default sweeps must be generated with `localperf sweep plan`, for example:
+
+```sh
+localperf sweep plan --model <model-id> \
+  --contexts 8k,16k,32k,64k,128k --concurrency 1,4,8,16,32 \
+  --out spec.json
+```
+
+Hand-authored specs stay legal but must declare `context_target` and
+`context_semantics` on every workload and pass the same validation.
 
 ## Extension Rule
 

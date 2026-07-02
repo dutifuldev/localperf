@@ -51,6 +51,13 @@ func ServeCommand(spec Spec, profile Profile) CommandSpec {
 	if profile.EnableSleepMode {
 		args = append(args, "--enable-sleep-mode")
 	}
+	if profile.EnablePrefixCaching != nil {
+		if *profile.EnablePrefixCaching {
+			args = append(args, "--enable-prefix-caching")
+		} else {
+			args = append(args, "--no-enable-prefix-caching")
+		}
+	}
 	args = append(args, profileExtraArgs(profile)...)
 	return CommandSpec{
 		Env:  mergeEnv(spec.Env, engine.Env, profile.Env, profile.EnableSleepMode),

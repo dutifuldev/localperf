@@ -2,6 +2,7 @@ package vllmbench
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -89,7 +90,7 @@ func insertRunRow(tx *sql.Tx, runID string, spec Spec, summary RunSummary) error
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		runID, spec.Name, spec.Description, runStatus(summary), summary.StartedAt.Format(time.RFC3339),
 		timeOrNull(summary.StartedAt), timeOrNull(summary.FinishedAt), hostname, username, cwd,
-		mustJSONString(os.Args), mustJSONString(map[string]string{"hostname": hostname}))
+		mustJSONString(os.Args), mustJSONString(CollectHostInfo(context.Background())))
 	return err
 }
 
@@ -148,6 +149,9 @@ func insertRunDimensions(tx *sql.Tx, runID, runDir string, spec Spec) error {
 }
 
 func insertRunExecutionData(tx *sql.Tx, runID, runDir string, spec Spec, plan []PlannedRun, events []Event, now time.Time) error {
+	if err := applyEngineIdentityEvents(tx, runID, spec, events); err != nil {
+		return err
+	}
 	artifactIDs, err := insertRunArtifacts(tx, runID, runDir, spec, events)
 	if err != nil {
 		return err
@@ -160,6 +164,10 @@ func insertRunExecutionData(tx *sql.Tx, runID, runDir string, spec Spec, plan []
 	if err != nil {
 		return err
 	}
+	return insertRunEventData(tx, runID, events, phaseIDs, measurementIDs, artifactIDs, now)
+}
+
+func insertRunEventData(tx *sql.Tx, runID string, events []Event, phaseIDs, measurementIDs, artifactIDs map[string]int64, now time.Time) error {
 	if err := insertEvents(tx, runID, events, phaseIDs, measurementIDs); err != nil {
 		return err
 	}
@@ -302,6 +310,7 @@ func insertProfiles(tx *sql.Tx, runID string, spec Spec) error {
 			"kv_cache_dtype":         profile.KVCacheDType,
 			"attention_backend":      profile.AttentionBackend,
 			"moe_backend":            profile.MoEBackend,
+			"enable_prefix_caching":  profile.EnablePrefixCaching,
 			"enable_sleep_mode":      profile.EnableSleepMode,
 			"sleep_level":            SleepLevelValue(profile),
 		})
@@ -327,12 +336,13 @@ func insertWorkloads(tx *sql.Tx, runID string, spec Spec) error {
 		concurrencyJSON := mustJSONString(workload.MaxConcurrency)
 		if _, err := tx.Exec(`INSERT INTO workloads (
 			id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
-			save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json, metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			workload.Name, runID, workload.Name, workload.Phase, trafficJSON, concurrencyJSON, workload.NumPrompts,
 			workload.Repeats, boolToInt(boolValue(workload.BenchmarkTrafficConfig.SaveDetailed)),
 			boolToInt(workload.CapturePayloadArtifacts), structuredWorkloadJSON(workload, workload.Dataset),
-			structuredWorkloadJSON(workload, workload.Request), structuredWorkloadJSON(workload, workload.Load)); err != nil {
+			structuredWorkloadJSON(workload, workload.Request), structuredWorkloadJSON(workload, workload.Load),
+			workloadClaimsJSON(workload)); err != nil {
 			return err
 		}
 	}
@@ -344,6 +354,26 @@ func structuredWorkloadJSON(workload Workload, value any) any {
 		return nil
 	}
 	return nullableJSON(value)
+}
+
+// workloadClaimsJSON stores declared workload claims keyed by claim type in
+// workloads.metadata_json; traffic_json stays strictly engine input. See
+// docs/2026-07-02-context-semantics.md.
+func workloadClaimsJSON(workload Workload) any {
+	claims := map[string]any{}
+	if workload.ContextTarget > 0 && workload.ContextSemantics != "" {
+		claims["context"] = map[string]any{
+			"target":    workload.ContextTarget,
+			"semantics": workload.ContextSemantics,
+		}
+	}
+	if workload.SLO != nil {
+		claims["slo"] = workload.SLO
+	}
+	if len(claims) == 0 {
+		return nil
+	}
+	return nullableJSON(claims)
 }
 
 func insertCanonicalDatasets(tx *sql.Tx, runID, runDir string, spec Spec) error {
@@ -958,6 +988,9 @@ func insertTelemetry(tx *sql.Tx, runID string, events []Event, phaseIDs, measure
 		return err
 	}
 	for _, event := range events {
+		if err := insertGPUTelemetryEvent(tx, runID, event, phaseIDs, measurementIDs); err != nil {
+			return err
+		}
 		if event.MemAvailableGiB == 0 {
 			continue
 		}
@@ -972,6 +1005,90 @@ func insertTelemetry(tx *sql.Tx, runID string, events []Event, phaseIDs, measure
 		}
 	}
 	return nil
+}
+
+func insertGPUTelemetryEvent(tx *sql.Tx, runID string, event Event, phaseIDs, measurementIDs map[string]int64) error {
+	sample, ok := parseGPUTelemetryEvent(event)
+	if !ok {
+		return nil
+	}
+	key := eventMeasurementKey(event)
+	metrics := []struct {
+		name  string
+		unit  string
+		value *float64
+	}{
+		{"gpu_utilization_percent", "percent", sample.GPUUtilizationPct},
+		{"gpu_memory_used_bytes", "bytes", sample.GPUMemoryUsedBytes},
+	}
+	for _, metric := range metrics {
+		if metric.value == nil {
+			continue
+		}
+		seriesID, err := ensureTelemetrySeries(tx, runID, sample.Source, metric.name, metric.unit, "run", "{}")
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO telemetry_samples (
+			series_id, timestamp, value, phase_id, measurement_id
+		) VALUES (?, ?, ?, ?, ?)`,
+			seriesID, event.Timestamp.Format(time.RFC3339), *metric.value,
+			zeroNullInt(phaseIDs[key]), zeroNullInt(measurementIDs[key])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseGPUTelemetryEvent(event Event) (gpuTelemetrySample, bool) {
+	if event.Type != "gpu_telemetry" || len(event.Details) == 0 {
+		return gpuTelemetrySample{}, false
+	}
+	var sample gpuTelemetrySample
+	if err := json.Unmarshal(event.Details, &sample); err != nil || sample.Source == "" {
+		return gpuTelemetrySample{}, false
+	}
+	return sample, true
+}
+
+// applyEngineIdentityEvents fills engines.version and stores the server's
+// self-reported identity under metadata_json.identity, so the artifact
+// records what the engine said about itself, not only what the spec
+// declared.
+func applyEngineIdentityEvents(tx *sql.Tx, runID string, spec Spec, events []Event) error {
+	engineByProfile := map[string]string{}
+	for _, profile := range spec.Profiles {
+		engineByProfile[profile.Name] = profile.Engine
+	}
+	for _, event := range events {
+		if err := applyEngineIdentityEvent(tx, runID, engineByProfile, event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyEngineIdentityEvent(tx *sql.Tx, runID string, engineByProfile map[string]string, event Event) error {
+	if event.Type != "engine_identity" || len(event.Details) == 0 {
+		return nil
+	}
+	engineName := engineByProfile[event.Profile]
+	if engineName == "" {
+		return nil
+	}
+	var identity engineIdentity
+	if err := json.Unmarshal(event.Details, &identity); err != nil {
+		return nil
+	}
+	// Key the identity by profile: one engine definition can serve several
+	// profiles with different models, and the last probe must not overwrite
+	// the others.
+	_, err := tx.Exec(`UPDATE engines SET
+		version = COALESCE(NULLIF(?, ''), version),
+		metadata_json = json_patch(COALESCE(metadata_json, '{}'), json_object('identity', json_object(?, json(?))))
+		WHERE run_id = ? AND id = ?`,
+		identity.Version, event.Profile, string(event.Details), runID, engineName)
+	return err
 }
 
 func ensureTelemetrySeries(tx *sql.Tx, runID, source, metric, unit, target, tags string) (int64, error) {

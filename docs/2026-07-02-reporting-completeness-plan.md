@@ -448,7 +448,13 @@ request in, byte-stable spec out.
 ## Status
 
 - Contract docs: done (`2026-07-02-context-semantics.md`, sweep doc).
-- Phases 1 through 4: not started. Build in order.
+- Phases 1 through 4: implemented. Key entry points:
+  `validateWorkloadContextSemantics` and `validateWorkloadSLO`
+  (`internal/vllmbench/config.go`), `applyContextLabel` and the metrics
+  registry (`internal/report`), `CollectHostInfo` /
+  `startGPUTelemetrySampler` / `probeEngineIdentity`
+  (`internal/vllmbench`), and `internal/sweepplan` behind
+  `localperf sweep plan`.
 - Cutover, not migration: artifacts and specs that predate this plan are
   out of scope. Re-run benchmarks under the new contract instead of
   accommodating old data.

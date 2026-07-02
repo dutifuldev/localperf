@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,16 @@ const DefaultHealthPath = "/v1/models"
 const (
 	LoadGeneratorVLLMBench = "vllm_bench"
 	LoadGeneratorHTTP      = "localperf_http"
+)
+
+// Context semantics contract; see docs/2026-07-02-context-semantics.md.
+const (
+	ContextSemanticsActive   = "active"
+	ContextSemanticsCapacity = "capacity"
+	// ContextTargetMinFrac is the strict lower bound of the active-context
+	// band: requested (and later measured) tokens must land within
+	// [0.90, 1.00] of context_target. Widen only via the contract doc.
+	ContextTargetMinFrac = 0.90
 )
 
 type Spec struct {
@@ -91,6 +102,7 @@ type Profile struct {
 	KVCacheDType         string            `json:"kv_cache_dtype,omitempty"`
 	AttentionBackend     string            `json:"attention_backend,omitempty"`
 	MoEBackend           string            `json:"moe_backend,omitempty"`
+	EnablePrefixCaching  *bool             `json:"enable_prefix_caching,omitempty"`
 	Env                  map[string]string `json:"env,omitempty"`
 	Args                 []string          `json:"args,omitempty"`
 	EngineArgs           []string          `json:"engine_args,omitempty"`
@@ -100,6 +112,9 @@ type Workload struct {
 	BenchmarkTrafficConfig
 	Name                    string                 `json:"name"`
 	Phase                   string                 `json:"phase,omitempty"`
+	ContextTarget           int                    `json:"context_target"`
+	ContextSemantics        string                 `json:"context_semantics"`
+	SLO                     *SLOConfig             `json:"slo,omitempty"`
 	LoadGenerator           string                 `json:"load_generator,omitempty"`
 	Dataset                 DatasetSpec            `json:"dataset,omitempty"`
 	Request                 RequestSpec            `json:"request,omitempty"`
@@ -124,6 +139,16 @@ type ServeConfig struct {
 	KVCacheDType         string  `json:"kv_cache_dtype,omitempty"`
 	AttentionBackend     string  `json:"attention_backend,omitempty"`
 	MoEBackend           string  `json:"moe_backend,omitempty"`
+	EnablePrefixCaching  *bool   `json:"enable_prefix_caching,omitempty"`
+}
+
+// SLOConfig declares latency targets for goodput derivation: the fraction of
+// completed requests meeting every set target, and goodput as SLO-met
+// requests per second. Rendered only when declared; the report never invents
+// a quality bar.
+type SLOConfig struct {
+	TTFTP95Millis float64 `json:"ttft_p95_ms,omitempty"`
+	E2ELP95Millis float64 `json:"e2el_p95_ms,omitempty"`
 }
 
 type BenchmarkTrafficConfig struct {
@@ -304,6 +329,12 @@ func applyWorkloadDefault(workload *Workload) {
 	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
 	applyLoadGeneratorDefault(workload)
 	workload.Phase = workloadPhase(*workload)
+	// Goodput derivation needs per-request rows; an SLO without detailed
+	// output would silently render "-" for every run.
+	if workload.SLO != nil && workload.SaveDetailed == nil {
+		saveDetailed := true
+		workload.SaveDetailed = &saveDetailed
+	}
 }
 
 func applyWorkloadCompatibilityDefaults(workload *Workload) {
@@ -446,26 +477,29 @@ func overlayTrafficConfig(base, override BenchmarkTrafficConfig) BenchmarkTraffi
 }
 
 func applyServeDefaults(profile *Profile) {
-	if profile.MaxModelLen == 0 {
-		profile.MaxModelLen = profile.Serve.MaxModelLen
-	}
-	if profile.MaxNumSeqs == 0 {
-		profile.MaxNumSeqs = profile.Serve.MaxNumSeqs
-	}
-	if profile.MaxNumBatchedTokens == 0 {
-		profile.MaxNumBatchedTokens = profile.Serve.MaxNumBatchedTokens
-	}
+	fallbackInt(&profile.MaxModelLen, profile.Serve.MaxModelLen)
+	fallbackInt(&profile.MaxNumSeqs, profile.Serve.MaxNumSeqs)
+	fallbackInt(&profile.MaxNumBatchedTokens, profile.Serve.MaxNumBatchedTokens)
 	if profile.GPUMemoryUtilization == 0 {
 		profile.GPUMemoryUtilization = profile.Serve.GPUMemoryUtilization
 	}
-	if strings.TrimSpace(profile.KVCacheDType) == "" {
-		profile.KVCacheDType = profile.Serve.KVCacheDType
+	fallbackString(&profile.KVCacheDType, profile.Serve.KVCacheDType)
+	fallbackString(&profile.AttentionBackend, profile.Serve.AttentionBackend)
+	fallbackString(&profile.MoEBackend, profile.Serve.MoEBackend)
+	if profile.EnablePrefixCaching == nil {
+		profile.EnablePrefixCaching = profile.Serve.EnablePrefixCaching
 	}
-	if strings.TrimSpace(profile.AttentionBackend) == "" {
-		profile.AttentionBackend = profile.Serve.AttentionBackend
+}
+
+func fallbackInt(target *int, fallback int) {
+	if *target == 0 {
+		*target = fallback
 	}
-	if strings.TrimSpace(profile.MoEBackend) == "" {
-		profile.MoEBackend = profile.Serve.MoEBackend
+}
+
+func fallbackString(target *string, fallback string) {
+	if strings.TrimSpace(*target) == "" {
+		*target = fallback
 	}
 }
 
@@ -538,7 +572,7 @@ func ValidateSpec(spec Spec) error {
 	issues = append(issues, profileIssues...)
 	issues = append(issues, validateEndpointBaseURLProfileUsage(spec)...)
 	issues = append(issues, validateWarmup(spec.Warmup)...)
-	issues = append(issues, validateWorkloads(spec.Workloads, profileNames)...)
+	issues = append(issues, validateWorkloads(spec.Workloads, profileNames, spec.Profiles)...)
 	if len(issues) > 0 {
 		return errors.New(strings.Join(issues, "\n"))
 	}
@@ -798,7 +832,7 @@ func validateWarmup(warmup WarmupConfig) []string {
 	return append(issues, validateTrafficConfig("warmup", warmup.BenchmarkTrafficConfig)...)
 }
 
-func validateWorkloads(workloads []Workload, profileNames map[string]bool) []string {
+func validateWorkloads(workloads []Workload, profileNames map[string]bool, profiles []Profile) []string {
 	var issues []string
 	names := map[string]bool{}
 	slugs := map[string]string{}
@@ -808,6 +842,8 @@ func validateWorkloads(workloads []Workload, profileNames map[string]bool) []str
 	for i, workload := range workloads {
 		prefix := fmt.Sprintf("workloads[%d]", i)
 		issues = append(issues, validateWorkload(prefix, workload, profileNames, names, slugs)...)
+		issues = append(issues, validateWorkloadContextSemantics(prefix, workload, profiles)...)
+		issues = append(issues, validateWorkloadSLO(prefix, workload)...)
 	}
 	return issues
 }
@@ -821,6 +857,122 @@ func validateWorkload(prefix string, workload Workload, profileNames, names map[
 	issues = append(issues, validateConcurrencyValues(prefix, workload.MaxConcurrency)...)
 	issues = append(issues, validateProfileRefs(prefix, workload.Profiles, profileNames)...)
 	return append(issues, validateTrafficConfig(prefix, workload.BenchmarkTrafficConfig)...)
+}
+
+// validateWorkloadContextSemantics enforces the contract in
+// docs/2026-07-02-context-semantics.md: every workload declares whether its
+// context number means active context or server capacity, and an active
+// claim must be backed by the requested token shape.
+func validateWorkloadContextSemantics(prefix string, workload Workload, profiles []Profile) []string {
+	if workload.ContextTarget <= 0 || strings.TrimSpace(workload.ContextSemantics) == "" {
+		return []string{prefix + ": context_target and context_semantics are required on every workload; see docs/2026-07-02-context-semantics.md"}
+	}
+	switch workload.ContextSemantics {
+	case ContextSemanticsActive:
+		return validateActiveContextClaim(prefix, workload, profiles)
+	case ContextSemanticsCapacity:
+		return validateCapacityContextClaim(prefix, workload, profiles)
+	default:
+		return []string{prefix + `: context_semantics must be "active" or "capacity"`}
+	}
+}
+
+func validateWorkloadSLO(prefix string, workload Workload) []string {
+	if workload.SLO == nil {
+		return nil
+	}
+	var issues []string
+	if workload.SLO.TTFTP95Millis < 0 {
+		issues = append(issues, prefix+": slo.ttft_p95_ms must not be negative")
+	}
+	if workload.SLO.E2ELP95Millis < 0 {
+		issues = append(issues, prefix+": slo.e2el_p95_ms must not be negative")
+	}
+	if workload.SLO.TTFTP95Millis == 0 && workload.SLO.E2ELP95Millis == 0 {
+		issues = append(issues, prefix+": slo must set at least one target")
+	}
+	if workload.SaveDetailed != nil && !*workload.SaveDetailed {
+		issues = append(issues, prefix+": slo requires save_detailed (goodput is derived from per-request rows)")
+	}
+	return issues
+}
+
+func validateActiveContextClaim(prefix string, workload Workload, profiles []Profile) []string {
+	if workload.DatasetName != "random" {
+		return []string{prefix + `: context_semantics "active" requires the random dataset so requested token counts are exact`}
+	}
+	if !zeroRangeRatio(workload.RandomRangeRatio) {
+		return []string{prefix + `: context_semantics "active" requires random_range_ratio 0 so every request stays inside the claimed band`}
+	}
+	var issues []string
+	requested := workload.RandomInputLen + workload.RandomOutputLen
+	target := workload.ContextTarget
+	if float64(requested) < ContextTargetMinFrac*float64(target) || requested > target {
+		issues = append(issues, fmt.Sprintf(
+			"%s: claims active context %d but requests %d+%d=%d tokens (%.0f%% of target); this measures a ~%s active workload on a %s-capacity server. Either set context_target to %d, adjust random_input_len, or declare context_semantics: %q",
+			prefix, target, workload.RandomInputLen, workload.RandomOutputLen, requested,
+			100*float64(requested)/float64(target), TokenCountLabel(requested), TokenCountLabel(target), requested, ContextSemanticsCapacity))
+	}
+	for _, profile := range pairedProfiles(workload, profiles) {
+		// A profile without a declared max_model_len (endpoint-only,
+		// unmanaged) has no locally checkable limit; skip the comparison
+		// rather than guess.
+		if profile.MaxModelLen > 0 && profile.MaxModelLen < target {
+			issues = append(issues, fmt.Sprintf("%s: profile %s max_model_len %d is below context_target %d", prefix, profile.Name, profile.MaxModelLen, target))
+		}
+	}
+	return issues
+}
+
+func validateCapacityContextClaim(prefix string, workload Workload, profiles []Profile) []string {
+	var issues []string
+	for _, profile := range pairedProfiles(workload, profiles) {
+		if profile.MaxModelLen > 0 && profile.MaxModelLen != workload.ContextTarget {
+			issues = append(issues, fmt.Sprintf(
+				"%s: context_semantics %q requires context_target to equal profile %s max_model_len %d, got %d",
+				prefix, ContextSemanticsCapacity, profile.Name, profile.MaxModelLen, workload.ContextTarget))
+		}
+	}
+	return issues
+}
+
+// zeroRangeRatio reports whether random_range_ratio is unset or exactly
+// zero; any other value makes requested token counts a range, not a number.
+func zeroRangeRatio(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	return err == nil && parsed == 0
+}
+
+// pairedProfiles mirrors plannedProfileNames: an empty profile list pairs
+// the workload with every profile in the spec.
+func pairedProfiles(workload Workload, profiles []Profile) []Profile {
+	if len(workload.Profiles) == 0 {
+		return profiles
+	}
+	wanted := map[string]bool{}
+	for _, name := range workload.Profiles {
+		wanted[name] = true
+	}
+	var paired []Profile
+	for _, profile := range profiles {
+		if wanted[profile.Name] {
+			paired = append(paired, profile)
+		}
+	}
+	return paired
+}
+
+// TokenCountLabel renders a token count as a compact label such as "5k" or
+// "32k"; small values render as plain numbers.
+func TokenCountLabel(value int) string {
+	if value >= 1024 {
+		return fmt.Sprintf("%.0fk", float64(value)/1024)
+	}
+	return fmt.Sprint(value)
 }
 
 func validateWorkloadFields(prefix string, workload Workload) []string {

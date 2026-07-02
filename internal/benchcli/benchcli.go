@@ -15,6 +15,7 @@ import (
 	"github.com/dutifuldev/localperf/internal/artifact"
 	"github.com/dutifuldev/localperf/internal/collections"
 	"github.com/dutifuldev/localperf/internal/report"
+	"github.com/dutifuldev/localperf/internal/sweepplan"
 	"github.com/dutifuldev/localperf/internal/vllmbench"
 )
 
@@ -25,11 +26,112 @@ type commandHandlers map[string]func([]string)
 var rootHandlers = commandHandlers{
 	"bench":    VLLMBenchMain,
 	"artifact": runArtifact,
+	"sweep":    runSweep,
 }
 
 var artifactHandlers = commandHandlers{
 	"check":  runArtifactCheck,
 	"render": runArtifactRender,
+}
+
+var sweepHandlers = commandHandlers{
+	"plan": runSweepPlan,
+}
+
+func runSweep(args []string) {
+	dispatchCommand(args, usageRoot, sweepHandlers)
+}
+
+// runSweepPlan emits the default context/concurrency sweep spec with
+// contract-compliant shapes and declared context semantics; see
+// docs/2026-07-02-default-inference-sweep.md.
+func runSweepPlan(args []string) {
+	flags := flag.NewFlagSet("sweep plan", flag.ExitOnError)
+	model := flags.String("model", "", "model identifier to benchmark (required)")
+	contexts := flags.String("contexts", "8k,16k,32k,64k,128k", "comma-separated active-context ladder (e.g. 8k,16k,32k)")
+	concurrency := flags.String("concurrency", "1,4,8,16,32", "comma-separated concurrency levels")
+	repeats := flags.Int("repeats", 1, "repeats per measurement")
+	numPrompts := flags.Int("num-prompts", 0, "prompts per measurement (default 32)")
+	reference := flags.Bool("reference", true, "include the 4k max-throughput-reference capacity family")
+	memFloor := flags.Float64("min-mem-available-gib", 0, "safety memory floor in GiB (default 40)")
+	out := flags.String("out", "", "output spec path (default stdout)")
+	_ = flags.Parse(args)
+	contextValues, err := parseTokenList(*contexts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	concurrencyValues, err := parseIntList(*concurrency)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	spec, err := sweepplan.Plan(sweepplan.PlanRequest{
+		Model:              *model,
+		Contexts:           contextValues,
+		Concurrency:        concurrencyValues,
+		Repeats:            *repeats,
+		NumPrompts:         *numPrompts,
+		IncludeReference:   *reference,
+		MinMemAvailableGiB: *memFloor,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	encoded, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	encoded = append(encoded, '\n')
+	if strings.TrimSpace(*out) == "" {
+		_, _ = os.Stdout.Write(encoded)
+		return
+	}
+	if err := os.WriteFile(*out, encoded, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("spec: %s\n", *out)
+}
+
+// parseTokenList parses values such as "8k,16k,32768" into token counts.
+func parseTokenList(value string) ([]int, error) {
+	var values []int
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(strings.ToLower(part))
+		if part == "" {
+			continue
+		}
+		multiplier := 1
+		if strings.HasSuffix(part, "k") {
+			multiplier = 1024
+			part = strings.TrimSuffix(part, "k")
+		}
+		parsed, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid context value %q", part)
+		}
+		values = append(values, parsed*multiplier)
+	}
+	return values, nil
+}
+
+func parseIntList(value string) ([]int, error) {
+	var values []int
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid concurrency value %q", part)
+		}
+		values = append(values, parsed)
+	}
+	return values, nil
 }
 
 func VLLMBenchMain(args []string) {
@@ -426,10 +528,24 @@ func httpLoadWorkload(backend, datasetName, requestRate, endpoint, datasetPath, 
 		}
 		temp = &parsed
 	}
+	// This synthetic single-workload spec exists only to validate the exec
+	// boundary of `bench http-load`; it is never persisted to an artifact.
+	// The real context claim lives in the parent spec that planned the run,
+	// so declare the only thing knowable here: for random traffic the active
+	// context is exactly the requested shape; otherwise a capacity point
+	// against a profile with no locally declared limit.
+	contextTarget := 1
+	contextSemantics := vllmbench.ContextSemanticsCapacity
+	if datasetName == "random" && randomInputLen+randomOutputLen > 0 {
+		contextTarget = randomInputLen + randomOutputLen
+		contextSemantics = vllmbench.ContextSemanticsActive
+	}
 	workload := vllmbench.Workload{
-		Name:          "http-load",
-		Profiles:      []string{"http-load"},
-		LoadGenerator: vllmbench.LoadGeneratorHTTP,
+		Name:             "http-load",
+		Profiles:         []string{"http-load"},
+		ContextTarget:    contextTarget,
+		ContextSemantics: contextSemantics,
+		LoadGenerator:    vllmbench.LoadGeneratorHTTP,
 		BenchmarkTrafficConfig: vllmbench.BenchmarkTrafficConfig{
 			Backend:         backend,
 			DatasetName:     datasetName,
@@ -513,7 +629,8 @@ func usageRoot() {
   localperf bench http-load --base-url http://127.0.0.1:8000 --model model --dataset-name random --random-input-len 1024 --random-output-len 128 --num-prompts 8 --max-concurrency 4 --result-filename result.json [--dataset-path canonical.jsonl] [--extra-body '{"guided_decoding_backend":"outlines"}']
   localperf bench report --run-dir runs/example [--output runs/example/report.md] [--json]
   localperf artifact check runs/example.sqlite
-  localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]`)
+  localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]
+  localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k,128k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--out spec.json]`)
 }
 
 func addOverrideFlags(flags *flag.FlagSet) *overrideFlags {

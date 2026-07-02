@@ -29,7 +29,11 @@
     {
       "name": "sharegpt-chat-smoke",
       "phase": "decode",
-      "profiles": ["smoke"],
+      "context_target": 4096,
+      "context_semantics": "capacity",
+      "profiles": [
+        "smoke"
+      ],
       "capture_payload_artifacts": true,
       "dataset": {
         "type": "sharegpt",
@@ -47,7 +51,9 @@
         "ignore_eos": false
       },
       "load": {
-        "max_concurrency": [1],
+        "max_concurrency": [
+          1
+        ],
         "request_rate": "inf"
       }
     }

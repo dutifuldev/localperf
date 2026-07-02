@@ -660,7 +660,65 @@ func (waiter *readinessWaiter) probeReady() bool {
 		return false
 	}
 	waiter.events.Write(Event{Timestamp: time.Now().UTC(), Type: "server_ready", Profile: waiter.profile.Name, DurationSeconds: time.Since(waiter.start).Seconds()})
+	if identity, ok := probeEngineIdentity(waiter.ctx, waiter.client, waiter.profile); ok {
+		waiter.events.Write(Event{
+			Timestamp: time.Now().UTC(),
+			Type:      "engine_identity",
+			Profile:   waiter.profile.Name,
+			Details:   mustJSON(identity),
+		})
+	}
 	return true
+}
+
+// engineIdentity is the server's self-reported identity captured right after
+// readiness: /version (vLLM) and /v1/models (any OpenAI-compatible server,
+// including LM Studio and llama.cpp). It fills engines.version and
+// engines.metadata_json so external engines are verified rather than
+// trusted.
+type engineIdentity struct {
+	Version string          `json:"version,omitempty"`
+	Models  json.RawMessage `json:"models,omitempty"`
+}
+
+func probeEngineIdentity(ctx context.Context, client *http.Client, profile Profile) (engineIdentity, bool) {
+	identity := engineIdentity{}
+	if body, ok := fetchIdentityJSON(ctx, client, baseURL(profile)+"/version"); ok {
+		var payload struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(body, &payload); err == nil {
+			identity.Version = payload.Version
+		}
+	}
+	if body, ok := fetchIdentityJSON(ctx, client, baseURL(profile)+"/v1/models"); ok {
+		identity.Models = body
+	}
+	return identity, identity.Version != "" || len(identity.Models) > 0
+}
+
+const engineIdentityBodyLimit = 64 * 1024
+
+func fetchIdentityJSON(ctx context.Context, client *http.Client, url string) (json.RawMessage, bool) {
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, engineIdentityBodyLimit))
+	if err != nil || !json.Valid(body) {
+		return nil, false
+	}
+	return body, true
 }
 
 func (waiter *readinessWaiter) waitNext() error {
@@ -742,9 +800,14 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		ResultFile:  planned.ResultFile,
 		LogFile:     logPath,
 	})
+	sampler := startGPUTelemetrySampler(ctx, events, planned)
 	result, err := executeLoadCommand(ctx, spec, planned, command, logPath)
+	// Capture the finish time before waiting for the sampler: an in-flight
+	// telemetry sample must not stretch the recorded wall time.
+	finishedAt := time.Now().UTC()
+	sampler.Stop()
 	event := Event{
-		Timestamp:       time.Now().UTC(),
+		Timestamp:       finishedAt,
 		Type:            "workload_finish",
 		Profile:         planned.Profile.Name,
 		Workload:        planned.Workload.Name,

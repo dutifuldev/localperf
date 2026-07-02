@@ -2,6 +2,7 @@ package report
 
 import (
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -9,9 +10,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dutifuldev/localperf/internal/artifact"
@@ -48,6 +51,10 @@ type SQLiteReportDocument struct {
 	ExistingReports    []SQLiteReportExport
 	ArtifactSummaries  []SQLiteReportArtifactSummary
 	MeasurementMetrics map[int64]map[string]SQLiteReportMetric
+	RequestDerived     map[int64]sqliteRequestDerived
+	RepeatDetails      []SQLiteReportMeasurement
+	Legend             []MetricDef
+	HasSLO             bool
 }
 
 type SQLiteReportRun struct {
@@ -62,6 +69,7 @@ type SQLiteReportRun struct {
 	Username    string
 	CWD         string
 	GitCommit   string
+	Hardware    string
 }
 
 type SQLiteReportEngine struct {
@@ -72,11 +80,16 @@ type SQLiteReportEngine struct {
 	Version         string
 	GitCommit       string
 	EndpointBaseURL string
+	// ServedModelsByProfile lists every model the server reported per
+	// probed profile, from the engine identity stored under
+	// metadata_json.identity. Multi-model servers report all of them.
+	ServedModelsByProfile map[string][]string
 }
 
 type SQLiteReportProfile struct {
 	ID                    string
 	Name                  string
+	Engine                string
 	Model                 string
 	ContextWindow         int
 	MaxNumSeqs            int
@@ -86,6 +99,7 @@ type SQLiteReportProfile struct {
 	Managed               bool
 	EnableSleepMode       bool
 	KVCacheDtype          string
+	PrefixCaching         string
 }
 
 type SQLiteReportWorkload struct {
@@ -104,6 +118,13 @@ type SQLiteReportMeasurement struct {
 	Workload              string
 	Phase                 string
 	ContextWindow         int
+	ContextTarget         int
+	ContextSemantics      string
+	ContextLabel          string
+	ContextSortKey        int
+	ContextMismatch       bool
+	ContextMismatchNote   string
+	ActiveRange           string
 	RepeatIndex           int
 	Concurrency           int
 	SamplesRequested      int
@@ -130,12 +151,38 @@ type SQLiteReportMeasurement struct {
 	OutputTokSStdDev      string
 	PerUserOutputTokS     string
 	TotalTokS             string
+	InputTokSSpread       string
+	InputPerUserSpread    string
+	RPS                   string
 	LatencyMeanMS         string
+	LatencyP50MS          string
 	LatencyP95MS          string
+	LatencyP99MS          string
 	TTFTMeanMS            string
+	TTFTP50MS             string
 	TTFTP95MS             string
+	TTFTP99MS             string
 	TPOTMeanMS            string
 	ITLMeanMS             string
+	ITLTokenWeightedMS    string
+	AchievedConcurrency   string
+	AchievedValue         float64
+	AchievedKnown         bool
+	FailureBreakdown      string
+	FailureCounts         map[string]int
+	GPUUtil               string
+	GPUUtilBySource       map[string]GPUUtilStat
+	GPUMemPeak            string
+	GPUMemPeakBySource    map[string]float64
+	SLOTTFTMillis         float64
+	SLOE2ELMillis         float64
+	SLONote               string
+	SLOMetPct             string
+	SLOMetCount           int64
+	SLORequestCount       int64
+	GoodputRPS            string
+	RepeatCount           int
+	ContextVerified       bool
 	ErrorType             string
 	ErrorMessage          string
 }
@@ -151,6 +198,11 @@ type SQLiteReportThroughputRow struct {
 	Profile           string
 	Workload          string
 	ContextWindow     int
+	ContextLabel      string
+	ContextSortKey    int
+	ContextMismatch   bool
+	MismatchNote      string
+	ActiveRange       string
 	Concurrency       int
 	Shape             string
 	InputTokS         string
@@ -162,6 +214,7 @@ type SQLiteReportThroughputRow struct {
 	TTFTMeanMS        string
 	TTFTP95MS         string
 	LatencyP95MS      string
+	SLODisplay        string
 	CompletedRequests int
 	FailedRequests    int
 	Status            string
@@ -178,11 +231,12 @@ type SQLiteReportThroughputRow struct {
 }
 
 type SQLiteReportThroughputGroup struct {
-	Title         string
-	Profile       string
-	ContextWindow int
-	AxisItems     []SQLiteReportMetadataItem
-	Rows          []SQLiteReportThroughputComparisonRow
+	Title          string
+	Profile        string
+	ContextSortKey int
+	ServerLimit    int
+	AxisItems      []SQLiteReportMetadataItem
+	Rows           []SQLiteReportThroughputComparisonRow
 }
 
 type SQLiteReportThroughputComparisonRow struct {
@@ -207,6 +261,9 @@ type SQLiteReportThroughputComparisonRow struct {
 	OK                  int
 	Err                 int
 	Requests            string
+	SLO                 string
+	DecodeSLO           string
+	PrefillSLO          string
 	DecodeTokSHeat      string
 	DecodeUserHeat      string
 	DecodeTTFTMeanHeat  string
@@ -330,7 +387,9 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 		loadSQLiteReportProfiles,
 		loadSQLiteReportWorkloads,
 		loadSQLiteReportMetrics,
+		loadSQLiteReportRequestDerived,
 		loadSQLiteReportMeasurements,
+		loadSLOGoodput,
 		loadSQLiteReportRequestSummary,
 		loadSQLiteReportEventCounts,
 		loadSQLiteReportNotableEvents,
@@ -342,6 +401,8 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 			return SQLiteReportDocument{}, err
 		}
 	}
+	doc.Measurements, doc.RepeatDetails = aggregateRepeatMeasurements(doc.Measurements)
+	doc.Legend = ReportMetrics
 	doc.MetadataItems = sqliteReportMetadataItems(doc)
 	doc.ThroughputRows = sqliteReportThroughputRows(doc.Measurements)
 	doc.ThroughputGroups = sqliteReportThroughputGroups(doc.ThroughputRows)
@@ -364,17 +425,24 @@ func RenderHTMLReport(writer io.Writer, doc SQLiteReportDocument, opts HTMLRepor
 		Doc:   doc,
 		Raw:   opts.IncludeRaw,
 	}
-	tmpl, err := template.New("html-report").Funcs(template.FuncMap{
+	return reportTemplates().ExecuteTemplate(writer, "report.gohtml", view)
+}
+
+//go:embed templates
+var reportTemplateFS embed.FS
+
+// reportTemplates parses the embedded report templates once. The HTML and
+// CSS live under templates/ as real files (syntax highlighting, sane diffs)
+// while staying compiled into the binary, so rendered reports remain
+// standalone with no runtime file dependencies.
+var reportTemplates = sync.OnceValue(func() *template.Template {
+	return template.Must(template.New("report").Funcs(template.FuncMap{
 		"statusClass":  reportStatusClass,
 		"contextLabel": contextLabel,
 		"tokps":        tokenThroughputMetric,
 		"seconds":      compactMilliseconds,
-	}).Parse(sqliteHTMLReportTemplate)
-	if err != nil {
-		return err
-	}
-	return tmpl.Execute(writer, view)
-}
+	}).ParseFS(reportTemplateFS, "templates/report.gohtml", "templates/report.css"))
+})
 
 func WriteSQLiteHTMLReport(artifactPath, outputPath string, opts HTMLReportOptions) error {
 	resolvedOutputPath, err := htmlReportOutputPath(artifactPath, outputPath)
@@ -485,13 +553,13 @@ func loadSQLiteReportMetadata(db *sql.DB, doc *SQLiteReportDocument) error {
 }
 
 func loadSQLiteReportRun(db *sql.DB, doc *SQLiteReportDocument) error {
-	var description, startedAt, completedAt, hostname, username, cwd, gitCommit sql.NullString
+	var description, startedAt, completedAt, hostname, username, cwd, gitCommit, hostJSON sql.NullString
 	err := db.QueryRow(`SELECT
 		id, name, description, status, created_at, started_at, completed_at,
-		hostname, username, cwd, localperf_git_commit
+		hostname, username, cwd, localperf_git_commit, host_json
 		FROM run LIMIT 1`).Scan(
 		&doc.Run.ID, &doc.Run.Name, &description, &doc.Run.Status, &doc.Run.CreatedAt,
-		&startedAt, &completedAt, &hostname, &username, &cwd, &gitCommit)
+		&startedAt, &completedAt, &hostname, &username, &cwd, &gitCommit, &hostJSON)
 	if err != nil {
 		return err
 	}
@@ -502,13 +570,55 @@ func loadSQLiteReportRun(db *sql.DB, doc *SQLiteReportDocument) error {
 	doc.Run.Username = nullStringValue(username)
 	doc.Run.CWD = nullStringValue(cwd)
 	doc.Run.GitCommit = nullStringValue(gitCommit)
+	doc.Run.Hardware = hardwareSummary(nullStringValue(hostJSON))
 	return nil
+}
+
+// hardwareSummary renders the host_json hardware inventory, for example
+// "NVIDIA GB10 (119 GiB, driver 580.95) / 273 GiB RAM". Absent inventory
+// renders "-": missing data is information.
+func hardwareSummary(hostJSON string) string {
+	var host struct {
+		CPU    string  `json:"cpu"`
+		RAMGiB float64 `json:"ram_gib"`
+		GPUs   []struct {
+			Name    string  `json:"name"`
+			VRAMGiB float64 `json:"vram_gib"`
+			Driver  string  `json:"driver"`
+		} `json:"gpus"`
+	}
+	if err := json.Unmarshal([]byte(hostJSON), &host); err != nil {
+		return "-"
+	}
+	parts := []string{}
+	for _, gpu := range host.GPUs {
+		detail := []string{}
+		if gpu.VRAMGiB > 0 {
+			detail = append(detail, fmt.Sprintf("%.0f GiB", gpu.VRAMGiB))
+		}
+		if gpu.Driver != "" {
+			detail = append(detail, "driver "+gpu.Driver)
+		}
+		if len(detail) > 0 {
+			parts = append(parts, fmt.Sprintf("%s (%s)", gpu.Name, strings.Join(detail, ", ")))
+			continue
+		}
+		parts = append(parts, gpu.Name)
+	}
+	if host.RAMGiB > 0 {
+		parts = append(parts, fmt.Sprintf("%.0f GiB RAM", host.RAMGiB))
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, " / ")
 }
 
 func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
 		name, type, managed, COALESCE(command, ''), COALESCE(version, ''),
-		COALESCE(git_commit, ''), COALESCE(endpoint_base_url, '')
+		COALESCE(git_commit, ''), COALESCE(endpoint_base_url, ''),
+		COALESCE(metadata_json, '')
 		FROM engines ORDER BY name`)
 	if err != nil {
 		return err
@@ -517,24 +627,51 @@ func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 	for rows.Next() {
 		var engine SQLiteReportEngine
 		var managed int
+		var metadataJSON string
 		if err := rows.Scan(
 			&engine.Name, &engine.Type, &managed, &engine.Command, &engine.Version,
-			&engine.GitCommit, &engine.EndpointBaseURL,
+			&engine.GitCommit, &engine.EndpointBaseURL, &metadataJSON,
 		); err != nil {
 			return err
 		}
 		engine.Managed = managed != 0
+		engine.ServedModelsByProfile = servedModelsByProfile(metadataJSON)
 		doc.Engines = append(doc.Engines, engine)
 	}
 	return rows.Err()
 }
 
+func servedModelsByProfile(metadataJSON string) map[string][]string {
+	var metadata struct {
+		Identity map[string]struct {
+			Models struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			} `json:"models"`
+		} `json:"identity"`
+	}
+	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
+		return nil
+	}
+	served := map[string][]string{}
+	for profile, identity := range metadata.Identity {
+		for _, model := range identity.Models.Data {
+			if model.ID != "" {
+				served[profile] = append(served[profile], model.ID)
+			}
+		}
+	}
+	return served
+}
+
 func loadSQLiteReportProfiles(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
-		id, name, model, COALESCE(context_window, 0), COALESCE(max_num_seqs, 0),
+		id, name, COALESCE(engine_id, ''), model, COALESCE(context_window, 0), COALESCE(max_num_seqs, 0),
 		COALESCE(max_num_batched_tokens, 0), COALESCE(gpu_memory_utilization, 0),
 		managed, COALESCE(enable_sleep_mode, 0),
-		COALESCE(json_extract(serve_json, '$.kv_cache_dtype'), '')
+		COALESCE(json_extract(serve_json, '$.kv_cache_dtype'), ''),
+		json_extract(serve_json, '$.enable_prefix_caching')
 		FROM profiles ORDER BY context_window, name`)
 	if err != nil {
 		return err
@@ -543,16 +680,27 @@ func loadSQLiteReportProfiles(db *sql.DB, doc *SQLiteReportDocument) error {
 	for rows.Next() {
 		var profile SQLiteReportProfile
 		var managed, sleep int
+		var prefixCaching sql.NullInt64
 		if err := rows.Scan(
-			&profile.ID, &profile.Name, &profile.Model, &profile.ContextWindow,
+			&profile.ID, &profile.Name, &profile.Engine, &profile.Model, &profile.ContextWindow,
 			&profile.MaxNumSeqs, &profile.MaxNumBatchedTokens, &profile.GPUMemoryUtilization,
-			&managed, &sleep, &profile.KVCacheDtype,
+			&managed, &sleep, &profile.KVCacheDtype, &prefixCaching,
 		); err != nil {
 			return err
 		}
 		profile.GPUMemoryUtilizationS = displayFloat(profile.GPUMemoryUtilization)
 		profile.Managed = managed != 0
 		profile.EnableSleepMode = sleep != 0
+		// Tri-state: prefix caching changes how prefill numbers must be
+		// read, and "unknown" (unmanaged engines) must stay visible.
+		switch {
+		case !prefixCaching.Valid:
+			profile.PrefixCaching = "unknown"
+		case prefixCaching.Int64 != 0:
+			profile.PrefixCaching = "on"
+		default:
+			profile.PrefixCaching = "off"
+		}
 		doc.Profiles = append(doc.Profiles, profile)
 	}
 	return rows.Err()
@@ -581,7 +729,12 @@ func loadSQLiteReportWorkloads(db *sql.DB, doc *SQLiteReportDocument) error {
 
 func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
-		m.id, p.name, w.name, w.phase, COALESCE(p.context_window, 0), m.repeat_index,
+		m.id, p.name, w.name, w.phase, COALESCE(p.context_window, 0),
+		COALESCE(json_extract(w.metadata_json, '$.context.target'), 0),
+		COALESCE(json_extract(w.metadata_json, '$.context.semantics'), ''),
+		COALESCE(json_extract(w.metadata_json, '$.slo.ttft_p95_ms'), 0),
+		COALESCE(json_extract(w.metadata_json, '$.slo.e2el_p95_ms'), 0),
+		m.repeat_index,
 		m.concurrency, m.samples_requested, m.status, m.started_at, m.completed_at,
 		m.wall_time_ms, m.completed_requests, m.failed_requests, m.prompt_tokens,
 		m.completion_tokens, m.total_tokens, m.aggregate_output_tok_s,
@@ -601,7 +754,9 @@ func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 		var promptTokens, completionTokens, totalTokens sql.NullInt64
 		if err := rows.Scan(
 			&measurement.ID, &measurement.Profile, &measurement.Workload, &measurement.Phase,
-			&measurement.ContextWindow, &measurement.RepeatIndex, &measurement.Concurrency,
+			&measurement.ContextWindow, &measurement.ContextTarget, &measurement.ContextSemantics,
+			&measurement.SLOTTFTMillis, &measurement.SLOE2ELMillis,
+			&measurement.RepeatIndex, &measurement.Concurrency,
 			&measurement.SamplesRequested, &measurement.Status, &startedAt, &completedAt,
 			&wallTime, &measurement.CompletedRequests, &measurement.FailedRequests,
 			&promptTokens, &completionTokens, &totalTokens, &outputTokS, &perUserTokS,
@@ -610,9 +765,96 @@ func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 			return err
 		}
 		applySQLiteMeasurementDisplay(&measurement, doc.MeasurementMetrics[measurement.ID], startedAt, completedAt, wallTime, promptTokens, completionTokens, totalTokens, outputTokS, perUserTokS, totalTokS, errorType, errorMessage)
+		applyContextLabel(&measurement)
+		applyRequestDerived(&measurement, doc.RequestDerived[measurement.ID])
 		doc.Measurements = append(doc.Measurements, measurement)
 	}
 	return rows.Err()
+}
+
+// longOutputTokenThreshold separates prefill-style rows (start and end
+// active context coincide) from rows whose active context grows materially
+// during decode and must display the measured range.
+const longOutputTokenThreshold = 8
+
+// applyContextLabel implements the labeling rules in
+// docs/2026-07-02-context-semantics.md: a context label may only come from a
+// declared target confirmed by measurement; contradicted or undeclared rows
+// are labeled by their measured shape, and the server limit is never a
+// context label.
+func applyContextLabel(measurement *SQLiteReportMeasurement) {
+	activeStart, activeEnd, measured := measuredActiveContext(*measurement)
+	measurement.ContextSortKey = int(activeEnd)
+	if measurement.ContextTarget > 0 {
+		measurement.ContextSortKey = measurement.ContextTarget
+	}
+	longOutput := measured && (activeEnd-activeStart) > longOutputTokenThreshold
+	switch {
+	case measurement.ContextSemantics == "active" && measurement.ContextTarget > 0:
+		switch {
+		case measured && withinContextBand(activeEnd, measurement.ContextTarget):
+			measurement.ContextVerified = true
+			measurement.ContextLabel = contextLabel(measurement.ContextTarget) + " active context"
+			if longOutput {
+				measurement.ActiveRange = activeRangeLabel(activeStart, activeEnd)
+			}
+		case measured:
+			measurement.ContextLabel = measuredShapeLabel(*measurement)
+			measurement.ContextMismatch = true
+			measurement.ContextMismatchNote = fmt.Sprintf(
+				"declared %s active, measured %s",
+				contextLabel(measurement.ContextTarget), activeRangeLabel(activeStart, activeEnd))
+		default:
+			// No measured tokens (failed, planned, dry run): the claim is
+			// declared but unconfirmed, so say so and never count it as a
+			// verified active context.
+			measurement.ContextLabel = "unverified (declared " + contextLabel(measurement.ContextTarget) + " active)"
+		}
+	case measurement.ContextSemantics == "capacity" && measurement.ContextTarget > 0:
+		measurement.ContextLabel = contextLabel(measurement.ContextTarget) + " capacity"
+		if longOutput {
+			measurement.ActiveRange = activeRangeLabel(activeStart, activeEnd)
+		}
+	default:
+		measurement.ContextLabel = measuredShapeLabel(*measurement)
+	}
+}
+
+// measuredActiveContext derives per-request mean active context at the start
+// (prompt only) and end (prompt plus completion) of decode from the
+// measurement aggregates.
+func measuredActiveContext(measurement SQLiteReportMeasurement) (start, end float64, ok bool) {
+	if measurement.CompletedRequests <= 0 || !measurement.PromptTokensKnown || !measurement.CompletionTokensKnown {
+		return 0, 0, false
+	}
+	requests := float64(measurement.CompletedRequests)
+	start = float64(measurement.PromptTokensValue) / requests
+	end = start + float64(measurement.CompletionTokensValue)/requests
+	return start, end, true
+}
+
+// withinContextBand checks the measured active end against the declared
+// target using the contract band [0.90, 1.00].
+func withinContextBand(activeEnd float64, target int) bool {
+	return activeEnd >= 0.90*float64(target) && activeEnd <= float64(target)
+}
+
+func measuredShapeLabel(measurement SQLiteReportMeasurement) string {
+	if shape := requestShape(measurement); shape != "-" {
+		return shape
+	}
+	return "unlabeled"
+}
+
+func activeRangeLabel(start, end float64) string {
+	return approxTokenLabel(start) + " -> " + approxTokenLabel(end) + " active"
+}
+
+func approxTokenLabel(value float64) string {
+	if value >= 1024 {
+		return fmt.Sprintf("~%.0fk", value/1024)
+	}
+	return fmt.Sprintf("~%.0f", value)
 }
 
 func applySQLiteMeasurementDisplay(measurement *SQLiteReportMeasurement, metrics map[string]SQLiteReportMetric, startedAt, completedAt sql.NullString, wallTime sql.NullFloat64, promptTokens, completionTokens, totalTokens sql.NullInt64, outputTokS, perUserTokS, totalTokS sql.NullFloat64, errorType, errorMessage sql.NullString) {
@@ -639,9 +881,13 @@ func applySQLiteMeasurementDisplay(measurement *SQLiteReportMeasurement, metrics
 	measurement.ErrorMessage = nullStringValue(errorMessage)
 	measurement.OutputTokSStdDev = metricDisplay(metrics, "request_output_throughput", "StdDev")
 	measurement.LatencyMeanMS = metricDisplay(metrics, "latency", "Mean")
+	measurement.LatencyP50MS = metricDisplayFirst(metrics, "P50", "latency")
 	measurement.LatencyP95MS = metricDisplayFirst(metrics, "P95", "latency")
+	measurement.LatencyP99MS = metricDisplayFirst(metrics, "P99", "latency")
 	measurement.TTFTMeanMS = metricDisplayFirst(metrics, "Mean", "request_ttft", "ttft")
+	measurement.TTFTP50MS = metricDisplayFirst(metrics, "P50", "request_ttft", "ttft")
 	measurement.TTFTP95MS = metricDisplayFirst(metrics, "P95", "request_ttft", "ttft")
+	measurement.TTFTP99MS = metricDisplayFirst(metrics, "P99", "request_ttft", "ttft")
 	measurement.TPOTMeanMS = metricDisplayFirst(metrics, "Mean", "request_tpot", "tpot")
 	measurement.ITLMeanMS = metricDisplay(metrics, "request_itl_mean", "Mean")
 }
@@ -1006,17 +1252,73 @@ func sqliteReportCharts(measurements []SQLiteReportMeasurement) []SQLiteReportCh
 func sqliteReportMetadataItems(doc SQLiteReportDocument) []SQLiteReportMetadataItem {
 	items := []SQLiteReportMetadataItem{
 		{Label: "Engine", Value: joinUnique(engineSummaries(doc.Engines), ", ")},
+		{Label: "Hardware", Value: bench.FirstNonEmpty(doc.Run.Hardware, "-")},
 		{Label: "Quant", Value: bench.FirstNonEmpty(inferQuantization(doc.Profiles), "-")},
 		{Label: "KV", Value: bench.FirstNonEmpty(joinUnique(profileKVDtypes(doc.Profiles), ", "), "-")},
-		{Label: "Contexts", Value: formatContextList(measurementPositiveInts(doc.Measurements, func(measurement SQLiteReportMeasurement) int {
-			return measurement.ContextWindow
+		// Active contexts come only from declared-and-verified claims; the
+		// server limit is reported separately and never as a context.
+		{Label: "Active contexts", Value: formatContextList(measurementPositiveInts(doc.Measurements, func(measurement SQLiteReportMeasurement) int {
+			if measurement.ContextVerified {
+				return measurement.ContextTarget
+			}
+			return 0
+		}))},
+		{Label: "Server limits", Value: formatContextList(profilePositiveInts(doc.Profiles, func(profile SQLiteReportProfile) int {
+			return profile.ContextWindow
 		}))},
 		{Label: "Users", Value: formatIntList(measurementPositiveInts(doc.Measurements, func(measurement SQLiteReportMeasurement) int {
 			return measurement.Concurrency
 		}))},
 		{Label: "Requests", Value: fmt.Sprintf("%d ok / %d err", doc.RequestSummary.Completed, doc.RequestSummary.Failed)},
 	}
+	items = append(items, servedModelMismatchItems(doc)...)
 	return items
+}
+
+// servedModelMismatchItems surfaces declared-versus-self-reported model
+// disagreements from the engine identity probe. Declared, checked, then
+// shown: a silent mismatch is how a benchmark reports the wrong model.
+func servedModelMismatchItems(doc SQLiteReportDocument) []SQLiteReportMetadataItem {
+	servedByEngine := map[string]map[string][]string{}
+	for _, engine := range doc.Engines {
+		if len(engine.ServedModelsByProfile) > 0 {
+			servedByEngine[engine.Name] = engine.ServedModelsByProfile
+		}
+	}
+	if len(servedByEngine) == 0 {
+		return nil
+	}
+	var items []SQLiteReportMetadataItem
+	seen := map[string]bool{}
+	for _, profile := range doc.Profiles {
+		// Compare each profile only against its own probe result, and only
+		// warn when the declared model is absent from everything the server
+		// reported; multi-model servers may list it anywhere.
+		servedModels := servedByEngine[profile.Engine][profile.Name]
+		if profile.Model == "" || len(servedModels) == 0 || slices.Contains(servedModels, profile.Model) {
+			continue
+		}
+		served := strings.Join(servedModels, ", ")
+		if seen[profile.Model+served] {
+			continue
+		}
+		seen[profile.Model+served] = true
+		items = append(items, SQLiteReportMetadataItem{
+			Label: "Model mismatch",
+			Value: fmt.Sprintf("spec declares %s, server reports %s", profile.Model, served),
+		})
+	}
+	return items
+}
+
+func profilePositiveInts(profiles []SQLiteReportProfile, value func(SQLiteReportProfile) int) []int {
+	values := make([]int, 0, len(profiles))
+	for _, profile := range profiles {
+		if current := value(profile); current > 0 {
+			values = append(values, current)
+		}
+	}
+	return uniqueSortedInts(values)
 }
 
 func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLiteReportThroughputRow {
@@ -1024,15 +1326,28 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 	for _, measurement := range measurements {
 		mode := throughputMode(measurement.Phase)
 		inputTokS := inputThroughput(measurement)
+		// Aggregated repeat rows carry the mean ± spread across repeats;
+		// the recomputed sum/sum value would hide repeat variability.
+		if measurement.InputTokSSpread != "" {
+			inputTokS = measurement.InputTokSSpread
+		}
 		throughputTokS, perUserTokS := phaseThroughputMetrics(mode, inputTokS, measurement)
+		if mode == "prefill" && measurement.InputPerUserSpread != "" {
+			perUserTokS = measurement.InputPerUserSpread
+		}
 		rows = append(rows, SQLiteReportThroughputRow{
 			Phase:             bench.PhaseTitle(bench.NormalizeReportPhase(measurement.Phase)),
 			Mode:              mode,
 			Profile:           measurement.Profile,
 			Workload:          measurement.Workload,
 			ContextWindow:     measurement.ContextWindow,
+			ContextLabel:      measurement.ContextLabel,
+			ContextSortKey:    measurement.ContextSortKey,
+			ContextMismatch:   measurement.ContextMismatch,
+			MismatchNote:      measurement.ContextMismatchNote,
+			ActiveRange:       measurement.ActiveRange,
 			Concurrency:       measurement.Concurrency,
-			Shape:             requestShape(measurement),
+			Shape:             throughputRowShape(measurement),
 			InputTokS:         inputTokS,
 			TotalTokS:         measurement.TotalTokS,
 			OutputTokS:        measurement.OutputTokS,
@@ -1042,6 +1357,7 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 			TTFTMeanMS:        measurement.TTFTMeanMS,
 			TTFTP95MS:         measurement.TTFTP95MS,
 			LatencyP95MS:      measurement.LatencyP95MS,
+			SLODisplay:        sloRowDisplay(measurement),
 			CompletedRequests: measurement.CompletedRequests,
 			FailedRequests:    measurement.FailedRequests,
 			Status:            measurement.Status,
@@ -1049,8 +1365,8 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 		})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].ContextWindow != rows[j].ContextWindow {
-			return rows[i].ContextWindow < rows[j].ContextWindow
+		if rows[i].ContextSortKey != rows[j].ContextSortKey {
+			return rows[i].ContextSortKey < rows[j].ContextSortKey
 		}
 		leftMode, rightMode := throughputModeRank(rows[i].Mode), throughputModeRank(rows[j].Mode)
 		if leftMode != rightMode {
@@ -1059,6 +1375,26 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 		return rows[i].Concurrency < rows[j].Concurrency
 	})
 	return rows
+}
+
+// sloRowDisplay renders "% in SLO / goodput req/s" for rows whose workload
+// declared an SLO; goodput must stay visible in the headline table, not only
+// in hidden detail sections.
+func sloRowDisplay(measurement SQLiteReportMeasurement) string {
+	if measurement.SLONote == "" {
+		return ""
+	}
+	return measurement.SLOMetPct + " / " + measurement.GoodputRPS
+}
+
+// throughputRowShape renders the measured token shape, extended with the
+// active-context range for long-output rows.
+func throughputRowShape(measurement SQLiteReportMeasurement) string {
+	shape := requestShape(measurement)
+	if measurement.ActiveRange != "" && shape != "-" {
+		return shape + " (" + measurement.ActiveRange + ")"
+	}
+	return shape
 }
 
 func throughputMode(phase string) string {
@@ -1104,8 +1440,8 @@ func perUserMetric(value string, concurrency int) string {
 }
 
 type throughputGroupKey struct {
-	profile       string
-	contextWindow int
+	profile      string
+	contextLabel string
 }
 
 type throughputAxisVisibility struct {
@@ -1117,21 +1453,27 @@ func sqliteReportThroughputGroups(rows []SQLiteReportThroughputRow) []SQLiteRepo
 	groups := []SQLiteReportThroughputGroup{}
 	groupIndexes := map[throughputGroupKey]int{}
 	rowIndexes := []map[int]int{}
+	mismatchNotes := make([]string, 0)
 	for _, row := range rows {
 		key := throughputGroupKey{
-			profile:       row.Profile,
-			contextWindow: row.ContextWindow,
+			profile:      row.Profile,
+			contextLabel: row.ContextLabel,
 		}
 		index, ok := groupIndexes[key]
 		if !ok {
 			index = len(groups)
 			groupIndexes[key] = index
 			groups = append(groups, SQLiteReportThroughputGroup{
-				Title:         contextTitle(key.contextWindow),
-				Profile:       key.profile,
-				ContextWindow: key.contextWindow,
+				Title:          key.contextLabel,
+				Profile:        key.profile,
+				ContextSortKey: row.ContextSortKey,
+				ServerLimit:    row.ContextWindow,
 			})
 			rowIndexes = append(rowIndexes, map[int]int{})
+			mismatchNotes = append(mismatchNotes, "")
+		}
+		if row.ContextMismatch && row.MismatchNote != "" {
+			mismatchNotes[index] = row.MismatchNote
 		}
 		rowIndex, ok := rowIndexes[index][row.Concurrency]
 		if !ok {
@@ -1141,18 +1483,18 @@ func sqliteReportThroughputGroups(rows []SQLiteReportThroughputRow) []SQLiteRepo
 		}
 		applyThroughputComparisonSource(&groups[index].Rows[rowIndex], row)
 	}
-	sort.SliceStable(groups, func(i, j int) bool {
-		left, right := throughputGroupSortKey(groups[i]), throughputGroupSortKey(groups[j])
-		return left < right
-	})
 	for index := range groups {
 		sort.SliceStable(groups[index].Rows, func(i, j int) bool {
 			return groups[index].Rows[i].Concurrency < groups[index].Rows[j].Concurrency
 		})
 		applyThroughputComparisonHeatmaps(groups[index].Rows)
-		key := throughputGroupKey{profile: groups[index].Profile, contextWindow: groups[index].ContextWindow}
-		groups[index].AxisItems = throughputGroupAxisItems(key, visibility, groups[index].Rows)
+		key := throughputGroupKey{profile: groups[index].Profile, contextLabel: groups[index].Title}
+		groups[index].AxisItems = throughputGroupAxisItems(key, visibility, groups[index].ServerLimit, mismatchNotes[index], groups[index].Rows)
 	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		left, right := throughputGroupSortKey(groups[i]), throughputGroupSortKey(groups[j])
+		return left < right
+	})
 	return groups
 }
 
@@ -1220,6 +1562,25 @@ func applyThroughputComparisonSource(target *SQLiteReportThroughputComparisonRow
 	target.OK = target.DecodeOK + target.PrefillOK
 	target.Err = target.DecodeErr + target.PrefillErr
 	target.Requests = fmt.Sprintf("%d / %d", target.OK, target.Err)
+	if source.SLODisplay != "" {
+		if source.Mode == "prefill" {
+			target.PrefillSLO = source.SLODisplay
+		} else {
+			target.DecodeSLO = source.SLODisplay
+		}
+	}
+	// Both phases can declare SLOs; neither result may silently overwrite
+	// the other.
+	switch {
+	case target.DecodeSLO != "" && target.PrefillSLO != "":
+		target.SLO = "D " + target.DecodeSLO + " · P " + target.PrefillSLO
+	case target.DecodeSLO != "":
+		target.SLO = target.DecodeSLO
+	case target.PrefillSLO != "":
+		target.SLO = target.PrefillSLO
+	default:
+		target.SLO = "-"
+	}
 }
 
 func throughputAxisVisibilityForRows(rows []SQLiteReportThroughputRow) throughputAxisVisibility {
@@ -1234,10 +1595,16 @@ func throughputAxisVisibilityForRows(rows []SQLiteReportThroughputRow) throughpu
 	}
 }
 
-func throughputGroupAxisItems(key throughputGroupKey, visibility throughputAxisVisibility, rows []SQLiteReportThroughputComparisonRow) []SQLiteReportMetadataItem {
+func throughputGroupAxisItems(key throughputGroupKey, visibility throughputAxisVisibility, serverLimit int, mismatchNote string, rows []SQLiteReportThroughputComparisonRow) []SQLiteReportMetadataItem {
 	items := []SQLiteReportMetadataItem{}
-	if visibility.profile && strings.TrimSpace(key.profile) != "" && key.profile != contextLabel(key.contextWindow) {
+	if visibility.profile && strings.TrimSpace(key.profile) != "" && key.profile != key.contextLabel {
 		items = append(items, SQLiteReportMetadataItem{Label: "Profile", Value: key.profile})
+	}
+	if serverLimit > 0 {
+		items = append(items, SQLiteReportMetadataItem{Label: "Server limit", Value: contextLabel(serverLimit)})
+	}
+	if mismatchNote != "" {
+		items = append(items, SQLiteReportMetadataItem{Label: "Context mismatch", Value: mismatchNote})
 	}
 	if shape := comparisonShapeSummary(rows, "decode"); shape != "" {
 		items = append(items, SQLiteReportMetadataItem{Label: "Decode", Value: shape})
@@ -1265,7 +1632,7 @@ func comparisonShapeSummary(rows []SQLiteReportThroughputComparisonRow, mode str
 }
 
 func throughputGroupSortKey(group SQLiteReportThroughputGroup) string {
-	return fmt.Sprintf("%012d:%s", group.ContextWindow, group.Profile)
+	return fmt.Sprintf("%012d:%s:%s", group.ContextSortKey, group.Profile, group.Title)
 }
 
 type throughputComparisonHeatmapColumn struct {
@@ -1572,12 +1939,9 @@ func contextLabel(value int) string {
 	return fmt.Sprintf("%d", value)
 }
 
-func contextTitle(value int) string {
-	if value <= 0 {
-		return "Unknown context"
-	}
-	return contextLabel(value) + " context"
-}
+// Context labels for groups and rows come from applyContextLabel; the
+// server limit (max_model_len) is never rendered as a context title. See
+// docs/2026-07-02-context-semantics.md.
 
 func formatIntList(values []int) string {
 	if len(values) == 0 {
@@ -1756,193 +2120,3 @@ func trimTrailingZero(value string) string {
 	}
 	return value + suffix
 }
-
-const sqliteHTMLReportTemplate = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}}</title>
-<style>
-:root{color-scheme:light;--bg:#f7f8fa;--panel:#ffffff;--text:#151922;--muted:#647084;--line:#d9dee8;--bad:#b42318;--warn:#a15c07;--ok:#067647}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:13px/1.35 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-header,main{max-width:1180px;margin:0 auto}
-header{padding:14px 16px 10px;background:var(--panel);border-bottom:1px solid var(--line)}
-main{padding:0 16px 18px}
-h1{font-size:22px;line-height:1.08;margin:0 0 8px}
-h2{font-size:15px;margin:14px 0 8px}
-.meta-strip{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
-.meta-item{display:flex;gap:4px;align-items:baseline;border:1px solid var(--line);border-radius:999px;background:#fbfcfe;padding:4px 8px;max-width:100%}
-.meta-item span{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.02em}
-.meta-item strong{font-size:11px;overflow-wrap:anywhere}
-.section{margin-top:12px}
-.throughput-group{margin-top:14px}
-.group-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:10px 0 6px}
-.group-head h2{margin:0}
-.group-meta{display:flex;flex-wrap:wrap;gap:5px}
-.axis-item{display:inline-flex;gap:4px;align-items:baseline;border:1px solid var(--line);border-radius:999px;background:#fbfcfe;padding:2px 7px}
-.axis-item span{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.02em}
-.axis-item strong{font-size:10px}
-.info-box{border:1px solid var(--line);border-radius:6px;background:#fbfcfe;padding:8px 10px;color:var(--muted);font-size:11px}
-.info-box p{margin:3px 0}
-.info-box strong{color:var(--text)}
-.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
-table{width:100%;border-collapse:collapse;table-layout:fixed;min-width:0}
-th,td{border-bottom:1px solid var(--line);padding:6px 7px;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:anywhere}
-th{font-size:11px;color:var(--muted);background:#f0f3f7;font-weight:650}
-td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.baseline-row td{border-bottom:2px solid #cbd5e1}
-.heat-0{background:#fee2e2;color:#7f1d1d}
-.heat-1{background:#ffedd5;color:#7c2d12}
-.heat-2{background:#fef9c3;color:#713f12}
-.heat-3{background:#ecfccb;color:#365314}
-.heat-4{background:#dcfce7;color:#14532d}
-.heat-5{background:#bbf7d0;color:#14532d}
-.heat-neutral{background:#f8fafc}
-.pill{display:inline-block;border-radius:999px;padding:2px 7px;font-size:11px;border:1px solid var(--line);white-space:nowrap}
-.status-ok{color:var(--ok);background:#ecfdf3;border-color:#abefc6}
-.status-bad{color:var(--bad);background:#fef3f2;border-color:#fecdca}
-.status-warn{color:var(--warn);background:#fffaeb;border-color:#fedf89}
-.status-neutral{color:var(--muted);background:#f8fafc}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.wrap{white-space:normal}
-.privacy{border:1px solid var(--line);background:#fff8e6;border-radius:6px;padding:9px 11px;color:#704b00}
-.artifact-line,.secondary{display:none}
-.phone-table-wrap{display:none}
-@media (max-width:720px){
-  body{font-size:12px;background:#fff}
-  header{padding:12px 14px 8px}
-  main{padding:0 14px 14px}
-  h1{font-size:22px;margin-bottom:8px}
-  h2{font-size:15px;margin:12px 0 8px}
-  .meta-strip{gap:5px}
-  .meta-item{padding:3px 7px}
-  .group-head{display:block;margin-top:10px}
-  .group-meta{margin-top:5px}
-  .axis-item{padding:2px 6px}
-  .info-box{font-size:10px;padding:7px 8px}
-  .desktop-table{display:none}
-  .phone-table-wrap{display:block}
-  .phone-table{font-size:11px}
-  .phone-table th,.phone-table td{padding:5px 3px;line-height:1.15}
-  .phone-table th{font-size:9px;overflow-wrap:normal}
-  .phone-table td:first-child,.phone-table th:first-child{font-weight:700;text-align:right;white-space:normal}
-  .phone-table td.num,.phone-table th.num{white-space:normal}
-  .phone-table th.num{white-space:nowrap}
-}
-@media print{
-  @page{size:A4 landscape;margin:10mm}
-  body{background:#fff;font-size:10px}
-  header,main{max-width:none;margin:0;padding:0}
-  header{border-bottom:1px solid #bbb;margin-bottom:8px}
-  h1{font-size:17px;margin-bottom:8px}
-  h2{font-size:13px;margin:10px 0 6px}
-  .meta-item{padding:2px 6px;border-radius:0}
-  .meta-item span{font-size:8px}
-  .meta-item strong{font-size:9px}
-  .throughput-group{break-inside:avoid;margin-top:8px}
-  .group-head{margin:6px 0 4px}
-  .axis-item{padding:1px 4px;border-radius:0}
-  .info-box{font-size:8px;padding:4px 5px}
-  .table-wrap{overflow:visible;border-radius:0}
-  table{width:100%;min-width:0;table-layout:fixed;font-size:8px}
-  th,td{padding:3px 4px;white-space:normal;overflow-wrap:anywhere}
-  td.num,th.num{white-space:normal}
-  .phone-table-wrap,.secondary{display:none}
-}
-</style>
-</head>
-<body>
-<header>
-<h1>{{.Title}}</h1>
-<div class="meta-strip">
-{{range .Doc.MetadataItems}}<div class="meta-item"><span>{{.Label}}</span><strong>{{.Value}}</strong></div>{{end}}
-</div>
-</header>
-<main>
-<section class="section">
-<h2>Throughput</h2>
-{{range .Doc.ThroughputGroups}}
-<div class="throughput-group">
-<div class="group-head"><h2>{{.Title}}</h2>{{if .AxisItems}}<div class="group-meta">{{range .AxisItems}}<span class="axis-item"><span>{{.Label}}</span><strong>{{.Value}}</strong></span>{{end}}</div>{{end}}</div>
-<div class="table-wrap desktop-table"><table class="essential-table">
-<colgroup><col style="width:6%"><col style="width:10%"><col style="width:9%"><col style="width:10%"><col style="width:10%"><col style="width:10%"><col style="width:9%"><col style="width:10%"><col style="width:10%"><col style="width:16%"></colgroup>
-<thead><tr><th class="num">Users</th><th class="num">Decode tok/s</th><th class="num">Decode/user</th><th class="num">Decode TTFT avg</th><th class="num">Decode TTFT p95</th><th class="num">Prefill tok/s</th><th class="num">Prefill/user</th><th class="num">Prefill TTFT avg</th><th class="num">Prefill TTFT p95</th><th class="num">OK / Err</th></tr></thead>
-<tbody>
-{{range .Rows}}
-<tr class="{{if .Baseline}}baseline-row{{end}}"><td class="num">{{.Concurrency}}</td><td class="num {{.DecodeTokSHeat}}">{{tokps .DecodeTokS}}</td><td class="num {{.DecodeUserHeat}}">{{tokps .DecodePerUserTokS}}</td><td class="num {{.DecodeTTFTMeanHeat}}">{{seconds .DecodeTTFTMeanMS}}</td><td class="num {{.DecodeTTFTHeat}}">{{seconds .DecodeTTFTMS}}</td><td class="num {{.PrefillTokSHeat}}">{{tokps .PrefillTokS}}</td><td class="num {{.PrefillUserHeat}}">{{tokps .PrefillPerUserTokS}}</td><td class="num {{.PrefillTTFTMeanHeat}}">{{seconds .PrefillTTFTMeanMS}}</td><td class="num {{.PrefillTTFTHeat}}">{{seconds .PrefillTTFTMS}}</td><td class="num {{.ErrHeat}}">{{.Requests}}</td></tr>
-{{end}}
-</tbody>
-</table></div>
-<div class="table-wrap phone-table-wrap"><table class="phone-table">
-<colgroup><col style="width:9%"><col style="width:11%"><col style="width:10%"><col style="width:17%"><col style="width:12%"><col style="width:10%"><col style="width:17%"><col style="width:14%"></colgroup>
-<thead><tr><th class="num">Users</th><th class="num">Decode</th><th class="num">D/user</th><th class="num">D avg/p95</th><th class="num">Prefill</th><th class="num">P/user</th><th class="num">P avg/p95</th><th class="num">OK/Err</th></tr></thead>
-<tbody>
-{{range .Rows}}
-<tr class="{{if .Baseline}}baseline-row{{end}}"><td class="num">{{.Concurrency}}</td><td class="num {{.DecodeTokSHeat}}">{{tokps .DecodeTokS}}</td><td class="num {{.DecodeUserHeat}}">{{tokps .DecodePerUserTokS}}</td><td class="num {{.DecodeTTFTHeat}}">{{seconds .DecodeTTFTMeanMS}} / {{seconds .DecodeTTFTMS}}</td><td class="num {{.PrefillTokSHeat}}">{{tokps .PrefillTokS}}</td><td class="num {{.PrefillUserHeat}}">{{tokps .PrefillPerUserTokS}}</td><td class="num {{.PrefillTTFTHeat}}">{{seconds .PrefillTTFTMeanMS}} / {{seconds .PrefillTTFTMS}}</td><td class="num {{.ErrHeat}}">{{.Requests}}</td></tr>
-{{end}}
-</tbody>
-</table></div>
-</div>
-{{end}}
-<div class="info-box">
-<p><strong>decode tok/s</strong> = generated output tokens / full run time.</p>
-<p><strong>prefill tok/s</strong> = input prompt tokens / full run time.</p>
-<p><strong>TTFT</strong> = time to first token. Times are vLLM milliseconds rendered as compact durations.</p>
-<p><strong>OK / Err</strong> = completed requests / failed requests.</p>
-<p><strong>/User</strong> = row throughput divided by concurrent users. Prefill tok/s is a workload-level approximation, not vLLM internal kernel time.</p>
-</div>
-</section>
-{{range .Doc.PhaseSections}}
-<section class="section secondary">
-<h2>{{.Title}} Detail</h2>
-<div class="table-wrap"><table>
-<thead><tr><th>Profile</th><th>Workload</th><th class="num">Context</th><th class="num">Conc.</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">Total tok/s</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">TTFT p95</th><th class="num">Latency p95</th><th class="num">TPOT mean</th><th class="num">ITL mean</th></tr></thead>
-<tbody>
-{{range .Measurements}}
-<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td class="num">{{.ContextWindow}}</td><td class="num">{{.Concurrency}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}</td><td class="num">{{.TotalTokS}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.TTFTP95MS}}</td><td class="num">{{.LatencyP95MS}}</td><td class="num">{{.TPOTMeanMS}}</td><td class="num">{{.ITLMeanMS}}</td></tr>
-{{end}}
-</tbody>
-</table></div>
-</section>
-{{end}}
-<section class="section secondary">
-<h2>Run</h2>
-<div class="table-wrap"><table>
-<tbody>
-<tr><th>ID</th><td>{{.Doc.Run.ID}}</td><th>Name</th><td>{{.Doc.Run.Name}}</td></tr>
-<tr><th>Created</th><td>{{.Doc.Run.CreatedAt}}</td><th>Completed</th><td>{{.Doc.Run.CompletedAt}}</td></tr>
-<tr><th>Host</th><td>{{.Doc.Run.Hostname}}</td><th>User</th><td>{{.Doc.Run.Username}}</td></tr>
-<tr><th>CWD</th><td class="mono wrap" colspan="3">{{.Doc.Run.CWD}}</td></tr>
-</tbody>
-</table></div>
-</section>
-<section class="section secondary">
-<h2>Profiles</h2>
-<div class="table-wrap"><table>
-<thead><tr><th>Name</th><th>Model</th><th class="num">Context</th><th class="num">Max seqs</th><th class="num">Batched tokens</th><th class="num">GPU memory util.</th><th>KV cache</th><th>Managed</th><th>Sleep</th></tr></thead>
-<tbody>{{range .Doc.Profiles}}<tr><td>{{.Name}}</td><td>{{.Model}}</td><td class="num">{{.ContextWindow}}</td><td class="num">{{.MaxNumSeqs}}</td><td class="num">{{.MaxNumBatchedTokens}}</td><td class="num">{{.GPUMemoryUtilizationS}}</td><td>{{.KVCacheDtype}}</td><td>{{.Managed}}</td><td>{{.EnableSleepMode}}</td></tr>{{end}}</tbody>
-</table></div>
-</section>
-<section class="section secondary">
-<h2>Events</h2>
-<div class="grid summary">{{range .Doc.EventCounts}}<div class="stat"><span>{{.Name}}</span><strong>{{.Count}}</strong></div>{{end}}</div>
-{{if .Doc.NotableEvents}}<h3>Notable Events</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Level</th><th>Type</th><th>Profile</th><th>Workload</th><th>Message</th></tr></thead><tbody>{{range .Doc.NotableEvents}}<tr><td>{{.Timestamp}}</td><td>{{.Level}}</td><td>{{.Type}}</td><td>{{.Profile}}</td><td>{{.Workload}}</td><td class="wrap">{{.Message}}</td></tr>{{end}}</tbody></table></div>{{end}}
-</section>
-<section class="section secondary">
-<h2>Commands</h2>
-<div class="table-wrap"><table><thead><tr><th>Phase</th><th>Status</th><th>Exit</th><th>Started</th><th>Completed</th><th>Command</th></tr></thead><tbody>{{range .Doc.Commands}}<tr><td>{{.Phase}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td>{{.ExitCode}}</td><td>{{.StartedAt}}</td><td>{{.Completed}}</td><td class="mono wrap">{{.Argv}}</td></tr>{{end}}</tbody></table></div>
-</section>
-<section class="section secondary">
-<h2>Artifact Contents</h2>
-<div class="table-wrap"><table><thead><tr><th>Kind</th><th class="num">Count</th><th class="num">Uncompressed bytes</th></tr></thead><tbody>{{range .Doc.ArtifactSummaries}}<tr><td>{{.Kind}}</td><td class="num">{{.Count}}</td><td class="num">{{.UncompressedSizeBytes}}</td></tr>{{end}}</tbody></table></div>
-</section>
-<section class="section secondary">
-<h2>Privacy</h2>
-<div class="privacy">This standalone report is rendered from normalized SQLite metrics. It does not include raw prompts, generated text, log bodies, or raw artifact contents.</div>
-</section>
-</main>
-</body>
-</html>
-`

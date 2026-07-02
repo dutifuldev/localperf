@@ -121,7 +121,11 @@
     {
       "name": "claim-repro-1k-out1024",
       "phase": "decode",
-      "profiles": ["4k-reference"],
+      "context_target": 4096,
+      "context_semantics": "capacity",
+      "profiles": [
+        "4k-reference"
+      ],
       "backend": "openai-chat",
       "dataset_name": "random",
       "seed": 0,
@@ -129,15 +133,23 @@
       "random_output_len": 1024,
       "random_range_ratio": "0",
       "num_prompts": 20,
-      "max_concurrency": [1, 4, 20],
+      "max_concurrency": [
+        1,
+        4,
+        20
+      ],
       "request_rate": "inf",
       "ignore_eos": true,
       "temperature": 0
     },
     {
-      "name": "decode-1k-out512-fixed",
+      "name": "decode-1k-out512-8k",
       "phase": "decode",
-      "profiles": ["8k", "16k", "32k"],
+      "context_target": 8192,
+      "context_semantics": "capacity",
+      "profiles": [
+        "8k"
+      ],
       "backend": "openai-chat",
       "dataset_name": "random",
       "seed": 0,
@@ -145,55 +157,137 @@
       "random_output_len": 512,
       "random_range_ratio": "0",
       "num_prompts": 64,
-      "max_concurrency": [4, 8, 16],
+      "max_concurrency": [
+        4,
+        8,
+        16
+      ],
       "request_rate": "inf",
       "ignore_eos": true,
       "temperature": 0
     },
     {
-      "name": "prefill-8k-out16-fixed",
-      "phase": "prefill",
-      "profiles": ["8k", "16k", "32k"],
+      "name": "decode-1k-out512-16k",
+      "phase": "decode",
+      "context_target": 16384,
+      "context_semantics": "capacity",
+      "profiles": [
+        "16k"
+      ],
       "backend": "openai-chat",
       "dataset_name": "random",
       "seed": 0,
-      "random_input_len": 7168,
-      "random_output_len": 16,
+      "random_input_len": 1024,
+      "random_output_len": 512,
       "random_range_ratio": "0",
       "num_prompts": 64,
-      "max_concurrency": [1, 4, 8, 16],
+      "max_concurrency": [
+        4,
+        8,
+        16
+      ],
       "request_rate": "inf",
       "ignore_eos": true,
       "temperature": 0
     },
     {
-      "name": "prefill-16k-out16-fixed",
-      "phase": "prefill",
-      "profiles": ["16k", "32k"],
+      "name": "decode-1k-out512-32k",
+      "phase": "decode",
+      "context_target": 32768,
+      "context_semantics": "capacity",
+      "profiles": [
+        "32k"
+      ],
       "backend": "openai-chat",
       "dataset_name": "random",
       "seed": 0,
-      "random_input_len": 14336,
-      "random_output_len": 16,
+      "random_input_len": 1024,
+      "random_output_len": 512,
       "random_range_ratio": "0",
       "num_prompts": 64,
-      "max_concurrency": [1, 4, 8, 16],
+      "max_concurrency": [
+        4,
+        8,
+        16
+      ],
       "request_rate": "inf",
       "ignore_eos": true,
       "temperature": 0
     },
     {
-      "name": "prefill-32k-out16-fixed",
+      "name": "prefill-8k-out1-fixed",
       "phase": "prefill",
-      "profiles": ["32k"],
+      "context_target": 8192,
+      "context_semantics": "active",
+      "profiles": [
+        "8k",
+        "16k",
+        "32k"
+      ],
       "backend": "openai-chat",
       "dataset_name": "random",
       "seed": 0,
-      "random_input_len": 28672,
-      "random_output_len": 16,
+      "random_input_len": 8063,
+      "random_output_len": 1,
       "random_range_ratio": "0",
       "num_prompts": 64,
-      "max_concurrency": [1, 4, 8, 16],
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16
+      ],
+      "request_rate": "inf",
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "name": "prefill-16k-out1-fixed",
+      "phase": "prefill",
+      "context_target": 16384,
+      "context_semantics": "active",
+      "profiles": [
+        "16k",
+        "32k"
+      ],
+      "backend": "openai-chat",
+      "dataset_name": "random",
+      "seed": 0,
+      "random_input_len": 16127,
+      "random_output_len": 1,
+      "random_range_ratio": "0",
+      "num_prompts": 64,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16
+      ],
+      "request_rate": "inf",
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "name": "prefill-32k-out1-fixed",
+      "phase": "prefill",
+      "context_target": 32768,
+      "context_semantics": "active",
+      "profiles": [
+        "32k"
+      ],
+      "backend": "openai-chat",
+      "dataset_name": "random",
+      "seed": 0,
+      "random_input_len": 32255,
+      "random_output_len": 1,
+      "random_range_ratio": "0",
+      "num_prompts": 64,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16
+      ],
       "request_rate": "inf",
       "ignore_eos": true,
       "temperature": 0

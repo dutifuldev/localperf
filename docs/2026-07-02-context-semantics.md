@@ -119,6 +119,10 @@ Widen the band only deliberately and in this doc, not ad hoc in code.
 3. Rows whose measurement disagrees with the declared target are labeled by
    measured shape instead, for example `~1k in / 4k out`, with an explicit
    mismatch warning. The contradicted target never renders as the label.
+   Rows with no measured tokens at all (failed, planned, dry run) render the
+   declared claim explicitly marked unverified, for example
+   `unverified (declared 8k active)`, and are never counted among the
+   report's verified active contexts.
 4. `max_model_len` always renders as a server limit attribute (for example
    `server limit: 32k`), never as a group title, and never on the report's
    "Contexts" summary line. The summary line reports active-context points.
@@ -140,11 +144,10 @@ validation. The default grid and shape derivation live in
 
 ## Implementation status
 
-Specified but not yet implemented. Pending, in build order:
+Implemented:
 
-1. Spec fields and validation in `internal/vllmbench/config.go`.
-2. Report labeling rules in `internal/report/html.go`.
-3. `localperf sweep plan` generator.
-
-Until validation lands, treat rule 1 as a manual review requirement for any
-new spec.
+1. Spec fields and validation in `internal/vllmbench/config.go`
+   (`validateWorkloadContextSemantics`).
+2. Report labeling rules in `internal/report/html.go`
+   (`applyContextLabel`).
+3. `localperf sweep plan` generator in `internal/sweepplan`.
