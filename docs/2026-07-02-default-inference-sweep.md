@@ -57,6 +57,26 @@ Only extend one dimension at a time, and stop before the machine OOMs. A failed
 startup or memory-guard kill is a result; do not keep pushing the same shape
 without changing the profile.
 
+## Model-Level Artifacts
+
+For a specific model, keep repeated runs in one SQLite artifact and one rendered
+HTML report. Use model-scoped paths such as:
+
+```text
+runs/models/<model-slug>.sqlite
+runs/models/<model-slug>.html
+```
+
+The shared SQLite file should contain one `run` row per benchmark attempt or
+batch, with all profiles, workloads, measurements, requests, telemetry, raw
+outputs, and report exports tied back by `run_id`. Do not split `c1`, `c4`,
+`8k`, `16k`, or separate retry attempts into separate SQLite files unless the
+split is only for debugging or recovering from a failed run.
+
+Render the HTML from the shared SQLite artifact after each batch. If the runner
+cannot append directly yet, append or merge the new run into the model-level
+artifact before treating the sweep as complete.
+
 ## Reporting Requirements
 
 Every row must record:

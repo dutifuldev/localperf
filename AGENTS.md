@@ -40,6 +40,12 @@ max-throughput reference plus the practical `8k`, `16k`, `32k`, `64k`, `128k`
 context ladder with concurrency `1`, `4`, `8`, `16`, and `32`, extending by
 powers of two only when the hardware can safely take it.
 
+For repeated benchmark runs of the same model, keep results in one model-level
+SQLite artifact and render one model-level HTML report. Do not split retry
+runs, context lengths, or concurrency points into separate final artifacts
+unless the split is temporary debugging data; see
+`docs/2026-07-02-default-inference-sweep.md`.
+
 Keep production Go code under `cmd` and `internal`. Treat `examples`, `docs`,
 and `runs` as fixtures, documentation, or local run data rather than production
 library code.

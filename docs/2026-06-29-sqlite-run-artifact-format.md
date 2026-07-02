@@ -6,23 +6,34 @@ date: 2026-06-29
 
 # SQLite Run Artifact Format
 
-localperf should write one canonical run artifact:
+localperf should write one canonical SQLite artifact for the scope being
+reported. For a single ad hoc run, use:
 
 ```text
 runs/<run-id>.sqlite
 ```
 
-That SQLite file is the source of truth for the run. Markdown, JSON, CSV, and
-Parquet outputs are exports derived from it.
+For a model sweep or repeated profiling of the same model, use one model-level
+artifact:
+
+```text
+runs/models/<model-slug>.sqlite
+```
+
+That SQLite file is the source of truth for the run or model sweep. Markdown,
+JSON, CSV, HTML, and Parquet outputs are exports derived from it.
 
 ## Minimal Artifact
 
 A minimal valid artifact is a SQLite database with:
 
 - the `metadata` table,
-- one `run` row,
-- one `specs` row for the original spec,
-- one `specs` row for the normalized spec.
+- one or more `run` rows,
+- one `specs` row for the original spec per run,
+- one `specs` row for the normalized spec per run.
+
+A single-run artifact normally has one `run` row. A model-level artifact should
+have one `run` row per benchmark attempt or batch for that model.
 
 Example inspection:
 
@@ -55,6 +66,12 @@ format_version  1
 SQLite may create temporary journal files while a benchmark is running. A
 finished run should leave one canonical `.sqlite` file plus any optional
 exports.
+
+For model-level artifacts, writers must not delete the existing database when
+adding another run. They should open the existing file, verify `metadata`
+compatibility, insert a new unique `run.id`, and then insert all related rows
+with that `run_id`. If a benchmark produced a temporary single-run artifact,
+merge it into the model-level artifact before rendering the final model report.
 
 ## Schema Overview
 
