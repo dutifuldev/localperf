@@ -85,8 +85,8 @@ Validation rules, enforced as hard errors at spec load:
    profile's `max_model_len`. The workload shape is unconstrained; the row is
    a capacity/concurrency data point, never a context-scaling data point.
 3. `context_target` without `context_semantics` (or the reverse) is invalid.
-4. Omitting both fields is legal (legacy specs), but such rows can only ever
-   be labeled by their measured shape in reports.
+4. Both fields are required on every workload. A spec without them is
+   refused; there is no legacy path.
 
 The error message for rule 1 must explain the distinction, because spec
 authors (human or agent) correct themselves from it, for example:
@@ -116,10 +116,9 @@ Widen the band only deliberately and in this doc, not ad hoc in code.
    long-output decode row is not read as decoding at a constant 32k context.
    Prefill rows with minimal output may display a single number, since start
    and end coincide.
-3. Rows without a declared target, and rows whose measurement disagrees with
-   the declared target, are labeled by measured shape instead, for example
-   `~1k in / 4k out`. A declared-but-contradicted target renders as an
-   explicit mismatch warning, never as the label.
+3. Rows whose measurement disagrees with the declared target are labeled by
+   measured shape instead, for example `~1k in / 4k out`, with an explicit
+   mismatch warning. The contradicted target never renders as the label.
 4. `max_model_len` always renders as a server limit attribute (for example
    `server limit: 32k`), never as a group title, and never on the report's
    "Contexts" summary line. The summary line reports active-context points.
@@ -127,9 +126,8 @@ Widen the band only deliberately and in this doc, not ad hoc in code.
    decode throughput from measured completion tokens. Neither is ever
    attributed to the server limit.
 
-These rules apply at render time from data already in the SQLite artifact
-(`requests.prompt_tokens`, `requests.completion_tokens`), so old artifacts
-render honestly without migration.
+These rules apply at render time from data in the SQLite artifact
+(`requests.prompt_tokens`, `requests.completion_tokens`).
 
 ## Sweep generation
 

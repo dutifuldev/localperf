@@ -23,8 +23,7 @@ One rule runs through every phase:
   code. The report legend and the computation come from the same definition,
   so they cannot drift.
 - The report is a pure view over the SQLite artifact. Anything derivable at
-  render time is derived at render time, which makes fixes retroactive for
-  existing artifacts.
+  render time is derived at render time.
 - Semantic claims (context, SLO, engine identity) are declared in the spec
   and rendered only when measurement agrees. Declared, checked, then shown.
 
@@ -69,7 +68,9 @@ profiles []Profile) []string`, called from `validateWorkloads` (which
 already receives profile names; extend it to receive the profiles
 themselves). Rules:
 
-1. Both fields set or both empty. One without the other is an error.
+1. Both fields are required on every workload. A missing field is an
+   error; there is no legacy path. Update the specs under `examples/` in
+   the same change, since the repo's dry-run gate uses them.
 2. `context_semantics` must be `"active"` or `"capacity"`.
 3. For `"active"`: `random_input_len + random_output_len` must be within
    `[0.90, 1.00] * context_target`, and every profile the workload pairs
@@ -82,8 +83,7 @@ themselves). Rules:
    `max_model_len`.
 
 These are hard errors from `ValidateSpec`, so invalid specs die before any
-server starts. Workloads with neither field remain valid (legacy) and get
-no context claim.
+server starts.
 
 The fields flow into the artifact automatically: `insertWorkloads` in
 `internal/vllmbench/sqlite_artifact.go` serializes the embedded traffic
@@ -123,12 +123,10 @@ Replace capacity-based titling:
      carries the range string
      `activeRange = contextLabel(start) + " -> " + contextLabel(end)`,
      rendered in the group header and the Shape column.
-  3. If a target is declared but measurement lands outside the band: label
-     falls back to measured shape and the row gets a `mismatch` badge
-     showing declared versus measured (new CSS class next to the existing
-     status pills).
-  4. No declared target: label is the measured shape from the existing
-     `requestShape` helper.
+  3. If measurement lands outside the band: label falls back to the
+     measured shape from the existing `requestShape` helper, and the row
+     gets a `mismatch` badge showing declared versus measured (new CSS
+     class next to the existing status pills).
 - `contextTitle(profile.context_window)` is deleted. `context_window`
   renders only as `server limit: 32k` in the group axis items and the
   profile table.
@@ -143,17 +141,16 @@ Replace capacity-based titling:
 - `config_test.go`: table-driven cases for each validation rule, including
   the exact Gemma shape (target 32768, 1024+4096) asserting refusal and
   message content.
-- `html_test.go`: fixture artifacts for verified-active, capacity,
-  mismatch, and legacy rows; assert group titles, range strings, badge.
-- Acceptance: re-render
-  `gemma4-merged-practical-long-output-20260701.sqlite`; the 32k-profile
-  decode rows must render as `~1k -> 5k active` (measured shape path), not
-  "32k context".
+- `html_test.go`: fixture artifacts for verified-active, capacity, and
+  mismatch rows; assert group titles, range strings, badge.
+- Acceptance: the old Gemma spec shape (target 32768 with 1024+4096
+  requested) is refused by validation with the teaching message, and a
+  fixture artifact carrying a contradicted claim renders the mismatch
+  badge with the measured shape as the label, never "32k context".
 
 ## Phase 2: report what the artifact already knows
 
-Render-only; retroactive for all existing artifacts. All in
-`internal/report/`.
+Render-only. All in `internal/report/`.
 
 ### Metrics registry (`internal/report/metrics.go`, new file)
 
@@ -252,7 +249,9 @@ assert rendered fragments, following the existing test style.
 
 ## Phase 3: capture what is genuinely missing
 
-Runner changes; benefits future runs, older artifacts render `-`.
+Runner changes. `-` in a report means a source was genuinely unavailable
+on the machine (no `nvidia-smi`, unmanaged engine), never a skipped
+capture.
 
 ### Hardware inventory (`internal/vllmbench/hostinfo.go`, new file)
 
@@ -333,8 +332,8 @@ declared-then-verified pattern as context.
 Add `EnablePrefixCaching *bool` to the `Profile` serve options, emit the
 corresponding vLLM flag in `internal/vllmbench/commands.go`, include it in
 the `serve_json` map in `insertProfiles`, and render it in the profile
-table next to KV cache dtype. Tri-state: on / off / unknown (older
-artifacts).
+table next to KV cache dtype. Tri-state: on / off / unknown (unmanaged
+engines, where the flag cannot be observed).
 
 ## Phase 4: goodput and the sweep generator
 
@@ -430,5 +429,7 @@ request in, byte-stable spec out.
 ## Status
 
 - Contract docs: done (`2026-07-02-context-semantics.md`, sweep doc).
-- Phases 1 through 4: not started. Build in order; phases 1 and 2 upgrade
-  every existing artifact, so they come first.
+- Phases 1 through 4: not started. Build in order.
+- Cutover, not migration: artifacts and specs that predate this plan are
+  out of scope. Re-run benchmarks under the new contract instead of
+  accommodating old data.
