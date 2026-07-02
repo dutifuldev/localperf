@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dutifuldev/localperf/internal/artifact"
 )
 
 // TestTokenWeightedITLMatchesBruteForce checks the SQL derivation
@@ -189,6 +191,72 @@ func TestSLOGoodputDerivation(t *testing.T) {
 	// detail sections.
 	if !strings.Contains(out.String(), "SLO / goodput") || !strings.Contains(out.String(), "50% / 1.000") {
 		t.Fatal("HTML report missing visible SLO/goodput in the throughput table")
+	}
+}
+
+// TestMultiRunReportAggregatesAcrossRuns checks model-level rendering: all
+// runs load, the same point from two runs aggregates like repeats, and the
+// per-repeat rows keep run provenance.
+func TestMultiRunReportAggregatesAcrossRuns(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "model.sqlite")
+	createTestSQLiteHTMLArtifact(t, artifactPath, "Model Level")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Second run measuring the same (profile name, workload name, c4) point.
+	statements := []string{
+		`INSERT INTO run (id, name, status, created_at, started_at, completed_at, command_line_json, host_json, labels_json)
+			VALUES ('run-2', 'Model Level', 'completed', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', '2026-01-02T00:10:00Z', '[]', '{}', '{}')`,
+		`INSERT INTO specs (run_id, kind, format, content, sha256, created_at)
+			VALUES ('run-2', 'original', 'json', '{}', '` + artifact.SHA256Hex([]byte("{}")) + `', '2026-01-02T00:00:00Z')`,
+		`INSERT INTO specs (run_id, kind, format, content, sha256, created_at)
+			VALUES ('run-2', 'normalized', 'json', '{}', '` + artifact.SHA256Hex([]byte("{}")) + `', '2026-01-02T00:00:00Z')`,
+		`INSERT INTO engines (id, run_id, name, type, managed, command, version, env_json, metadata_json)
+			VALUES ('run-2/vllm', 'run-2', 'vllm', 'vllm', 1, 'vllm', 'test', '{}', '{}')`,
+		`INSERT INTO profiles (id, run_id, engine_id, name, model, port, managed, context_window, serve_json)
+			VALUES ('run-2/8k', 'run-2', 'run-2/vllm', '8k', 'nvidia/diffusiongemma-26B-A4B-it-NVFP4', 8108, 1, 8192, '{}')`,
+		`INSERT INTO workloads (id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats, save_detailed, capture_payload_artifacts)
+			VALUES ('run-2/prefill-8k', 'run-2', 'prefill-8k', 'prefill', '{}', '[4]', 8, 1, 1, 0)`,
+		`INSERT INTO measurements (run_id, profile_id, workload_id, repeat_index, concurrency, samples_requested,
+			status, started_at, completed_at, wall_time_ms, completed_requests, failed_requests,
+			prompt_tokens, completion_tokens, total_tokens, aggregate_output_tok_s, per_user_output_tok_s, aggregate_total_tok_s)
+			VALUES ('run-2', 'run-2/8k', 'run-2/prefill-8k', 0, 4, 8, 'completed',
+			'2026-01-02T00:00:00Z', '2026-01-02T00:01:00Z', 1000, 2, 0, 200, 20, 220, 133.4, 66.7, 233.4)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("%v\nstatement: %s", err, statement)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Runs) != 2 || doc.Run.ID != "run-2" {
+		t.Fatalf("runs = %d latest = %q, want 2 runs with run-2 latest", len(doc.Runs), doc.Run.ID)
+	}
+	// The fixture's workload name differs per run id but shares the point
+	// key (profile 8k, workload prefill-8k, c4), so the two runs aggregate.
+	if len(doc.Measurements) != 1 || doc.Measurements[0].RepeatCount != 2 {
+		t.Fatalf("aggregated measurements = %d (repeat count %d), want one cross-run aggregate of 2", len(doc.Measurements), doc.Measurements[0].RepeatCount)
+	}
+	if len(doc.RepeatDetails) != 2 || doc.RepeatDetails[0].RunID == doc.RepeatDetails[1].RunID {
+		t.Fatalf("repeat details = %+v, want one row per run", doc.RepeatDetails)
+	}
+	var out strings.Builder
+	if err := RenderHTMLReport(&out, doc, HTMLReportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Runs", "run-1", "run-2", "Latest Run"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("HTML report missing %q", want)
+		}
 	}
 }
 

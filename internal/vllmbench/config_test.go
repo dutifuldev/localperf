@@ -1979,9 +1979,9 @@ func seedMeasurementParents(t *testing.T, tx *sql.Tx) {
 	t.Helper()
 	for _, statement := range []string{
 		`INSERT INTO run (id, name, status, created_at) VALUES ('run', 'run', 'completed', '2026-01-01T00:00:00Z')`,
-		`INSERT INTO engines (id, run_id, name, type, managed) VALUES ('engine', 'run', 'engine', 'test', 0)`,
-		`INSERT INTO profiles (id, run_id, engine_id, name, model, managed) VALUES ('profile', 'run', 'engine', 'profile', 'model', 0)`,
-		`INSERT INTO workloads (id, run_id, name, traffic_json, concurrency_json, samples) VALUES ('workload', 'run', 'workload', '{}', '[1]', 1)`,
+		`INSERT INTO engines (id, run_id, name, type, managed) VALUES ('run/engine', 'run', 'engine', 'test', 0)`,
+		`INSERT INTO profiles (id, run_id, engine_id, name, model, managed) VALUES ('run/profile', 'run', 'run/engine', 'profile', 'model', 0)`,
+		`INSERT INTO workloads (id, run_id, name, traffic_json, concurrency_json, samples) VALUES ('run/workload', 'run', 'workload', '{}', '[1]', 1)`,
 	} {
 		if _, err := tx.Exec(statement); err != nil {
 			t.Fatal(err)

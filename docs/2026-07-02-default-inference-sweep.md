@@ -100,9 +100,22 @@ outputs, and report exports tied back by `run_id`. Do not split `c1`, `c4`,
 `8k`, `16k`, or separate retry attempts into separate SQLite files unless the
 split is only for debugging or recovering from a failed run.
 
-Render the HTML from the shared SQLite artifact after each batch. If the runner
-cannot append directly yet, append or merge the new run into the model-level
-artifact before treating the sweep as complete.
+Point every batch at the model-level artifact and the runner appends:
+
+```sh
+localperf bench run --spec spec.json --artifact runs/models/<model-slug>.sqlite ...
+```
+
+Existing per-run artifacts combine with:
+
+```sh
+localperf artifact merge --into runs/models/<model-slug>.sqlite runs/batch-1.sqlite runs/batch-2.sqlite
+```
+
+Re-running the same run directory replaces that run's rows; merging an
+already-present run is skipped. Render the HTML from the shared SQLite
+artifact after each batch; the report lists every run and aggregates repeated
+points across runs with mean ± spread.
 
 The final step of every default sweep is to render the completed SQLite
 artifact into 1 HTML report per model. Do not call the sweep complete until the

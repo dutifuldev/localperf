@@ -555,6 +555,15 @@ or the format version; absent values simply render as unavailable.
 - `workloads.traffic_json` stays strictly the engine input
   (`BenchmarkTrafficConfig`). Declared claims never ride in it, and warmup
   traffic carries no claims.
+- Dimension primary keys (`engines.id`, `profiles.id`, `workloads.id`,
+  `datasets.id`, `canonical_requests.id`) are namespaced per run as
+  `<run_id>/<name>` so multiple runs coexist in one model-level artifact.
+  `name` columns stay bare for display; joins go through the namespaced ids.
+- Writers append: an existing artifact at the target path gains a new `run`
+  row and its children; re-writing the same run id replaces that run.
+  `localperf artifact merge --into <dst> <src>...` combines existing
+  artifacts, rescoping dimension ids and shifting integer ids; runs already
+  present in the destination are skipped.
 
 ## Artifact Kinds
 
@@ -623,7 +632,8 @@ The validator must check:
 - `metadata.format_name = localperf_run`.
 - `metadata.format_version = 1`.
 - required tables exist.
-- there is exactly one `run` row.
+- there is at least one `run` row, each with exactly one original and one
+  normalized spec.
 - original and normalized specs exist and match their SHA-256 values.
 - JSON columns contain valid JSON.
 - foreign keys are valid.

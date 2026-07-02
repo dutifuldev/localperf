@@ -21,6 +21,11 @@ const (
 	sqliteFormatVersion = artifact.FormatVersion
 )
 
+// WriteSQLiteArtifact writes the run into the artifact at artifactPath,
+// appending when the artifact already exists so repeated runs of one model
+// accumulate in a single model-level file; see
+// docs/2026-07-02-default-inference-sweep.md. Re-running the same run
+// directory replaces that run's rows instead of duplicating them.
 func WriteSQLiteArtifact(runDir, artifactPath string, spec Spec, summary RunSummary, plan []PlannedRun, originalSpecPath string) error {
 	if strings.TrimSpace(artifactPath) == "" {
 		return nil
@@ -36,7 +41,7 @@ func WriteSQLiteArtifact(runDir, artifactPath string, spec Spec, summary RunSumm
 }
 
 func createSQLiteArtifact(path string) (*sql.DB, error) {
-	return artifact.Create(path, artifact.Schema)
+	return artifact.CreateOrAppend(path, artifact.Schema)
 }
 
 func withSQLiteTx(db *sql.DB, run func(*sql.Tx) error) error {
@@ -47,6 +52,11 @@ func writeSQLiteRun(tx *sql.Tx, runDir string, spec Spec, summary RunSummary, pl
 	now := time.Now().UTC()
 	runID := sqliteRunID(runDir, spec)
 	if err := insertRunMetadata(tx, now); err != nil {
+		return err
+	}
+	// Re-running the same run directory replaces the previous attempt;
+	// cascades wipe all child rows.
+	if _, err := tx.Exec(`DELETE FROM run WHERE id = ?`, runID); err != nil {
 		return err
 	}
 	if err := insertRunRow(tx, runID, spec, summary); err != nil {
@@ -66,6 +76,20 @@ func sqliteRunID(runDir string, spec Spec) string {
 	return runID
 }
 
+// dimensionID namespaces dimension primary keys per run so multiple runs can
+// share one model-level artifact; names alone would collide across runs.
+func dimensionID(runID, name string) string {
+	return runID + "/" + name
+}
+
+// dimensionRef is dimensionID for nullable foreign-key columns.
+func dimensionRef(runID, name string) any {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	return dimensionID(runID, name)
+}
+
 func insertRunMetadata(tx *sql.Tx, now time.Time) error {
 	values := map[string]string{
 		"format_name":    sqliteFormatName,
@@ -73,7 +97,9 @@ func insertRunMetadata(tx *sql.Tx, now time.Time) error {
 		"generated_at":   now.Format(time.RFC3339),
 	}
 	for key, value := range values {
-		if err := insertMetadata(tx, key, value); err != nil {
+		// Appended runs keep the existing metadata; generated_at records the
+		// artifact's first write.
+		if _, err := tx.Exec("INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)", key, value); err != nil {
 			return err
 		}
 	}
@@ -292,7 +318,7 @@ func insertEngines(tx *sql.Tx, runID string, spec Spec) error {
 		if _, err := tx.Exec(`INSERT INTO engines (
 			id, run_id, name, type, managed, command, endpoint_base_url, env_json, metadata_json
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			engine.Name, runID, engine.Name, engine.Type, managed, engine.Command,
+			dimensionID(runID, engine.Name), runID, engine.Name, engine.Type, managed, engine.Command,
 			emptyNull(engine.EndpointBaseURL), nullableJSON(redactedEnv(engine.Env)), nullableJSON(engine.Metadata)); err != nil {
 			return err
 		}
@@ -320,7 +346,7 @@ func insertProfiles(tx *sql.Tx, runID string, spec Spec) error {
 			gpu_memory_utilization, enable_sleep_mode, sleep_level,
 			serve_json, engine_args_json, env_json
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			profile.Name, runID, profile.Engine, profile.Name, profile.Model, profile.Host, profile.Port,
+			dimensionID(runID, profile.Name), runID, dimensionID(runID, profile.Engine), profile.Name, profile.Model, profile.Host, profile.Port,
 			baseURL(profile), boolToInt(profile.Managed), intNull(profile.MaxModelLen), intNull(profile.MaxNumSeqs),
 			intNull(profile.MaxNumBatchedTokens), floatNull(profile.GPUMemoryUtilization), boolToInt(profile.EnableSleepMode),
 			SleepLevelValue(profile), serveJSON, nullableJSON(profileExtraArgs(profile)), nullableJSON(redactedEnv(profile.Env))); err != nil {
@@ -338,7 +364,7 @@ func insertWorkloads(tx *sql.Tx, runID string, spec Spec) error {
 			id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
 			save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json, metadata_json
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			workload.Name, runID, workload.Name, workload.Phase, trafficJSON, concurrencyJSON, workload.NumPrompts,
+			dimensionID(runID, workload.Name), runID, workload.Name, workload.Phase, trafficJSON, concurrencyJSON, workload.NumPrompts,
 			workload.Repeats, boolToInt(boolValue(workload.BenchmarkTrafficConfig.SaveDetailed)),
 			boolToInt(workload.CapturePayloadArtifacts), structuredWorkloadJSON(workload, workload.Dataset),
 			structuredWorkloadJSON(workload, workload.Request), structuredWorkloadJSON(workload, workload.Load),
@@ -389,7 +415,7 @@ func insertCanonicalDatasets(tx *sql.Tx, runID, runDir string, spec Spec) error 
 }
 
 func insertCanonicalDataset(tx *sql.Tx, runID, runDir string, workload Workload) error {
-	datasetID := firstNonEmpty(workload.Dataset.Prepared.DatasetID, datasetIDForWorkload(workload.Name))
+	datasetID := dimensionID(runID, firstNonEmpty(workload.Dataset.Prepared.DatasetID, datasetIDForWorkload(workload.Name)))
 	requests, err := readCanonicalRequestFile(resolveResultPath(runDir, workload.Dataset.Prepared.CanonicalPath))
 	if err != nil {
 		return err
@@ -398,7 +424,7 @@ func insertCanonicalDataset(tx *sql.Tx, runID, runDir string, workload Workload)
 		id, run_id, workload_id, type, uri, path, split, selection, sample_count,
 		seed, config_json, canonical_path, rendered_path, request_count, sha256
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		datasetID, runID, workload.Name, workload.Dataset.Type, emptyNull(workload.Dataset.URI),
+		datasetID, runID, dimensionID(runID, workload.Name), workload.Dataset.Type, emptyNull(workload.Dataset.URI),
 		emptyNull(workload.Dataset.Path), emptyNull(workload.Dataset.Split), emptyNull(workload.Dataset.Selection),
 		workload.Dataset.SampleCount, intPointerNull(workload.Dataset.Seed), mustJSONString(workload.Dataset),
 		workload.Dataset.Prepared.CanonicalPath, emptyNull(workload.Dataset.Prepared.VLLMCustomPath),
@@ -415,7 +441,7 @@ func insertCanonicalDataset(tx *sql.Tx, runID, runDir string, workload Workload)
 		if err != nil {
 			return err
 		}
-		if err := insertCanonicalRequest(tx, runID, datasetID, workload.Name, sourceID, request); err != nil {
+		if err := insertCanonicalRequest(tx, runID, datasetID, dimensionID(runID, workload.Name), sourceID, request); err != nil {
 			return err
 		}
 	}
@@ -684,7 +710,7 @@ func insertPhase(tx *sql.Tx, runID, profile, workload, name, typ, status string,
 	result, err := tx.Exec(`INSERT INTO phases (
 		run_id, profile_id, workload_id, name, type, status, started_at, completed_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		runID, nullString(profile), nullString(workload), name, typ, status, timePtrString(startedAt), timePtrString(completedAt))
+		runID, dimensionRef(runID, profile), dimensionRef(runID, workload), name, typ, status, timePtrString(startedAt), timePtrString(completedAt))
 	if err != nil {
 		return 0, err
 	}
@@ -740,7 +766,7 @@ func insertMeasurement(tx *sql.Tx, insert measurementInsert) (int64, error) {
 		total_tokens, aggregate_output_tok_s, per_user_output_tok_s,
 		aggregate_total_tok_s, raw_result_artifact_id, error_type, error_message
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		insert.runID, insert.planned.Profile.Name, insert.planned.Workload.Name, zeroNullInt(insert.phaseID),
+		insert.runID, dimensionID(insert.runID, insert.planned.Profile.Name), dimensionID(insert.runID, insert.planned.Workload.Name), zeroNullInt(insert.phaseID),
 		insert.planned.Repeat, insert.planned.Concurrency, insert.planned.Workload.NumPrompts, insert.status,
 		timePtrString(insert.startedAt), timePtrString(insert.completedAt), durationMillis(insert.startedAt, insert.completedAt),
 		insert.row.Completed, insert.row.Failed, knownIntNull(insert.row.promptTokensKnown, insert.row.PromptTokens),
@@ -917,7 +943,7 @@ func insertEvents(tx *sql.Tx, runID string, events []Event, phaseIDs, measuremen
 			measurement_id, message, data_json
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			runID, event.Timestamp.Format(time.RFC3339), eventLevel(event), event.Type,
-			zeroNullInt(phaseIDs[key]), nullString(event.Profile), nullString(event.Workload),
+			zeroNullInt(phaseIDs[key]), dimensionRef(runID, event.Profile), dimensionRef(runID, event.Workload),
 			zeroNullInt(measurementIDs[key]), event.Error, nullableRawJSON(event.Details))
 		if err != nil {
 			return err
@@ -938,7 +964,7 @@ func insertCommands(tx *sql.Tx, runID string, events []Event, phaseIDs, measurem
 			started_at, completed_at, exit_code, status, stdout_artifact_id, stderr_artifact_id
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			runID, zeroNullInt(phaseIDs[key]), zeroNullInt(measurementIDs[key]),
-			nullString(event.Profile), event.Type, mustJSONString(event.Args),
+			dimensionRef(runID, event.Profile), event.Type, mustJSONString(event.Args),
 			commandStartedAt(event, status), commandCompletedAt(event, status),
 			commandExitCode(event, status), status, zeroNullInt(artifactIDForPath(artifactIDs, event.LogFile)), nil)
 		if err != nil {
@@ -1087,7 +1113,7 @@ func applyEngineIdentityEvent(tx *sql.Tx, runID string, engineByProfile map[stri
 		version = COALESCE(NULLIF(?, ''), version),
 		metadata_json = json_patch(COALESCE(metadata_json, '{}'), json_object('identity', json_object(?, json(?))))
 		WHERE run_id = ? AND id = ?`,
-		identity.Version, event.Profile, string(event.Details), runID, engineName)
+		identity.Version, event.Profile, string(event.Details), runID, dimensionID(runID, engineName))
 	return err
 }
 

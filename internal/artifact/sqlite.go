@@ -41,6 +41,26 @@ func Create(path, schema string) (*sql.DB, error) {
 	return openWithSchema(path, schema)
 }
 
+// CreateOrAppend opens an existing artifact for appending another run, or
+// creates a fresh one. Model-level artifacts accumulate repeated runs of one
+// model in a single file; see docs/2026-07-02-default-inference-sweep.md.
+// The existing file must be a valid artifact of the supported format;
+// anything else is an error rather than something to silently overwrite.
+func CreateOrAppend(path, schema string) (*sql.DB, error) {
+	if _, err := os.Stat(path); err != nil {
+		return Create(path, schema)
+	}
+	db, err := OpenWritable(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckHeader(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("cannot append to %s: %w", path, err)
+	}
+	return db, nil
+}
+
 func preparePath(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -159,25 +179,30 @@ func checkIntegrity(db *sql.DB) error {
 	return nil
 }
 
+// checkRunRowCount accepts one or more runs: model-level artifacts hold one
+// run row per benchmark attempt or batch.
 func checkRunRowCount(db *sql.DB) error {
 	var runRows int
 	if err := db.QueryRow("SELECT COUNT(*) FROM run").Scan(&runRows); err != nil {
 		return err
 	}
-	if runRows != 1 {
-		return fmt.Errorf("run rows = %d, want 1", runRows)
+	if runRows < 1 {
+		return fmt.Errorf("run rows = %d, want at least 1", runRows)
 	}
 	return nil
 }
 
+// checkSpecKindRows requires every run to carry exactly one original and one
+// normalized spec.
 func checkSpecKindRows(db *sql.DB) error {
 	for _, kind := range []string{"original", "normalized"} {
-		var count int
-		if err := db.QueryRow("SELECT COUNT(*) FROM specs WHERE kind = ?", kind).Scan(&count); err != nil {
+		var missing int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM run
+			WHERE (SELECT COUNT(*) FROM specs WHERE specs.run_id = run.id AND specs.kind = ?) != 1`, kind).Scan(&missing); err != nil {
 			return err
 		}
-		if count != 1 {
-			return fmt.Errorf("spec kind %s rows = %d, want 1", kind, count)
+		if missing != 0 {
+			return fmt.Errorf("%d run(s) without exactly one %s spec", missing, kind)
 		}
 	}
 	return nil

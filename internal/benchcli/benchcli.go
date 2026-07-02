@@ -32,6 +32,32 @@ var rootHandlers = commandHandlers{
 var artifactHandlers = commandHandlers{
 	"check":  runArtifactCheck,
 	"render": runArtifactRender,
+	"merge":  runArtifactMerge,
+}
+
+// runArtifactMerge combines run artifacts into one model-level SQLite file;
+// see docs/2026-07-02-default-inference-sweep.md, Model-Level Artifacts.
+func runArtifactMerge(args []string) {
+	flags := flag.NewFlagSet("artifact merge", flag.ExitOnError)
+	into := flags.String("into", "", "destination model-level artifact (required)")
+	_ = flags.Parse(args)
+	sources := flags.Args()
+	if strings.TrimSpace(*into) == "" || len(sources) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: localperf artifact merge --into runs/models/model.sqlite src1.sqlite [src2.sqlite ...]")
+		os.Exit(2)
+	}
+	summary, err := artifact.Merge(*into, sources)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	for _, run := range summary.MergedRuns {
+		fmt.Printf("merged: %s\n", run)
+	}
+	for _, run := range summary.SkippedRuns {
+		fmt.Printf("skipped (already present): %s\n", run)
+	}
+	fmt.Printf("artifact ok: %s\n", *into)
 }
 
 var sweepHandlers = commandHandlers{
@@ -219,6 +245,7 @@ func runBench(args []string) {
 	flags := flag.NewFlagSet("run", flag.ExitOnError)
 	specPath := flags.String("spec", "", "benchmark spec JSON file")
 	runDir := flags.String("run-dir", "", "optional run directory")
+	artifactPath := flags.String("artifact", "", "optional artifact path; an existing artifact is appended to (model-level accumulation)")
 	dryRun := flags.Bool("dry-run", false, "write planned artifacts without launching vLLM or benchmark commands")
 	timeout := flags.Duration("timeout", 0, "optional overall timeout, for example 2h")
 	overrides := addOverrideFlags(flags)
@@ -234,6 +261,7 @@ func runBench(args []string) {
 	defer cancel()
 	summary, err := vllmbench.Execute(ctx, spec, vllmbench.RunOptions{
 		RunDir:           *runDir,
+		ArtifactPath:     *artifactPath,
 		DryRun:           *dryRun,
 		OriginalSpecPath: *specPath,
 	})
@@ -630,6 +658,7 @@ func usageRoot() {
   localperf bench report --run-dir runs/example [--output runs/example/report.md] [--json]
   localperf artifact check runs/example.sqlite
   localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]
+  localperf artifact merge --into runs/models/model.sqlite src1.sqlite [src2.sqlite ...]
   localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k,128k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--out spec.json]`)
 }
 

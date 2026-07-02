@@ -62,10 +62,10 @@
 <h2>Repeats</h2>
 <details><summary>Per-repeat rows behind aggregated points</summary>
 <div class="table-wrap"><table>
-<thead><tr><th>Profile</th><th>Workload</th><th class="num">Conc.</th><th class="num">Repeat</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">Latency p95</th></tr></thead>
+<thead><tr><th>Run</th><th>Profile</th><th>Workload</th><th class="num">Conc.</th><th class="num">Repeat</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">Latency p95</th></tr></thead>
 <tbody>
 {{range .Doc.RepeatDetails}}
-<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td class="num">{{.Concurrency}}</td><td class="num">{{.RepeatIndex}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.LatencyP95MS}}</td></tr>
+<tr><td>{{.RunID}}</td><td>{{.Profile}}</td><td>{{.Workload}}</td><td class="num">{{.Concurrency}}</td><td class="num">{{.RepeatIndex}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.LatencyP95MS}}</td></tr>
 {{end}}
 </tbody>
 </table></div>
@@ -73,7 +73,17 @@
 </section>
 {{end}}
 <section class="section secondary">
-<h2>Run</h2>
+<h2>Runs</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Created</th><th>Completed</th><th>Host</th><th>Hardware</th></tr></thead>
+<tbody>
+{{range .Doc.Runs}}<tr><td>{{.ID}}</td><td>{{.Name}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td>{{.CreatedAt}}</td><td>{{.CompletedAt}}</td><td>{{.Hostname}}</td><td>{{.Hardware}}</td></tr>
+{{end}}
+</tbody>
+</table></div>
+</section>
+<section class="section secondary">
+<h2>Latest Run</h2>
 <div class="table-wrap"><table>
 <tbody>
 <tr><th>ID</th><td>{{.Doc.Run.ID}}</td><th>Name</th><td>{{.Doc.Run.Name}}</td></tr>
