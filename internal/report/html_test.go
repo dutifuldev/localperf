@@ -69,6 +69,87 @@ func TestRenderSQLiteHTMLReportEscapesAndIsStandalone(t *testing.T) {
 	}
 }
 
+func TestContextLabelsFollowContract(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
+	createTestSQLiteHTMLArtifact(t, artifactPath, "Context Labels")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Verified active: 2 requests, 8000 prompt + 100 completion per request
+	// lands inside [0.90, 1.00] x 8192.
+	insertContextWorkloadMeasurement(t, db, "wl-active", "decode",
+		`{"context":{"target":8192,"semantics":"active"}}`, 16000, 200)
+	// Capacity point: shape unconstrained, labeled as capacity.
+	insertContextWorkloadMeasurement(t, db, "wl-capacity", "decode",
+		`{"context":{"target":8192,"semantics":"capacity"}}`, 2000, 1024)
+	// The old Gemma conflation: declared 32k active, actually ~1k -> ~5k.
+	insertContextWorkloadMeasurement(t, db, "wl-mismatch", "decode",
+		`{"context":{"target":32768,"semantics":"active"}}`, 2074, 8192)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := RenderHTMLReport(&out, doc, HTMLReportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	html := out.String()
+	for _, want := range []string{
+		"8k active context",
+		"8k capacity",
+		"1037 in / 4096 out",
+		"declared 32k active, measured ~1k -&gt; ~5k active",
+		"Server limit",
+		"Active contexts",
+		"Server limits",
+		"mismatch",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML report missing %q", want)
+		}
+	}
+	if strings.Contains(html, "32k active context") {
+		t.Fatal("HTML report labels a contradicted claim as 32k active context")
+	}
+	if strings.Contains(html, "32k context") {
+		t.Fatal("HTML report labels a row by server capacity")
+	}
+}
+
+func insertContextWorkloadMeasurement(t *testing.T, db *sql.DB, workloadID, phase, claims string, promptTokens, completionTokens int) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO workloads (
+		id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
+		save_detailed, capture_payload_artifacts, metadata_json
+	) VALUES (?, 'run-1', ?, ?, '{"dataset_name":"random"}', '[1]', 2, 1, 1, 0, ?)`,
+		workloadID, workloadID, phase, claims); err != nil {
+		t.Fatal(err)
+	}
+	result, err := db.Exec(`INSERT INTO measurements (
+		run_id, profile_id, workload_id, repeat_index, concurrency, samples_requested,
+		status, started_at, completed_at, wall_time_ms, completed_requests, failed_requests,
+		prompt_tokens, completion_tokens, total_tokens, aggregate_output_tok_s,
+		per_user_output_tok_s, aggregate_total_tok_s
+	) VALUES (
+		'run-1', 'profile-1', ?, 0, 1, 2, 'completed',
+		'2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 60000, 2, 0, ?, ?, ?, 10, 10, 12
+	)`, workloadID, promptTokens, completionTokens, promptTokens+completionTokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	measurementID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedSQLiteHTMLMetrics(t, db, measurementID)
+}
+
 func TestTokenThroughputMetricDisplay(t *testing.T) {
 	for _, tc := range []struct {
 		value string
