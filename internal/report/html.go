@@ -35,6 +35,7 @@ type SQLiteReportDocument struct {
 	GeneratedAt        time.Time
 	Metadata           map[string]string
 	Run                SQLiteReportRun
+	Runs               []SQLiteReportRun
 	Engines            []SQLiteReportEngine
 	Profiles           []SQLiteReportProfile
 	Workloads          []SQLiteReportWorkload
@@ -73,6 +74,7 @@ type SQLiteReportRun struct {
 }
 
 type SQLiteReportEngine struct {
+	ID              string
 	Name            string
 	Type            string
 	Managed         bool
@@ -114,6 +116,7 @@ type SQLiteReportWorkload struct {
 
 type SQLiteReportMeasurement struct {
 	ID                    int64
+	RunID                 string
 	Profile               string
 	Workload              string
 	Phase                 string
@@ -552,25 +555,44 @@ func loadSQLiteReportMetadata(db *sql.DB, doc *SQLiteReportDocument) error {
 	return rows.Err()
 }
 
+// loadSQLiteReportRun loads every run in the artifact: model-level artifacts
+// accumulate one run per benchmark attempt or batch. The most recent run is
+// the report header; all runs render in the Runs section.
 func loadSQLiteReportRun(db *sql.DB, doc *SQLiteReportDocument) error {
-	var description, startedAt, completedAt, hostname, username, cwd, gitCommit, hostJSON sql.NullString
-	err := db.QueryRow(`SELECT
+	rows, err := db.Query(`SELECT
 		id, name, description, status, created_at, started_at, completed_at,
 		hostname, username, cwd, localperf_git_commit, host_json
-		FROM run LIMIT 1`).Scan(
-		&doc.Run.ID, &doc.Run.Name, &description, &doc.Run.Status, &doc.Run.CreatedAt,
-		&startedAt, &completedAt, &hostname, &username, &cwd, &gitCommit, &hostJSON)
+		FROM run ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return err
 	}
-	doc.Run.Description = nullStringValue(description)
-	doc.Run.StartedAt = nullStringValue(startedAt)
-	doc.Run.CompletedAt = nullStringValue(completedAt)
-	doc.Run.Hostname = nullStringValue(hostname)
-	doc.Run.Username = nullStringValue(username)
-	doc.Run.CWD = nullStringValue(cwd)
-	doc.Run.GitCommit = nullStringValue(gitCommit)
-	doc.Run.Hardware = hardwareSummary(nullStringValue(hostJSON))
+	defer rows.Close()
+	for rows.Next() {
+		var run SQLiteReportRun
+		var description, startedAt, completedAt, hostname, username, cwd, gitCommit, hostJSON sql.NullString
+		if err := rows.Scan(
+			&run.ID, &run.Name, &description, &run.Status, &run.CreatedAt,
+			&startedAt, &completedAt, &hostname, &username, &cwd, &gitCommit, &hostJSON,
+		); err != nil {
+			return err
+		}
+		run.Description = nullStringValue(description)
+		run.StartedAt = nullStringValue(startedAt)
+		run.CompletedAt = nullStringValue(completedAt)
+		run.Hostname = nullStringValue(hostname)
+		run.Username = nullStringValue(username)
+		run.CWD = nullStringValue(cwd)
+		run.GitCommit = nullStringValue(gitCommit)
+		run.Hardware = hardwareSummary(nullStringValue(hostJSON))
+		doc.Runs = append(doc.Runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(doc.Runs) == 0 {
+		return fmt.Errorf("artifact contains no run rows")
+	}
+	doc.Run = doc.Runs[0]
 	return nil
 }
 
@@ -616,7 +638,7 @@ func hardwareSummary(hostJSON string) string {
 
 func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
-		name, type, managed, COALESCE(command, ''), COALESCE(version, ''),
+		id, name, type, managed, COALESCE(command, ''), COALESCE(version, ''),
 		COALESCE(git_commit, ''), COALESCE(endpoint_base_url, ''),
 		COALESCE(metadata_json, '')
 		FROM engines ORDER BY name`)
@@ -629,7 +651,7 @@ func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 		var managed int
 		var metadataJSON string
 		if err := rows.Scan(
-			&engine.Name, &engine.Type, &managed, &engine.Command, &engine.Version,
+			&engine.ID, &engine.Name, &engine.Type, &managed, &engine.Command, &engine.Version,
 			&engine.GitCommit, &engine.EndpointBaseURL, &metadataJSON,
 		); err != nil {
 			return err
@@ -729,7 +751,7 @@ func loadSQLiteReportWorkloads(db *sql.DB, doc *SQLiteReportDocument) error {
 
 func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
-		m.id, p.name, w.name, w.phase, COALESCE(p.context_window, 0),
+		m.id, m.run_id, p.name, w.name, w.phase, COALESCE(p.context_window, 0),
 		COALESCE(json_extract(w.metadata_json, '$.context.target'), 0),
 		COALESCE(json_extract(w.metadata_json, '$.context.semantics'), ''),
 		COALESCE(json_extract(w.metadata_json, '$.slo.ttft_p95_ms'), 0),
@@ -753,7 +775,7 @@ func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 		var wallTime, outputTokS, perUserTokS, totalTokS sql.NullFloat64
 		var promptTokens, completionTokens, totalTokens sql.NullInt64
 		if err := rows.Scan(
-			&measurement.ID, &measurement.Profile, &measurement.Workload, &measurement.Phase,
+			&measurement.ID, &measurement.RunID, &measurement.Profile, &measurement.Workload, &measurement.Phase,
 			&measurement.ContextWindow, &measurement.ContextTarget, &measurement.ContextSemantics,
 			&measurement.SLOTTFTMillis, &measurement.SLOE2ELMillis,
 			&measurement.RepeatIndex, &measurement.Concurrency,
@@ -1252,6 +1274,7 @@ func sqliteReportCharts(measurements []SQLiteReportMeasurement) []SQLiteReportCh
 func sqliteReportMetadataItems(doc SQLiteReportDocument) []SQLiteReportMetadataItem {
 	items := []SQLiteReportMetadataItem{
 		{Label: "Engine", Value: joinUnique(engineSummaries(doc.Engines), ", ")},
+		{Label: "Runs", Value: fmt.Sprint(len(doc.Runs))},
 		{Label: "Hardware", Value: bench.FirstNonEmpty(doc.Run.Hardware, "-")},
 		{Label: "Quant", Value: bench.FirstNonEmpty(inferQuantization(doc.Profiles), "-")},
 		{Label: "KV", Value: bench.FirstNonEmpty(joinUnique(profileKVDtypes(doc.Profiles), ", "), "-")},
@@ -1282,7 +1305,9 @@ func servedModelMismatchItems(doc SQLiteReportDocument) []SQLiteReportMetadataIt
 	servedByEngine := map[string]map[string][]string{}
 	for _, engine := range doc.Engines {
 		if len(engine.ServedModelsByProfile) > 0 {
-			servedByEngine[engine.Name] = engine.ServedModelsByProfile
+			// Keyed by engine id: profiles.engine_id stores the id in both
+			// old (bare name) and namespaced artifacts.
+			servedByEngine[engine.ID] = engine.ServedModelsByProfile
 		}
 	}
 	if len(servedByEngine) == 0 {

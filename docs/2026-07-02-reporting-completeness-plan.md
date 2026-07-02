@@ -425,6 +425,30 @@ already routes `bench run` and `artifact check`), flags `--model`,
 `--repeats`, `--out spec.json` (default stdout). Golden-file test: fixed
 request in, byte-stable spec out.
 
+## Phase 5: model-level multi-run artifacts
+
+Wires the Model-Level Artifacts section of
+`2026-07-02-default-inference-sweep.md` end to end:
+
+- Dimension primary keys are namespaced per run (`<run_id>/<name>` via
+  `dimensionID` in `internal/vllmbench/sqlite_artifact.go`); bare names
+  collide across runs and made appending impossible.
+- `artifact.CreateOrAppend` opens an existing artifact for another run
+  instead of deleting it; re-writing the same run id replaces that run
+  (cascade delete, then insert). `bench run --artifact` selects the
+  model-level path.
+- `artifact check` accepts one or more runs, each with exactly one original
+  and one normalized spec.
+- `localperf artifact merge --into <dst> <src>...` combines artifacts:
+  text dimension ids are rescoped (prefix-if-missing, so old single-run and
+  new namespaced sources both merge), integer ids shift by the
+  destination's max per referenced table, and runs already present are
+  skipped so merges are idempotent. The destination is `artifact check`ed
+  after every merge.
+- The report loads every run (latest is the header; a Runs section lists
+  all), and repeated points across runs aggregate exactly like repeats,
+  with run provenance on the per-repeat rows.
+
 ## Deliberately excluded
 
 - Cost per token: defer until reports drive buy/rent decisions; revisit
@@ -448,7 +472,7 @@ request in, byte-stable spec out.
 ## Status
 
 - Contract docs: done (`2026-07-02-context-semantics.md`, sweep doc).
-- Phases 1 through 4: implemented. Key entry points:
+- Phases 1 through 5: implemented. Key entry points:
   `validateWorkloadContextSemantics` and `validateWorkloadSLO`
   (`internal/vllmbench/config.go`), `applyContextLabel` and the metrics
   registry (`internal/report`), `CollectHostInfo` /
