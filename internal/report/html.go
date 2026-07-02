@@ -149,6 +149,7 @@ type SQLiteReportMeasurement struct {
 	OutputTokSStdDev      string
 	PerUserOutputTokS     string
 	TotalTokS             string
+	InputTokSSpread       string
 	RPS                   string
 	LatencyMeanMS         string
 	LatencyP50MS          string
@@ -1311,6 +1312,11 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 	for _, measurement := range measurements {
 		mode := throughputMode(measurement.Phase)
 		inputTokS := inputThroughput(measurement)
+		// Aggregated repeat rows carry the mean ± spread across repeats;
+		// the recomputed sum/sum value would hide repeat variability.
+		if measurement.InputTokSSpread != "" {
+			inputTokS = measurement.InputTokSSpread
+		}
 		throughputTokS, perUserTokS := phaseThroughputMetrics(mode, inputTokS, measurement)
 		rows = append(rows, SQLiteReportThroughputRow{
 			Phase:             bench.PhaseTitle(bench.NormalizeReportPhase(measurement.Phase)),
