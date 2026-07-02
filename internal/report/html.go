@@ -48,6 +48,9 @@ type SQLiteReportDocument struct {
 	ExistingReports    []SQLiteReportExport
 	ArtifactSummaries  []SQLiteReportArtifactSummary
 	MeasurementMetrics map[int64]map[string]SQLiteReportMetric
+	RequestDerived     map[int64]sqliteRequestDerived
+	RepeatDetails      []SQLiteReportMeasurement
+	Legend             []MetricDef
 }
 
 type SQLiteReportRun struct {
@@ -137,12 +140,21 @@ type SQLiteReportMeasurement struct {
 	OutputTokSStdDev      string
 	PerUserOutputTokS     string
 	TotalTokS             string
+	RPS                   string
 	LatencyMeanMS         string
+	LatencyP50MS          string
 	LatencyP95MS          string
+	LatencyP99MS          string
 	TTFTMeanMS            string
+	TTFTP50MS             string
 	TTFTP95MS             string
+	TTFTP99MS             string
 	TPOTMeanMS            string
 	ITLMeanMS             string
+	ITLTokenWeightedMS    string
+	AchievedConcurrency   string
+	FailureBreakdown      string
+	RepeatCount           int
 	ErrorType             string
 	ErrorMessage          string
 }
@@ -343,6 +355,7 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 		loadSQLiteReportProfiles,
 		loadSQLiteReportWorkloads,
 		loadSQLiteReportMetrics,
+		loadSQLiteReportRequestDerived,
 		loadSQLiteReportMeasurements,
 		loadSQLiteReportRequestSummary,
 		loadSQLiteReportEventCounts,
@@ -355,6 +368,8 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 			return SQLiteReportDocument{}, err
 		}
 	}
+	doc.Measurements, doc.RepeatDetails = aggregateRepeatMeasurements(doc.Measurements)
+	doc.Legend = ReportMetrics
 	doc.MetadataItems = sqliteReportMetadataItems(doc)
 	doc.ThroughputRows = sqliteReportThroughputRows(doc.Measurements)
 	doc.ThroughputGroups = sqliteReportThroughputGroups(doc.ThroughputRows)
@@ -628,6 +643,7 @@ func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 		}
 		applySQLiteMeasurementDisplay(&measurement, doc.MeasurementMetrics[measurement.ID], startedAt, completedAt, wallTime, promptTokens, completionTokens, totalTokens, outputTokS, perUserTokS, totalTokS, errorType, errorMessage)
 		applyContextLabel(&measurement)
+		applyRequestDerived(&measurement, doc.RequestDerived[measurement.ID])
 		doc.Measurements = append(doc.Measurements, measurement)
 	}
 	return rows.Err()
@@ -738,9 +754,13 @@ func applySQLiteMeasurementDisplay(measurement *SQLiteReportMeasurement, metrics
 	measurement.ErrorMessage = nullStringValue(errorMessage)
 	measurement.OutputTokSStdDev = metricDisplay(metrics, "request_output_throughput", "StdDev")
 	measurement.LatencyMeanMS = metricDisplay(metrics, "latency", "Mean")
+	measurement.LatencyP50MS = metricDisplayFirst(metrics, "P50", "latency")
 	measurement.LatencyP95MS = metricDisplayFirst(metrics, "P95", "latency")
+	measurement.LatencyP99MS = metricDisplayFirst(metrics, "P99", "latency")
 	measurement.TTFTMeanMS = metricDisplayFirst(metrics, "Mean", "request_ttft", "ttft")
+	measurement.TTFTP50MS = metricDisplayFirst(metrics, "P50", "request_ttft", "ttft")
 	measurement.TTFTP95MS = metricDisplayFirst(metrics, "P95", "request_ttft", "ttft")
+	measurement.TTFTP99MS = metricDisplayFirst(metrics, "P99", "request_ttft", "ttft")
 	measurement.TPOTMeanMS = metricDisplayFirst(metrics, "Mean", "request_tpot", "tpot")
 	measurement.ITLMeanMS = metricDisplay(metrics, "request_itl_mean", "Mean")
 }
@@ -2028,25 +2048,36 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 </div>
 {{end}}
 <div class="info-box">
-<p><strong>decode tok/s</strong> = generated output tokens / full run time.</p>
-<p><strong>prefill tok/s</strong> = input prompt tokens / full run time.</p>
-<p><strong>TTFT</strong> = time to first token. Times are vLLM milliseconds rendered as compact durations.</p>
-<p><strong>OK / Err</strong> = completed requests / failed requests.</p>
-<p><strong>/User</strong> = row throughput divided by concurrent users. Prefill tok/s is a workload-level approximation, not vLLM internal kernel time.</p>
-<p><strong>context labels</strong> = declared active-context targets confirmed by measured tokens, or the measured request shape. "Server limit" is the engine's max_model_len; it is capacity, not the context a workload exercised.</p>
+{{range .Doc.Legend}}<p><strong>{{.Label}}</strong> = {{.Definition}}</p>
+{{end}}<p>Times are engine milliseconds rendered as compact durations. Missing data renders as "-", never a substitute number.</p>
 </div>
 </section>
 {{range .Doc.PhaseSections}}
 <section class="section secondary">
 <h2>{{.Title}} Detail</h2>
 <div class="table-wrap"><table>
-<thead><tr><th>Profile</th><th>Workload</th><th class="num">Context</th><th class="num">Conc.</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">Total tok/s</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">TTFT p95</th><th class="num">Latency p95</th><th class="num">TPOT mean</th><th class="num">ITL mean</th></tr></thead>
+<thead><tr><th>Profile</th><th>Workload</th><th>Context</th><th class="num">Conc.</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">RPS</th><th class="num">Total tok/s</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">TTFT p50</th><th class="num">TTFT p95</th><th class="num">TTFT p99</th><th class="num">Latency p50</th><th class="num">Latency p95</th><th class="num">Latency p99</th><th class="num">TPOT mean</th><th class="num">ITL tok-wt</th></tr></thead>
 <tbody>
 {{range .Measurements}}
-<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td>{{.ContextLabel}}{{if .ContextMismatch}} <span class="pill status-bad" title="{{.ContextMismatchNote}}">mismatch</span>{{end}}</td><td class="num">{{.Concurrency}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}</td><td class="num">{{.TotalTokS}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.TTFTP95MS}}</td><td class="num">{{.LatencyP95MS}}</td><td class="num">{{.TPOTMeanMS}}</td><td class="num">{{.ITLMeanMS}}</td></tr>
+<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td>{{.ContextLabel}}{{if .ContextMismatch}} <span class="pill status-bad" title="{{.ContextMismatchNote}}">mismatch</span>{{end}}</td><td class="num">{{.Concurrency}}{{if gt .RepeatCount 1}} &times;{{.RepeatCount}}{{end}}{{if .AchievedConcurrency}} <span class="pill status-warn" title="time-weighted mean in-flight requests">{{.AchievedConcurrency}}</span>{{end}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}{{if .FailureBreakdown}} <span title="{{.FailureBreakdown}}">({{.FailureBreakdown}})</span>{{end}}</td><td class="num">{{.RPS}}</td><td class="num">{{.TotalTokS}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.TTFTP50MS}}</td><td class="num">{{.TTFTP95MS}}</td><td class="num">{{.TTFTP99MS}}</td><td class="num">{{.LatencyP50MS}}</td><td class="num">{{.LatencyP95MS}}</td><td class="num">{{.LatencyP99MS}}</td><td class="num">{{.TPOTMeanMS}}</td><td class="num">{{.ITLTokenWeightedMS}}</td></tr>
 {{end}}
 </tbody>
 </table></div>
+</section>
+{{end}}
+{{if .Doc.RepeatDetails}}
+<section class="section secondary">
+<h2>Repeats</h2>
+<details><summary>Per-repeat rows behind aggregated points</summary>
+<div class="table-wrap"><table>
+<thead><tr><th>Profile</th><th>Workload</th><th class="num">Conc.</th><th class="num">Repeat</th><th>Status</th><th class="num">Done</th><th class="num">Failed</th><th class="num">Output tok/s</th><th class="num">Out/user</th><th class="num">TTFT mean</th><th class="num">Latency p95</th></tr></thead>
+<tbody>
+{{range .Doc.RepeatDetails}}
+<tr><td>{{.Profile}}</td><td>{{.Workload}}</td><td class="num">{{.Concurrency}}</td><td class="num">{{.RepeatIndex}}</td><td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td><td class="num">{{.CompletedRequests}}</td><td class="num">{{.FailedRequests}}</td><td class="num">{{.OutputTokS}}</td><td class="num">{{.PerUserOutputTokS}}</td><td class="num">{{.TTFTMeanMS}}</td><td class="num">{{.LatencyP95MS}}</td></tr>
+{{end}}
+</tbody>
+</table></div>
+</details>
 </section>
 {{end}}
 <section class="section secondary">
