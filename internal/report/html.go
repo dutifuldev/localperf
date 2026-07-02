@@ -83,6 +83,7 @@ type SQLiteReportEngine struct {
 type SQLiteReportProfile struct {
 	ID                    string
 	Name                  string
+	Engine                string
 	Model                 string
 	ContextWindow         int
 	MaxNumSeqs            int
@@ -613,7 +614,7 @@ func loadSQLiteReportEngines(db *sql.DB, doc *SQLiteReportDocument) error {
 
 func loadSQLiteReportProfiles(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
-		id, name, model, COALESCE(context_window, 0), COALESCE(max_num_seqs, 0),
+		id, name, COALESCE(engine_id, ''), model, COALESCE(context_window, 0), COALESCE(max_num_seqs, 0),
 		COALESCE(max_num_batched_tokens, 0), COALESCE(gpu_memory_utilization, 0),
 		managed, COALESCE(enable_sleep_mode, 0),
 		COALESCE(json_extract(serve_json, '$.kv_cache_dtype'), ''),
@@ -628,7 +629,7 @@ func loadSQLiteReportProfiles(db *sql.DB, doc *SQLiteReportDocument) error {
 		var managed, sleep int
 		var prefixCaching sql.NullInt64
 		if err := rows.Scan(
-			&profile.ID, &profile.Name, &profile.Model, &profile.ContextWindow,
+			&profile.ID, &profile.Name, &profile.Engine, &profile.Model, &profile.ContextWindow,
 			&profile.MaxNumSeqs, &profile.MaxNumBatchedTokens, &profile.GPUMemoryUtilization,
 			&managed, &sleep, &profile.KVCacheDtype, &prefixCaching,
 		); err != nil {
@@ -1233,16 +1234,18 @@ func servedModelMismatchItems(doc SQLiteReportDocument) []SQLiteReportMetadataIt
 	var items []SQLiteReportMetadataItem
 	seen := map[string]bool{}
 	for _, profile := range doc.Profiles {
-		for _, servedModel := range served {
-			if profile.Model == "" || servedModel == profile.Model || seen[profile.Model+servedModel] {
-				continue
-			}
-			seen[profile.Model+servedModel] = true
-			items = append(items, SQLiteReportMetadataItem{
-				Label: "Model mismatch",
-				Value: fmt.Sprintf("spec declares %s, server reports %s", profile.Model, servedModel),
-			})
+		// Compare each profile only against the model reported by its own
+		// engine; cross-engine comparisons would fabricate mismatches on
+		// valid multi-engine runs.
+		servedModel := served[profile.Engine]
+		if profile.Model == "" || servedModel == "" || servedModel == profile.Model || seen[profile.Model+servedModel] {
+			continue
 		}
+		seen[profile.Model+servedModel] = true
+		items = append(items, SQLiteReportMetadataItem{
+			Label: "Model mismatch",
+			Value: fmt.Sprintf("spec declares %s, server reports %s", profile.Model, servedModel),
+		})
 	}
 	return items
 }

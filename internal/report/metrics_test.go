@@ -106,6 +106,17 @@ func TestRepeatAggregationRendersSpreadAndRepeatRows(t *testing.T) {
 	if combined.CompletedRequests != 4 {
 		t.Fatalf("aggregated completed = %d, want summed 4", combined.CompletedRequests)
 	}
+	// Token totals must sum with request counts so per-request derivations
+	// stay exact: 400 prompt / 4 requests keeps the 100 in / 10 out shape.
+	if combined.PromptTokensValue != 400 || combined.CompletionTokensValue != 40 {
+		t.Fatalf("aggregated tokens = %d/%d, want 400/40", combined.PromptTokensValue, combined.CompletionTokensValue)
+	}
+	if shape := requestShape(combined); shape != "100 in / 10 out" {
+		t.Fatalf("aggregated shape = %q, want 100 in / 10 out", shape)
+	}
+	if combined.WallTimeMSValue != 2000 {
+		t.Fatalf("aggregated wall time = %f, want summed 2000", combined.WallTimeMSValue)
+	}
 	if len(doc.RepeatDetails) != 2 {
 		t.Fatalf("repeat details = %d, want 2", len(doc.RepeatDetails))
 	}

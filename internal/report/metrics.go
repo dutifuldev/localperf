@@ -401,12 +401,36 @@ func combineRepeats(members []SQLiteReportMeasurement) SQLiteReportMeasurement {
 	combined.RepeatCount = len(members)
 	combined.CompletedRequests = 0
 	combined.FailedRequests = 0
+	// Sum token totals and wall time along with request counts so
+	// per-request derivations (requestShape, inputThroughput) divide summed
+	// numerators by summed denominators instead of mixing the first
+	// repeat's totals with all repeats' request counts.
+	combined.PromptTokensValue = 0
+	combined.CompletionTokensValue = 0
+	combined.TotalTokensValue = 0
+	combined.WallTimeMSValue = 0
 	for _, member := range members {
 		combined.CompletedRequests += member.CompletedRequests
 		combined.FailedRequests += member.FailedRequests
+		combined.PromptTokensKnown = combined.PromptTokensKnown && member.PromptTokensKnown
+		combined.CompletionTokensKnown = combined.CompletionTokensKnown && member.CompletionTokensKnown
+		combined.TotalTokensKnown = combined.TotalTokensKnown && member.TotalTokensKnown
+		combined.WallTimeMSKnown = combined.WallTimeMSKnown && member.WallTimeMSKnown
+		combined.PromptTokensValue += member.PromptTokensValue
+		combined.CompletionTokensValue += member.CompletionTokensValue
+		combined.TotalTokensValue += member.TotalTokensValue
+		combined.WallTimeMSValue += member.WallTimeMSValue
 		if statusRank(member.Status) > statusRank(combined.Status) {
 			combined.Status = member.Status
 		}
+	}
+	combined.PromptTokens = displayInt64Known(combined.PromptTokensValue, combined.PromptTokensKnown)
+	combined.CompletionTokens = displayInt64Known(combined.CompletionTokensValue, combined.CompletionTokensKnown)
+	combined.TotalTokens = displayInt64Known(combined.TotalTokensValue, combined.TotalTokensKnown)
+	if combined.WallTimeMSKnown {
+		combined.WallTimeMS = displayFloat(combined.WallTimeMSValue)
+	} else {
+		combined.WallTimeMS = "-"
 	}
 	mean, known := meanOverRepeats(members, func(m SQLiteReportMeasurement) (float64, bool) {
 		return m.OutputTokSValue, m.OutputTokSKnown
@@ -479,6 +503,13 @@ func meanSpreadDisplay(members []SQLiteReportMeasurement, value func(SQLiteRepor
 	}
 	stddev := math.Sqrt(variance / float64(len(values)-1))
 	return displayFloat(mean) + " ± " + displayFloat(stddev)
+}
+
+func displayInt64Known(value int64, known bool) string {
+	if !known {
+		return "-"
+	}
+	return fmt.Sprintf("%d", value)
 }
 
 func statusRank(status string) int {
