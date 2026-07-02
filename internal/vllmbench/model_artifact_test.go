@@ -118,13 +118,13 @@ func TestModelLevelArtifactRejectsBasenameCollisions(t *testing.T) {
 	// Same basename "run" from a different parent directory is a collision,
 	// not a retry; replacing it would silently destroy unrelated results.
 	err := runDry("b")
-	if err == nil || !strings.Contains(err.Error(), "different run directory") {
+	if err == nil || !strings.Contains(err.Error(), "different or unknown run directory") {
 		t.Fatalf("Execute error = %v, want run-id collision refusal", err)
 	}
 	assertRunCount(t, artifactPath, 1)
 }
 
-func TestModelLevelArtifactReplacesLegacyRunsWithoutRunDirLabel(t *testing.T) {
+func TestModelLevelArtifactRejectsRunsWithoutProvenance(t *testing.T) {
 	dir := t.TempDir()
 	artifactPath := filepath.Join(dir, "model.sqlite")
 	runDry := func() error {
@@ -140,8 +140,8 @@ func TestModelLevelArtifactReplacesLegacyRunsWithoutRunDirLabel(t *testing.T) {
 	if err := runDry(); err != nil {
 		t.Fatal(err)
 	}
-	// Runs written before the run_dir label carry no provenance; re-running
-	// the same id must keep the old overwrite behavior, not refuse.
+	// Cutover: a same-id run without a recorded run directory has unknown
+	// provenance and is refused, not silently replaced.
 	db, err := sql.Open("sqlite", artifactPath)
 	if err != nil {
 		t.Fatal(err)
@@ -152,10 +152,10 @@ func TestModelLevelArtifactReplacesLegacyRunsWithoutRunDirLabel(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := runDry(); err != nil {
-		t.Fatalf("re-run over legacy run failed: %v", err)
+	err = runDry()
+	if err == nil || !strings.Contains(err.Error(), "unknown run directory") {
+		t.Fatalf("Execute error = %v, want unknown-provenance refusal", err)
 	}
-	assertRunCount(t, artifactPath, 1)
 }
 
 func TestMergeRejectsRunIDCollisions(t *testing.T) {

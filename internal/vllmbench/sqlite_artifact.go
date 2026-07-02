@@ -127,8 +127,10 @@ func replaceExistingRun(tx *sql.Tx, runID, runDir string) error {
 	if err != nil {
 		return err
 	}
-	if existingDir.Valid && existingDir.String != "" && existingDir.String != absolutePathOrSelf(runDir) {
-		return fmt.Errorf("run id %q already exists in this artifact from a different run directory (%s); rename the run directory or merge into a fresh artifact", runID, existingDir.String)
+	// Cutover: no legacy allowance. A run with unknown provenance (no
+	// run_dir label) is a collision too; re-run it under the new format.
+	if !existingDir.Valid || existingDir.String != absolutePathOrSelf(runDir) {
+		return fmt.Errorf("run id %q already exists in this artifact from a different or unknown run directory; rename the run directory or start a fresh artifact", runID)
 	}
 	_, err = tx.Exec(`DELETE FROM run WHERE id = ?`, runID)
 	return err
