@@ -77,6 +77,10 @@ Render the HTML from the shared SQLite artifact after each batch. If the runner
 cannot append directly yet, append or merge the new run into the model-level
 artifact before treating the sweep as complete.
 
+The final step of every default sweep is to render the completed SQLite
+artifact into a standalone HTML report. Do not call the sweep complete until the
+model-level SQLite artifact and the matching HTML report both exist.
+
 ## Reporting Requirements
 
 Every row must record:
