@@ -76,8 +76,14 @@ func collectNvidiaGPUs(ctx context.Context) []GPUInfo {
 	if err != nil {
 		return nil
 	}
+	return parseNvidiaGPUList(string(output))
+}
+
+// parseNvidiaGPUList parses csv,noheader nvidia-smi inventory lines such as
+// "NVIDIA GB10, [N/A], 580.126.09".
+func parseNvidiaGPUList(output string) []GPUInfo {
 	var gpus []GPUInfo
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		fields := strings.Split(line, ",")
 		if len(fields) < 3 {
 			continue

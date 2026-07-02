@@ -93,10 +93,8 @@ var (
 	tegraRAMPattern  = regexp.MustCompile(`RAM (\d+)/(\d+)MB`)
 )
 
-// sampleTegrastats streams `tegrastats --interval` output; each line yields
-// one sample. On unified-memory systems the RAM line is the closest
-// available GPU-memory signal and is recorded under the tegrastats source so
-// readers can judge it.
+// sampleTegrastats streams `tegrastats --interval` output; each parseable
+// line yields one sample.
 func sampleTegrastats(ctx context.Context, emit func(gpuTelemetrySample)) {
 	cmd := exec.CommandContext(ctx, "tegrastats", "--interval", strconv.Itoa(int(gpuTelemetryInterval.Milliseconds())))
 	stdout, err := cmd.StdoutPipe()
@@ -109,29 +107,42 @@ func sampleTegrastats(ctx context.Context, emit func(gpuTelemetrySample)) {
 	defer func() { _ = cmd.Wait() }()
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
-		sample := gpuTelemetrySample{Source: "tegrastats"}
-		if match := tegraGR3DPattern.FindStringSubmatch(scanner.Text()); match != nil {
-			if value, err := strconv.ParseFloat(match[1], 64); err == nil {
-				sample.GPUUtilizationPct = &value
-			}
-		}
-		if match := tegraRAMPattern.FindStringSubmatch(scanner.Text()); match != nil {
-			if value, err := strconv.ParseFloat(match[1], 64); err == nil {
-				bytes := value * 1024 * 1024
-				sample.GPUMemoryUsedBytes = &bytes
-			}
-		}
-		if sample.GPUUtilizationPct != nil || sample.GPUMemoryUsedBytes != nil {
+		if sample, ok := parseTegrastatsLine(scanner.Text()); ok {
 			emit(sample)
 		}
 	}
 }
 
+// parseTegrastatsLine extracts GPU utilization (GR3D) and, on unified-memory
+// systems, the RAM line as the closest available GPU-memory signal, recorded
+// under the tegrastats source so readers can judge it.
+func parseTegrastatsLine(line string) (gpuTelemetrySample, bool) {
+	sample := gpuTelemetrySample{Source: "tegrastats"}
+	if match := tegraGR3DPattern.FindStringSubmatch(line); match != nil {
+		if value, err := strconv.ParseFloat(match[1], 64); err == nil {
+			sample.GPUUtilizationPct = &value
+		}
+	}
+	if match := tegraRAMPattern.FindStringSubmatch(line); match != nil {
+		if value, err := strconv.ParseFloat(match[1], 64); err == nil {
+			bytes := value * 1024 * 1024
+			sample.GPUMemoryUsedBytes = &bytes
+		}
+	}
+	return sample, sample.GPUUtilizationPct != nil || sample.GPUMemoryUsedBytes != nil
+}
+
 func pollNvidiaSMI(ctx context.Context, emit func(gpuTelemetrySample)) {
+	pollSamples(ctx, emit, queryNvidiaSMI)
+}
+
+// pollSamples emits one sample immediately and then one per interval until
+// the context is canceled.
+func pollSamples(ctx context.Context, emit func(gpuTelemetrySample), query func(context.Context) (gpuTelemetrySample, bool)) {
 	ticker := time.NewTicker(gpuTelemetryInterval)
 	defer ticker.Stop()
 	for {
-		if sample, ok := queryNvidiaSMI(ctx); ok {
+		if sample, ok := query(ctx); ok {
 			emit(sample)
 		}
 		select {
@@ -150,12 +161,14 @@ func queryNvidiaSMI(ctx context.Context) (gpuTelemetrySample, bool) {
 	if err != nil {
 		return gpuTelemetrySample{}, false
 	}
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) == 0 {
-		return gpuTelemetrySample{}, false
-	}
-	// First GPU only; multi-GPU inventories are in host_json and per-GPU
-	// series can be added when a multi-GPU machine needs them.
+	return parseNvidiaSMISample(string(output))
+}
+
+// parseNvidiaSMISample parses "45, 1234" style query output for the first
+// GPU; "[N/A]" fields are skipped. Multi-GPU inventories are in host_json
+// and per-GPU series can be added when a multi-GPU machine needs them.
+func parseNvidiaSMISample(output string) (gpuTelemetrySample, bool) {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
 	fields := strings.Split(lines[0], ",")
 	if len(fields) < 2 {
 		return gpuTelemetrySample{}, false
@@ -168,8 +181,5 @@ func queryNvidiaSMI(ctx context.Context) (gpuTelemetrySample, bool) {
 		bytes := value * 1024 * 1024
 		sample.GPUMemoryUsedBytes = &bytes
 	}
-	if sample.GPUUtilizationPct == nil && sample.GPUMemoryUsedBytes == nil {
-		return gpuTelemetrySample{}, false
-	}
-	return sample, true
+	return sample, sample.GPUUtilizationPct != nil || sample.GPUMemoryUsedBytes != nil
 }

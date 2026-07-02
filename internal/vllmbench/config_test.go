@@ -626,6 +626,21 @@ func TestValidateContextSemantics(t *testing.T) {
 			},
 			wantErr: "slo requires save_detailed",
 		},
+		{
+			name:    "slo rejects negative ttft target",
+			mutate:  func(w *Workload) { w.SLO = &SLOConfig{TTFTP95Millis: -1} },
+			wantErr: "slo.ttft_p95_ms must not be negative",
+		},
+		{
+			name:    "slo rejects negative e2el target",
+			mutate:  func(w *Workload) { w.SLO = &SLOConfig{E2ELP95Millis: -1} },
+			wantErr: "slo.e2el_p95_ms must not be negative",
+		},
+		{
+			name:    "slo requires at least one target",
+			mutate:  func(w *Workload) { w.SLO = &SLOConfig{} },
+			wantErr: "slo must set at least one target",
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

@@ -164,6 +164,10 @@ func insertRunExecutionData(tx *sql.Tx, runID, runDir string, spec Spec, plan []
 	if err != nil {
 		return err
 	}
+	return insertRunEventData(tx, runID, events, phaseIDs, measurementIDs, artifactIDs, now)
+}
+
+func insertRunEventData(tx *sql.Tx, runID string, events []Event, phaseIDs, measurementIDs, artifactIDs map[string]int64, now time.Time) error {
 	if err := insertEvents(tx, runID, events, phaseIDs, measurementIDs); err != nil {
 		return err
 	}
@@ -1004,11 +1008,8 @@ func insertTelemetry(tx *sql.Tx, runID string, events []Event, phaseIDs, measure
 }
 
 func insertGPUTelemetryEvent(tx *sql.Tx, runID string, event Event, phaseIDs, measurementIDs map[string]int64) error {
-	if event.Type != "gpu_telemetry" || len(event.Details) == 0 {
-		return nil
-	}
-	var sample gpuTelemetrySample
-	if err := json.Unmarshal(event.Details, &sample); err != nil || sample.Source == "" {
+	sample, ok := parseGPUTelemetryEvent(event)
+	if !ok {
 		return nil
 	}
 	key := eventMeasurementKey(event)
@@ -1039,6 +1040,17 @@ func insertGPUTelemetryEvent(tx *sql.Tx, runID string, event Event, phaseIDs, me
 	return nil
 }
 
+func parseGPUTelemetryEvent(event Event) (gpuTelemetrySample, bool) {
+	if event.Type != "gpu_telemetry" || len(event.Details) == 0 {
+		return gpuTelemetrySample{}, false
+	}
+	var sample gpuTelemetrySample
+	if err := json.Unmarshal(event.Details, &sample); err != nil || sample.Source == "" {
+		return gpuTelemetrySample{}, false
+	}
+	return sample, true
+}
+
 // applyEngineIdentityEvents fills engines.version and stores the server's
 // self-reported identity under metadata_json.identity, so the artifact
 // records what the engine said about itself, not only what the spec
@@ -1049,29 +1061,34 @@ func applyEngineIdentityEvents(tx *sql.Tx, runID string, spec Spec, events []Eve
 		engineByProfile[profile.Name] = profile.Engine
 	}
 	for _, event := range events {
-		if event.Type != "engine_identity" || len(event.Details) == 0 {
-			continue
-		}
-		engineName := engineByProfile[event.Profile]
-		if engineName == "" {
-			continue
-		}
-		var identity engineIdentity
-		if err := json.Unmarshal(event.Details, &identity); err != nil {
-			continue
-		}
-		// Key the identity by profile: one engine definition can serve
-		// several profiles with different models, and the last probe must
-		// not overwrite the others.
-		if _, err := tx.Exec(`UPDATE engines SET
-			version = COALESCE(NULLIF(?, ''), version),
-			metadata_json = json_patch(COALESCE(metadata_json, '{}'), json_object('identity', json_object(?, json(?))))
-			WHERE run_id = ? AND id = ?`,
-			identity.Version, event.Profile, string(event.Details), runID, engineName); err != nil {
+		if err := applyEngineIdentityEvent(tx, runID, engineByProfile, event); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func applyEngineIdentityEvent(tx *sql.Tx, runID string, engineByProfile map[string]string, event Event) error {
+	if event.Type != "engine_identity" || len(event.Details) == 0 {
+		return nil
+	}
+	engineName := engineByProfile[event.Profile]
+	if engineName == "" {
+		return nil
+	}
+	var identity engineIdentity
+	if err := json.Unmarshal(event.Details, &identity); err != nil {
+		return nil
+	}
+	// Key the identity by profile: one engine definition can serve several
+	// profiles with different models, and the last probe must not overwrite
+	// the others.
+	_, err := tx.Exec(`UPDATE engines SET
+		version = COALESCE(NULLIF(?, ''), version),
+		metadata_json = json_patch(COALESCE(metadata_json, '{}'), json_object('identity', json_object(?, json(?))))
+		WHERE run_id = ? AND id = ?`,
+		identity.Version, event.Profile, string(event.Details), runID, engineName)
+	return err
 }
 
 func ensureTelemetrySeries(tx *sql.Tx, runID, source, metric, unit, target, tags string) (int64, error) {

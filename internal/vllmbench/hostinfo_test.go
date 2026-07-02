@@ -19,6 +19,19 @@ func TestReadCPUModel(t *testing.T) {
 	}
 }
 
+func TestParseNvidiaGPUList(t *testing.T) {
+	gpus := parseNvidiaGPUList("NVIDIA GB10, [N/A], 580.126.09\nNVIDIA A100, 81920 MiB, 550.0\nshort\n")
+	if len(gpus) != 2 {
+		t.Fatalf("gpus = %d, want 2", len(gpus))
+	}
+	if gpus[0].Name != "NVIDIA GB10" || gpus[0].VRAMGiB != 0 || gpus[0].Driver != "580.126.09" {
+		t.Fatalf("gpu 0 = %+v, want GB10 with unknown VRAM", gpus[0])
+	}
+	if gpus[1].Name != "NVIDIA A100" || gpus[1].VRAMGiB != 80 {
+		t.Fatalf("gpu 1 = %+v, want A100 with 80 GiB", gpus[1])
+	}
+}
+
 func TestParseMiBField(t *testing.T) {
 	if got := parseMiBField(" 121850 MiB"); got < 118 || got > 120 {
 		t.Fatalf("parseMiBField = %f, want ~119 GiB", got)

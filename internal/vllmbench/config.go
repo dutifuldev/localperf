@@ -477,29 +477,29 @@ func overlayTrafficConfig(base, override BenchmarkTrafficConfig) BenchmarkTraffi
 }
 
 func applyServeDefaults(profile *Profile) {
-	if profile.MaxModelLen == 0 {
-		profile.MaxModelLen = profile.Serve.MaxModelLen
-	}
-	if profile.MaxNumSeqs == 0 {
-		profile.MaxNumSeqs = profile.Serve.MaxNumSeqs
-	}
-	if profile.MaxNumBatchedTokens == 0 {
-		profile.MaxNumBatchedTokens = profile.Serve.MaxNumBatchedTokens
-	}
+	fallbackInt(&profile.MaxModelLen, profile.Serve.MaxModelLen)
+	fallbackInt(&profile.MaxNumSeqs, profile.Serve.MaxNumSeqs)
+	fallbackInt(&profile.MaxNumBatchedTokens, profile.Serve.MaxNumBatchedTokens)
 	if profile.GPUMemoryUtilization == 0 {
 		profile.GPUMemoryUtilization = profile.Serve.GPUMemoryUtilization
 	}
-	if strings.TrimSpace(profile.KVCacheDType) == "" {
-		profile.KVCacheDType = profile.Serve.KVCacheDType
-	}
-	if strings.TrimSpace(profile.AttentionBackend) == "" {
-		profile.AttentionBackend = profile.Serve.AttentionBackend
-	}
-	if strings.TrimSpace(profile.MoEBackend) == "" {
-		profile.MoEBackend = profile.Serve.MoEBackend
-	}
+	fallbackString(&profile.KVCacheDType, profile.Serve.KVCacheDType)
+	fallbackString(&profile.AttentionBackend, profile.Serve.AttentionBackend)
+	fallbackString(&profile.MoEBackend, profile.Serve.MoEBackend)
 	if profile.EnablePrefixCaching == nil {
 		profile.EnablePrefixCaching = profile.Serve.EnablePrefixCaching
+	}
+}
+
+func fallbackInt(target *int, fallback int) {
+	if *target == 0 {
+		*target = fallback
+	}
+}
+
+func fallbackString(target *string, fallback string) {
+	if strings.TrimSpace(*target) == "" {
+		*target = fallback
 	}
 }
 

@@ -660,7 +660,14 @@ func (waiter *readinessWaiter) probeReady() bool {
 		return false
 	}
 	waiter.events.Write(Event{Timestamp: time.Now().UTC(), Type: "server_ready", Profile: waiter.profile.Name, DurationSeconds: time.Since(waiter.start).Seconds()})
-	probeEngineIdentity(waiter.ctx, waiter.client, waiter.profile, waiter.events)
+	if identity, ok := probeEngineIdentity(waiter.ctx, waiter.client, waiter.profile); ok {
+		waiter.events.Write(Event{
+			Timestamp: time.Now().UTC(),
+			Type:      "engine_identity",
+			Profile:   waiter.profile.Name,
+			Details:   mustJSON(identity),
+		})
+	}
 	return true
 }
 
@@ -674,7 +681,7 @@ type engineIdentity struct {
 	Models  json.RawMessage `json:"models,omitempty"`
 }
 
-func probeEngineIdentity(ctx context.Context, client *http.Client, profile Profile, events *eventWriter) {
+func probeEngineIdentity(ctx context.Context, client *http.Client, profile Profile) (engineIdentity, bool) {
 	identity := engineIdentity{}
 	if body, ok := fetchIdentityJSON(ctx, client, baseURL(profile)+"/version"); ok {
 		var payload struct {
@@ -687,15 +694,7 @@ func probeEngineIdentity(ctx context.Context, client *http.Client, profile Profi
 	if body, ok := fetchIdentityJSON(ctx, client, baseURL(profile)+"/v1/models"); ok {
 		identity.Models = body
 	}
-	if identity.Version == "" && len(identity.Models) == 0 {
-		return
-	}
-	events.Write(Event{
-		Timestamp: time.Now().UTC(),
-		Type:      "engine_identity",
-		Profile:   profile.Name,
-		Details:   mustJSON(identity),
-	})
+	return identity, identity.Version != "" || len(identity.Models) > 0
 }
 
 const engineIdentityBodyLimit = 64 * 1024
