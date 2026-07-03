@@ -1583,11 +1583,6 @@ func commandForProfile(commands []SQLiteReportCommand, profileID string) string 
 			return command.Argv
 		}
 	}
-	for _, command := range commands {
-		if command.ProfileID == profileID && strings.TrimSpace(command.Argv) != "" {
-			return command.Argv
-		}
-	}
 	return ""
 }
 
@@ -1841,7 +1836,7 @@ func applyThroughputComparisonSource(target *SQLiteReportThroughputComparisonRow
 func comparisonResult(source SQLiteReportThroughputRow, target SQLiteReportThroughputComparisonRow) (string, SQLiteReportCellDetail) {
 	if source.FailureLabel == "" {
 		if target.Result != "" && target.Result != target.Requests {
-			return target.Result, target.ResultDetail
+			return resultWithCurrentCounts(target.Result, target), target.ResultDetail
 		}
 		return fmt.Sprintf("%d / %d", target.OK, target.Err), source.Detail
 	}
@@ -1854,6 +1849,17 @@ func comparisonResult(source SQLiteReportThroughputRow, target SQLiteReportThrou
 		label = fmt.Sprintf("%d / %d · %s", target.OK, target.Err, label)
 	}
 	return label, source.Detail
+}
+
+func resultWithCurrentCounts(existing string, target SQLiteReportThroughputComparisonRow) string {
+	label := strings.TrimSpace(existing)
+	if _, after, ok := strings.Cut(label, " · "); ok {
+		label = strings.TrimSpace(after)
+	}
+	if target.OK == 0 && target.Err == 0 {
+		return label
+	}
+	return fmt.Sprintf("%s · %s", target.Requests, label)
 }
 
 func firstNonEmptyLetter(value string) string {

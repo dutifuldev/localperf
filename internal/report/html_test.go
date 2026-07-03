@@ -333,6 +333,36 @@ func TestApplyThroughputComparisonHeatmapColumnNeutral(t *testing.T) {
 	}
 }
 
+func TestThroughputComparisonResultPreservesCountsAfterPriorFailure(t *testing.T) {
+	row := emptyThroughputComparisonRow(4)
+	applyThroughputComparisonSource(&row, SQLiteReportThroughputRow{
+		Mode:         "decode",
+		FailureLabel: "mem floor",
+		Detail:       SQLiteReportCellDetail{Available: true},
+	})
+	applyThroughputComparisonSource(&row, SQLiteReportThroughputRow{
+		Mode:              "prefill",
+		CompletedRequests: 2,
+		Detail:            SQLiteReportCellDetail{Available: true},
+	})
+	if row.Result != "2 / 0 · D mem floor" {
+		t.Fatalf("comparison result = %q, want counts plus prior failure", row.Result)
+	}
+}
+
+func TestCommandForProfileOnlyReturnsServerStartCommand(t *testing.T) {
+	commands := []SQLiteReportCommand{
+		{ProfileID: "profile-1", Phase: "planned_run", Argv: "localperf bench run"},
+	}
+	if got := commandForProfile(commands, "profile-1"); got != "" {
+		t.Fatalf("commandForProfile() = %q, want no mislabeled serve command", got)
+	}
+	commands = append(commands, SQLiteReportCommand{ProfileID: "profile-1", Phase: "server_start", Argv: "vllm serve model"})
+	if got := commandForProfile(commands, "profile-1"); got != "vllm serve model" {
+		t.Fatalf("commandForProfile() = %q, want server_start command", got)
+	}
+}
+
 func TestMetricFieldDisplay(t *testing.T) {
 	metric := SQLiteReportMetric{
 		Mean:        "10",
