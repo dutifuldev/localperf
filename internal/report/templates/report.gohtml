@@ -133,7 +133,10 @@
 <span>Users</span><strong>{{.Concurrency}}</strong>
 <span>Samples</span><strong>{{.SamplesRequested}}</strong>
 <span>Shape</span><strong>{{.Shape}}</strong>
+{{if .Source}}<span>Source</span><strong>{{.Source}}</strong>{{end}}
+{{if .RunID}}
 <span>Run</span><strong>{{.RunID}}</strong>
+{{end}}
 </div>
 {{if .ProfileConfig}}<div class="detail-grid detail-config">{{range .ProfileConfig}}<span>{{.Label}}</span><strong>{{.Value}}</strong>{{end}}</div>{{end}}
 {{if .ServeCommand}}<div class="detail-command"><span>vLLM serve</span><code>{{.ServeCommand}}</code></div>{{end}}

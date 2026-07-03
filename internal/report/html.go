@@ -306,6 +306,7 @@ type SQLiteReportCellDetail struct {
 	Status           string
 	FailureLabel     string
 	FailureReason    string
+	Source           string
 	RunID            string
 	MeasurementID    int64
 	Model            string
@@ -1550,6 +1551,12 @@ func sqliteReportCellDetail(doc SQLiteReportDocument, measurement SQLiteReportMe
 		EngineArgs:       commandSummaryFromJSON(profile.EngineArgsJSON),
 		ServeJSON:        compactJSONForDetail(profile.ServeJSON),
 		EnvJSON:          compactJSONForDetail(profile.EnvJSON),
+	}
+	if measurement.RepeatCount > 1 {
+		detail.Source = fmt.Sprintf("aggregate of %d repeats", measurement.RepeatCount)
+		detail.RunID = ""
+		detail.MeasurementID = 0
+		detail.BenchmarkCommand = ""
 	}
 	detail.ProfileConfig = []SQLiteReportMetadataItem{
 		{Label: "Server limit", Value: displayContextWindow(profile.ContextWindow)},

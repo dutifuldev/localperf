@@ -122,6 +122,13 @@ func TestRepeatAggregationRendersSpreadAndRepeatRows(t *testing.T) {
 	if len(doc.RepeatDetails) != 2 {
 		t.Fatalf("repeat details = %d, want 2", len(doc.RepeatDetails))
 	}
+	if len(doc.ThroughputRows) != 1 {
+		t.Fatalf("throughput rows = %d, want 1", len(doc.ThroughputRows))
+	}
+	detail := doc.ThroughputRows[0].Detail
+	if detail.Source != "aggregate of 2 repeats" || detail.RunID != "" || detail.MeasurementID != 0 || detail.BenchmarkCommand != "" {
+		t.Fatalf("aggregate detail = %+v, want aggregate source without first-repeat provenance", detail)
+	}
 
 	var out strings.Builder
 	if err := RenderHTMLReport(&out, doc, HTMLReportOptions{}); err != nil {
