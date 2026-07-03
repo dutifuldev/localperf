@@ -433,7 +433,7 @@ func finalRunError(summary RunSummary, runErr error) error {
 	if runErr != nil {
 		return runErr
 	}
-	if summary.FailedRuns > 0 {
+	if summary.FailedRuns > 0 && summary.CompletedRuns == 0 {
 		return fmt.Errorf("%d benchmark run(s) failed", summary.FailedRuns)
 	}
 	return nil

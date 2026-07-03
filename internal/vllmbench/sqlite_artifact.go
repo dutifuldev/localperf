@@ -159,6 +159,9 @@ func insertRunRow(tx *sql.Tx, runID, runDir string, spec Spec, summary RunSummar
 }
 
 func runStatus(summary RunSummary) string {
+	if summary.CompletedRuns > 0 {
+		return "completed"
+	}
 	if summary.FailedRuns > 0 {
 		return "failed"
 	}

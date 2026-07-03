@@ -93,6 +93,7 @@ type SQLiteReportProfile struct {
 	Name                  string
 	Engine                string
 	Model                 string
+	EndpointBaseURL       string
 	ContextWindow         int
 	MaxNumSeqs            int
 	MaxNumBatchedTokens   int
@@ -102,6 +103,9 @@ type SQLiteReportProfile struct {
 	EnableSleepMode       bool
 	KVCacheDtype          string
 	PrefixCaching         string
+	ServeJSON             string
+	EngineArgsJSON        string
+	EnvJSON               string
 }
 
 type SQLiteReportWorkload struct {
@@ -117,7 +121,10 @@ type SQLiteReportWorkload struct {
 type SQLiteReportMeasurement struct {
 	ID                    int64
 	RunID                 string
+	ProfileID             string
 	Profile               string
+	Model                 string
+	WorkloadID            string
 	Workload              string
 	Phase                 string
 	ContextWindow         int
@@ -198,7 +205,12 @@ type SQLiteReportMetadataItem struct {
 type SQLiteReportThroughputRow struct {
 	Phase             string
 	Mode              string
+	RunID             string
+	MeasurementID     int64
+	ProfileID         string
 	Profile           string
+	Model             string
+	WorkloadID        string
 	Workload          string
 	ContextWindow     int
 	ContextLabel      string
@@ -221,6 +233,9 @@ type SQLiteReportThroughputRow struct {
 	CompletedRequests int
 	FailedRequests    int
 	Status            string
+	FailureLabel      string
+	FailureReason     string
+	Detail            SQLiteReportCellDetail
 	InputHeat         string
 	TotalHeat         string
 	OutputHeat        string
@@ -253,6 +268,7 @@ type SQLiteReportThroughputComparisonRow struct {
 	DecodeOK            int
 	DecodeErr           int
 	DecodeShape         string
+	DecodeDetail        SQLiteReportCellDetail
 	PrefillTokS         string
 	PrefillPerUserTokS  string
 	PrefillTTFTMeanMS   string
@@ -261,9 +277,12 @@ type SQLiteReportThroughputComparisonRow struct {
 	PrefillOK           int
 	PrefillErr          int
 	PrefillShape        string
+	PrefillDetail       SQLiteReportCellDetail
 	OK                  int
 	Err                 int
 	Requests            string
+	Result              string
+	ResultDetail        SQLiteReportCellDetail
 	SLO                 string
 	DecodeSLO           string
 	PrefillSLO          string
@@ -278,6 +297,31 @@ type SQLiteReportThroughputComparisonRow struct {
 	PrefillTTFTHeat     string
 	PrefillLatencyHeat  string
 	ErrHeat             string
+}
+
+type SQLiteReportCellDetail struct {
+	Available        bool
+	Phase            string
+	Mode             string
+	Status           string
+	FailureLabel     string
+	FailureReason    string
+	RunID            string
+	MeasurementID    int64
+	Model            string
+	Profile          string
+	Workload         string
+	ContextLabel     string
+	ContextWindow    int
+	Concurrency      int
+	SamplesRequested int
+	Shape            string
+	ProfileConfig    []SQLiteReportMetadataItem
+	ServeCommand     string
+	BenchmarkCommand string
+	EngineArgs       string
+	ServeJSON        string
+	EnvJSON          string
 }
 
 type SQLiteReportMetric struct {
@@ -347,12 +391,14 @@ type SQLiteReportEvent struct {
 }
 
 type SQLiteReportCommand struct {
-	Phase     string
-	Status    string
-	ExitCode  string
-	StartedAt string
-	Completed string
-	Argv      string
+	Phase         string
+	Status        string
+	ExitCode      string
+	StartedAt     string
+	Completed     string
+	Argv          string
+	ProfileID     string
+	MeasurementID int64
 }
 
 type SQLiteReportExport struct {
@@ -407,7 +453,7 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 	doc.Measurements, doc.RepeatDetails = aggregateRepeatMeasurements(doc.Measurements)
 	doc.Legend = ReportMetrics
 	doc.MetadataItems = sqliteReportMetadataItems(doc)
-	doc.ThroughputRows = sqliteReportThroughputRows(doc.Measurements)
+	doc.ThroughputRows = sqliteReportThroughputRows(doc)
 	doc.ThroughputGroups = sqliteReportThroughputGroups(doc.ThroughputRows)
 	doc.PhaseSections = sqliteReportPhaseSections(doc.Measurements)
 	doc.Charts = sqliteReportCharts(doc.Measurements)
@@ -689,11 +735,13 @@ func servedModelsByProfile(metadataJSON string) map[string][]string {
 
 func loadSQLiteReportProfiles(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
-		id, name, COALESCE(engine_id, ''), model, COALESCE(context_window, 0), COALESCE(max_num_seqs, 0),
+		id, name, COALESCE(engine_id, ''), model, COALESCE(endpoint_base_url, ''),
+		COALESCE(context_window, 0), COALESCE(max_num_seqs, 0),
 		COALESCE(max_num_batched_tokens, 0), COALESCE(gpu_memory_utilization, 0),
 		managed, COALESCE(enable_sleep_mode, 0),
 		COALESCE(json_extract(serve_json, '$.kv_cache_dtype'), ''),
-		json_extract(serve_json, '$.enable_prefix_caching')
+		json_extract(serve_json, '$.enable_prefix_caching'),
+		COALESCE(serve_json, ''), COALESCE(engine_args_json, ''), COALESCE(env_json, '')
 		FROM profiles ORDER BY context_window, name`)
 	if err != nil {
 		return err
@@ -704,9 +752,11 @@ func loadSQLiteReportProfiles(db *sql.DB, doc *SQLiteReportDocument) error {
 		var managed, sleep int
 		var prefixCaching sql.NullInt64
 		if err := rows.Scan(
-			&profile.ID, &profile.Name, &profile.Engine, &profile.Model, &profile.ContextWindow,
+			&profile.ID, &profile.Name, &profile.Engine, &profile.Model, &profile.EndpointBaseURL,
+			&profile.ContextWindow,
 			&profile.MaxNumSeqs, &profile.MaxNumBatchedTokens, &profile.GPUMemoryUtilization,
 			&managed, &sleep, &profile.KVCacheDtype, &prefixCaching,
+			&profile.ServeJSON, &profile.EngineArgsJSON, &profile.EnvJSON,
 		); err != nil {
 			return err
 		}
@@ -751,7 +801,7 @@ func loadSQLiteReportWorkloads(db *sql.DB, doc *SQLiteReportDocument) error {
 
 func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
-		m.id, m.run_id, p.name, w.name, w.phase, COALESCE(p.context_window, 0),
+		m.id, m.run_id, p.id, p.name, p.model, w.id, w.name, w.phase, COALESCE(p.context_window, 0),
 		COALESCE(json_extract(w.metadata_json, '$.context.target'), 0),
 		COALESCE(json_extract(w.metadata_json, '$.context.semantics'), ''),
 		COALESCE(json_extract(w.metadata_json, '$.slo.ttft_p95_ms'), 0),
@@ -775,7 +825,8 @@ func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 		var wallTime, outputTokS, perUserTokS, totalTokS sql.NullFloat64
 		var promptTokens, completionTokens, totalTokens sql.NullInt64
 		if err := rows.Scan(
-			&measurement.ID, &measurement.RunID, &measurement.Profile, &measurement.Workload, &measurement.Phase,
+			&measurement.ID, &measurement.RunID, &measurement.ProfileID, &measurement.Profile, &measurement.Model,
+			&measurement.WorkloadID, &measurement.Workload, &measurement.Phase,
 			&measurement.ContextWindow, &measurement.ContextTarget, &measurement.ContextSemantics,
 			&measurement.SLOTTFTMillis, &measurement.SLOE2ELMillis,
 			&measurement.RepeatIndex, &measurement.Concurrency,
@@ -1167,8 +1218,9 @@ func loadSQLiteReportNotableEvents(db *sql.DB, doc *SQLiteReportDocument) error 
 
 func loadSQLiteReportCommands(db *sql.DB, doc *SQLiteReportDocument) error {
 	rows, err := db.Query(`SELECT
-		phase, status, exit_code, started_at, completed_at, argv_json
-		FROM commands ORDER BY id LIMIT 100`)
+		phase, status, exit_code, started_at, completed_at, argv_json,
+		COALESCE(profile_id, ''), COALESCE(measurement_id, 0)
+		FROM commands ORDER BY id`)
 	if err != nil {
 		return err
 	}
@@ -1178,7 +1230,7 @@ func loadSQLiteReportCommands(db *sql.DB, doc *SQLiteReportDocument) error {
 		var exitCode sql.NullInt64
 		var startedAt, completedAt sql.NullString
 		var argvJSON string
-		if err := rows.Scan(&command.Phase, &command.Status, &exitCode, &startedAt, &completedAt, &argvJSON); err != nil {
+		if err := rows.Scan(&command.Phase, &command.Status, &exitCode, &startedAt, &completedAt, &argvJSON, &command.ProfileID, &command.MeasurementID); err != nil {
 			return err
 		}
 		command.ExitCode = displayNullInt(exitCode)
@@ -1346,9 +1398,9 @@ func profilePositiveInts(profiles []SQLiteReportProfile, value func(SQLiteReport
 	return uniqueSortedInts(values)
 }
 
-func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLiteReportThroughputRow {
-	rows := make([]SQLiteReportThroughputRow, 0, len(measurements))
-	for _, measurement := range measurements {
+func sqliteReportThroughputRows(doc SQLiteReportDocument) []SQLiteReportThroughputRow {
+	rows := make([]SQLiteReportThroughputRow, 0, len(doc.Measurements))
+	for _, measurement := range doc.Measurements {
 		mode := throughputMode(measurement.Phase)
 		inputTokS := inputThroughput(measurement)
 		// Aggregated repeat rows carry the mean ± spread across repeats;
@@ -1360,10 +1412,20 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 		if mode == "prefill" && measurement.InputPerUserSpread != "" {
 			perUserTokS = measurement.InputPerUserSpread
 		}
+		failureLabel, failureReason := measurementFailure(measurement)
+		if failureLabel != "" {
+			throughputTokS = displayFailureMetric(throughputTokS, failureLabel)
+			perUserTokS = displayFailureMetric(perUserTokS, failureLabel)
+		}
 		rows = append(rows, SQLiteReportThroughputRow{
 			Phase:             bench.PhaseTitle(bench.NormalizeReportPhase(measurement.Phase)),
 			Mode:              mode,
+			RunID:             measurement.RunID,
+			MeasurementID:     measurement.ID,
+			ProfileID:         measurement.ProfileID,
 			Profile:           measurement.Profile,
+			Model:             measurement.Model,
+			WorkloadID:        measurement.WorkloadID,
 			Workload:          measurement.Workload,
 			ContextWindow:     measurement.ContextWindow,
 			ContextLabel:      measurement.ContextLabel,
@@ -1386,6 +1448,9 @@ func sqliteReportThroughputRows(measurements []SQLiteReportMeasurement) []SQLite
 			CompletedRequests: measurement.CompletedRequests,
 			FailedRequests:    measurement.FailedRequests,
 			Status:            measurement.Status,
+			FailureLabel:      failureLabel,
+			FailureReason:     failureReason,
+			Detail:            sqliteReportCellDetail(doc, measurement, mode, throughputRowShape(measurement), failureLabel, failureReason),
 			Baseline:          measurement.Concurrency == 1,
 		})
 	}
@@ -1420,6 +1485,166 @@ func throughputRowShape(measurement SQLiteReportMeasurement) string {
 		return shape + " (" + measurement.ActiveRange + ")"
 	}
 	return shape
+}
+
+func measurementFailure(measurement SQLiteReportMeasurement) (label, reason string) {
+	status := strings.ToLower(strings.TrimSpace(measurement.Status))
+	if status == "" || status == "completed" {
+		return "", ""
+	}
+	reason = strings.TrimSpace(bench.FirstNonEmpty(measurement.ErrorMessage, measurement.ErrorType))
+	if reason == "" {
+		reason = status
+	}
+	return compactFailureLabel(status, reason), reason
+}
+
+func compactFailureLabel(status, reason string) string {
+	lowerReason := strings.ToLower(reason)
+	switch {
+	case strings.Contains(lowerReason, "memavailable"), strings.Contains(lowerReason, "memory floor"):
+		return "mem floor"
+	case strings.Contains(lowerReason, "did not become ready"):
+		return "not ready"
+	case strings.Contains(lowerReason, "server exited"):
+		return "server exit"
+	case strings.Contains(lowerReason, "oom"), strings.Contains(lowerReason, "out of memory"):
+		return "oom"
+	case strings.Contains(lowerReason, "canceled"), strings.Contains(lowerReason, "cancelled"):
+		return "canceled"
+	case strings.TrimSpace(status) != "":
+		return strings.TrimSpace(status)
+	default:
+		return "failed"
+	}
+}
+
+func displayFailureMetric(value, failureLabel string) string {
+	if strings.TrimSpace(value) == "" || strings.TrimSpace(value) == "-" {
+		return failureLabel
+	}
+	return value
+}
+
+func sqliteReportCellDetail(doc SQLiteReportDocument, measurement SQLiteReportMeasurement, mode, shape, failureLabel, failureReason string) SQLiteReportCellDetail {
+	profile := findReportProfile(doc.Profiles, measurement.ProfileID, measurement.Profile)
+	detail := SQLiteReportCellDetail{
+		Available:        true,
+		Phase:            bench.PhaseTitle(bench.NormalizeReportPhase(measurement.Phase)),
+		Mode:             mode,
+		Status:           measurement.Status,
+		FailureLabel:     failureLabel,
+		FailureReason:    failureReason,
+		RunID:            measurement.RunID,
+		MeasurementID:    measurement.ID,
+		Model:            bench.FirstNonEmpty(measurement.Model, profile.Model),
+		Profile:          measurement.Profile,
+		Workload:         measurement.Workload,
+		ContextLabel:     measurement.ContextLabel,
+		ContextWindow:    measurement.ContextWindow,
+		Concurrency:      measurement.Concurrency,
+		SamplesRequested: measurement.SamplesRequested,
+		Shape:            shape,
+		ServeCommand:     commandForProfile(doc.Commands, profile.ID),
+		BenchmarkCommand: commandForMeasurement(doc.Commands, measurement.ID),
+		EngineArgs:       commandSummaryFromJSON(profile.EngineArgsJSON),
+		ServeJSON:        compactJSONForDetail(profile.ServeJSON),
+		EnvJSON:          compactJSONForDetail(profile.EnvJSON),
+	}
+	detail.ProfileConfig = []SQLiteReportMetadataItem{
+		{Label: "Server limit", Value: displayContextWindow(profile.ContextWindow)},
+		{Label: "Max seqs", Value: displayPositiveInt(profile.MaxNumSeqs)},
+		{Label: "Batched tokens", Value: displayPositiveInt(profile.MaxNumBatchedTokens)},
+		{Label: "GPU memory", Value: dashIfEmpty(profile.GPUMemoryUtilizationS)},
+		{Label: "KV cache", Value: dashIfEmpty(profile.KVCacheDtype)},
+		{Label: "Prefix cache", Value: dashIfEmpty(profile.PrefixCaching)},
+		{Label: "Sleep", Value: fmt.Sprint(profile.EnableSleepMode)},
+	}
+	return detail
+}
+
+func findReportProfile(profiles []SQLiteReportProfile, id, name string) SQLiteReportProfile {
+	for _, profile := range profiles {
+		if profile.ID == id && id != "" {
+			return profile
+		}
+	}
+	for _, profile := range profiles {
+		if profile.Name == name && name != "" {
+			return profile
+		}
+	}
+	return SQLiteReportProfile{}
+}
+
+func commandForProfile(commands []SQLiteReportCommand, profileID string) string {
+	for _, command := range commands {
+		if command.ProfileID == profileID && command.Phase == "server_start" && strings.TrimSpace(command.Argv) != "" {
+			return command.Argv
+		}
+	}
+	for _, command := range commands {
+		if command.ProfileID == profileID && strings.TrimSpace(command.Argv) != "" {
+			return command.Argv
+		}
+	}
+	return ""
+}
+
+func commandForMeasurement(commands []SQLiteReportCommand, measurementID int64) string {
+	if measurementID <= 0 {
+		return ""
+	}
+	for _, phase := range []string{"workload_finish", "workload_start", "measurement", "benchmark", "planned_run"} {
+		for _, command := range commands {
+			if command.MeasurementID == measurementID && command.Phase == phase && strings.TrimSpace(command.Argv) != "" {
+				return command.Argv
+			}
+		}
+	}
+	for _, command := range commands {
+		if command.MeasurementID == measurementID && strings.TrimSpace(command.Argv) != "" {
+			return command.Argv
+		}
+	}
+	return ""
+}
+
+func compactJSONForDetail(data string) string {
+	data = strings.TrimSpace(data)
+	if data == "" || data == "{}" || data == "[]" || data == "null" {
+		return ""
+	}
+	var value any
+	if err := json.Unmarshal([]byte(data), &value); err != nil {
+		return data
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return data
+	}
+	return string(encoded)
+}
+
+func displayPositiveInt(value int) string {
+	if value <= 0 {
+		return "-"
+	}
+	return fmt.Sprint(value)
+}
+
+func displayContextWindow(value int) string {
+	if value <= 0 {
+		return "-"
+	}
+	return contextLabel(value)
+}
+
+func dashIfEmpty(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 func throughputMode(phase string) string {
@@ -1539,6 +1764,7 @@ func emptyThroughputComparisonRow(concurrency int) SQLiteReportThroughputCompari
 		PrefillTTFTMS:       "-",
 		PrefillLatencyMS:    "-",
 		Requests:            "0 / 0",
+		Result:              "0 / 0",
 		PrefillShape:        "-",
 		DecodeTokSHeat:      "heat-neutral",
 		DecodeUserHeat:      "heat-neutral",
@@ -1559,34 +1785,38 @@ func applyThroughputComparisonSource(target *SQLiteReportThroughputComparisonRow
 	case "prefill":
 		target.PrefillTokS = source.ThroughputTokS
 		target.PrefillPerUserTokS = source.PerUserTokS
-		target.PrefillTTFTMeanMS = source.TTFTMeanMS
-		target.PrefillTTFTMS = source.TTFTP95MS
+		target.PrefillTTFTMeanMS = displayFailureMetric(source.TTFTMeanMS, source.FailureLabel)
+		target.PrefillTTFTMS = displayFailureMetric(source.TTFTP95MS, source.FailureLabel)
 		target.PrefillLatencyMS = source.LatencyP95MS
 		target.PrefillOK = source.CompletedRequests
 		target.PrefillErr = source.FailedRequests
 		target.PrefillShape = source.Shape
+		target.PrefillDetail = source.Detail
 	case "decode":
 		target.DecodeTokS = source.ThroughputTokS
 		target.DecodePerUserTokS = source.PerUserTokS
-		target.DecodeTTFTMeanMS = source.TTFTMeanMS
-		target.DecodeTTFTMS = source.TTFTP95MS
+		target.DecodeTTFTMeanMS = displayFailureMetric(source.TTFTMeanMS, source.FailureLabel)
+		target.DecodeTTFTMS = displayFailureMetric(source.TTFTP95MS, source.FailureLabel)
 		target.DecodeLatencyMS = source.LatencyP95MS
 		target.DecodeOK = source.CompletedRequests
 		target.DecodeErr = source.FailedRequests
 		target.DecodeShape = source.Shape
+		target.DecodeDetail = source.Detail
 	default:
 		target.DecodeTokS = source.ThroughputTokS
 		target.DecodePerUserTokS = source.PerUserTokS
-		target.DecodeTTFTMeanMS = source.TTFTMeanMS
-		target.DecodeTTFTMS = source.TTFTP95MS
+		target.DecodeTTFTMeanMS = displayFailureMetric(source.TTFTMeanMS, source.FailureLabel)
+		target.DecodeTTFTMS = displayFailureMetric(source.TTFTP95MS, source.FailureLabel)
 		target.DecodeLatencyMS = source.LatencyP95MS
 		target.DecodeOK = source.CompletedRequests
 		target.DecodeErr = source.FailedRequests
 		target.DecodeShape = source.Shape
+		target.DecodeDetail = source.Detail
 	}
 	target.OK = target.DecodeOK + target.PrefillOK
 	target.Err = target.DecodeErr + target.PrefillErr
 	target.Requests = fmt.Sprintf("%d / %d", target.OK, target.Err)
+	target.Result, target.ResultDetail = comparisonResult(source, *target)
 	if source.SLODisplay != "" {
 		if source.Mode == "prefill" {
 			target.PrefillSLO = source.SLODisplay
@@ -1606,6 +1836,32 @@ func applyThroughputComparisonSource(target *SQLiteReportThroughputComparisonRow
 	default:
 		target.SLO = "-"
 	}
+}
+
+func comparisonResult(source SQLiteReportThroughputRow, target SQLiteReportThroughputComparisonRow) (string, SQLiteReportCellDetail) {
+	if source.FailureLabel == "" {
+		if target.Result != "" && target.Result != target.Requests {
+			return target.Result, target.ResultDetail
+		}
+		return fmt.Sprintf("%d / %d", target.OK, target.Err), source.Detail
+	}
+	prefix := strings.ToUpper(firstNonEmptyLetter(source.Mode))
+	if prefix == "" {
+		prefix = "Run"
+	}
+	label := prefix + " " + source.FailureLabel
+	if target.OK > 0 || target.Err > 0 {
+		label = fmt.Sprintf("%d / %d · %s", target.OK, target.Err, label)
+	}
+	return label, source.Detail
+}
+
+func firstNonEmptyLetter(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return value[:1]
 }
 
 func throughputAxisVisibilityForRows(rows []SQLiteReportThroughputRow) throughputAxisVisibility {

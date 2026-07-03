@@ -69,6 +69,83 @@ func TestRenderSQLiteHTMLReportEscapesAndIsStandalone(t *testing.T) {
 	}
 }
 
+func TestRenderSQLiteHTMLReportShowsFailedCellsAndProvenance(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "Failed Cell")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO workloads (
+		id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
+		save_detailed, capture_payload_artifacts, metadata_json
+	) VALUES (
+		'workload-failed', 'run-1', 'decode-8k', 'decode',
+		'{"dataset_name":"random","random_input_len":8192,"random_output_len":1024}',
+		'[16]', 1, 1, 1, 0,
+		'{"context":{"target":8192,"semantics":"active"}}'
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	result, err := db.Exec(`INSERT INTO measurements (
+		run_id, profile_id, workload_id, repeat_index, concurrency, samples_requested,
+		status, completed_requests, failed_requests, error_type, error_message
+	) VALUES (
+		'run-1', 'profile-1', 'workload-failed', 0, 16, 1,
+		'skipped', 0, 0, 'memory_floor',
+		'MemAvailable 34.2 GiB is below memory floor 40.0 GiB'
+	)`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	measurementID, err := result.LastInsertId()
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO commands (
+		run_id, profile_id, measurement_id, phase, argv_json, status
+	) VALUES
+		('run-1', 'profile-1', NULL, 'server_start',
+		 '["vllm","serve","nvidia/diffusiongemma-26B-A4B-it-NVFP4","--max-model-len","8192","--max-num-seqs","16"]',
+		 'completed'),
+		('run-1', 'profile-1', ?, 'workload_start',
+		 '["localperf","bench","run","--workload","decode-8k","--concurrency","16"]',
+		 'failed')`, measurementID); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := RenderHTMLReport(&out, doc, HTMLReportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	html := out.String()
+	for _, want := range []string{
+		"mem floor",
+		"cell-detail",
+		"cell-popover",
+		"MemAvailable 34.2 GiB is below memory floor 40.0 GiB",
+		"vllm serve nvidia/diffusiongemma-26B-A4B-it-NVFP4 --max-model-len 8192 --max-num-seqs 16",
+		"localperf bench run --workload decode-8k --concurrency 16",
+		"Max seqs",
+		"Batched tokens",
+		"unverified (declared 8k active)",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML report missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestContextLabelsFollowContract(t *testing.T) {
 	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
 	createTestSQLiteHTMLArtifact(t, artifactPath, "Context Labels")
