@@ -350,6 +350,24 @@ func TestThroughputComparisonResultPreservesCountsAfterPriorFailure(t *testing.T
 	}
 }
 
+func TestThroughputComparisonResultReplacesPlaceholderAfterSuccess(t *testing.T) {
+	row := emptyThroughputComparisonRow(4)
+	applyThroughputComparisonSource(&row, SQLiteReportThroughputRow{
+		Mode:              "prefill",
+		CompletedRequests: 1,
+	})
+	if row.Result != "1 / 0" {
+		t.Fatalf("comparison result = %q, want current counts after first success", row.Result)
+	}
+	applyThroughputComparisonSource(&row, SQLiteReportThroughputRow{
+		Mode:              "decode",
+		CompletedRequests: 1,
+	})
+	if row.Result != "2 / 0" {
+		t.Fatalf("comparison result = %q, want current counts after second success", row.Result)
+	}
+}
+
 func TestCommandForProfileOnlyReturnsServerStartCommand(t *testing.T) {
 	commands := []SQLiteReportCommand{
 		{ProfileID: "profile-1", Phase: "planned_run", Argv: "localperf bench run"},

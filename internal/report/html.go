@@ -1835,7 +1835,7 @@ func applyThroughputComparisonSource(target *SQLiteReportThroughputComparisonRow
 
 func comparisonResult(source SQLiteReportThroughputRow, target SQLiteReportThroughputComparisonRow) (string, SQLiteReportCellDetail) {
 	if source.FailureLabel == "" {
-		if target.Result != "" && target.Result != target.Requests {
+		if resultCarriesFailure(target.Result, target.ResultDetail) {
 			return resultWithCurrentCounts(target.Result, target), target.ResultDetail
 		}
 		return fmt.Sprintf("%d / %d", target.OK, target.Err), source.Detail
@@ -1849,6 +1849,28 @@ func comparisonResult(source SQLiteReportThroughputRow, target SQLiteReportThrou
 		label = fmt.Sprintf("%d / %d · %s", target.OK, target.Err, label)
 	}
 	return label, source.Detail
+}
+
+func resultCarriesFailure(result string, detail SQLiteReportCellDetail) bool {
+	if strings.TrimSpace(detail.FailureLabel) != "" {
+		return true
+	}
+	result = strings.TrimSpace(result)
+	return result != "" && !isRequestCountLabel(result)
+}
+
+func isRequestCountLabel(value string) bool {
+	parts := strings.Fields(strings.TrimSpace(value))
+	if len(parts) != 3 || parts[1] != "/" {
+		return false
+	}
+	if _, err := strconv.Atoi(parts[0]); err != nil {
+		return false
+	}
+	if _, err := strconv.Atoi(parts[2]); err != nil {
+		return false
+	}
+	return true
 }
 
 func resultWithCurrentCounts(existing string, target SQLiteReportThroughputComparisonRow) string {
