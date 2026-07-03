@@ -146,6 +146,57 @@ func TestRenderSQLiteHTMLReportShowsFailedCellsAndProvenance(t *testing.T) {
 	}
 }
 
+func TestRenderSQLiteHTMLReportDoesNotLabelPlannedRowsAsFailures(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "Dry Run")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO workloads (
+		id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
+		save_detailed, capture_payload_artifacts, metadata_json
+	) VALUES (
+		'workload-planned', 'run-1', 'decode-dry-run', 'decode',
+		'{"dataset_name":"random","random_input_len":1024,"random_output_len":256}',
+		'[1]', 1, 1, 1, 0,
+		'{"context":{"target":4096,"semantics":"capacity"}}'
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO measurements (
+		run_id, profile_id, workload_id, repeat_index, concurrency, samples_requested,
+		status, completed_requests, failed_requests
+	) VALUES (
+		'run-1', 'profile-1', 'workload-planned', 0, 1, 1,
+		'planned', 0, 0
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := RenderHTMLReport(&out, doc, HTMLReportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	html := out.String()
+	for _, forbidden := range []string{"D planned", "P planned", "<summary>planned</summary>"} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("HTML report labels planned measurement as failed via %q:\n%s", forbidden, html)
+		}
+	}
+	if !strings.Contains(html, `status-neutral">planned</span>`) {
+		t.Fatalf("HTML report should still expose planned status in details:\n%s", html)
+	}
+}
+
 func TestContextLabelsFollowContract(t *testing.T) {
 	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
 	createTestSQLiteHTMLArtifact(t, artifactPath, "Context Labels")

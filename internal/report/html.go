@@ -1490,7 +1490,9 @@ func throughputRowShape(measurement SQLiteReportMeasurement) string {
 
 func measurementFailure(measurement SQLiteReportMeasurement) (label, reason string) {
 	status := strings.ToLower(strings.TrimSpace(measurement.Status))
-	if status == "" || status == "completed" {
+	switch status {
+	case "failed", "skipped", "canceled":
+	default:
 		return "", ""
 	}
 	reason = strings.TrimSpace(bench.FirstNonEmpty(measurement.ErrorMessage, measurement.ErrorType))
