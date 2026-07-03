@@ -2329,7 +2329,65 @@ func commandSummaryFromJSON(data string) string {
 	if err := json.Unmarshal([]byte(data), &args); err != nil || len(args) == 0 {
 		return ""
 	}
-	return bench.ShellQuote(args)
+	return bench.ShellQuote(redactedCommandArgs(args))
+}
+
+func redactedCommandArgs(args []string) []string {
+	const redacted = "<redacted>"
+	out := append([]string(nil), args...)
+	redactNext := false
+	for i, arg := range out {
+		if redactNext {
+			out[i] = redacted
+			redactNext = false
+			continue
+		}
+		name, hasName, hasInlineValue := commandArgName(arg)
+		if !hasName || !isSensitiveCommandArgName(name) {
+			continue
+		}
+		if hasInlineValue {
+			out[i] = name + "=" + redacted
+			continue
+		}
+		redactNext = true
+	}
+	return out
+}
+
+func commandArgName(arg string) (name string, ok, hasInlineValue bool) {
+	if strings.HasPrefix(arg, "-") {
+		name = arg
+		if before, _, found := strings.Cut(arg, "="); found {
+			name = before
+			hasInlineValue = true
+		}
+		return name, true, hasInlineValue
+	}
+	if before, _, found := strings.Cut(arg, "="); found && isSensitiveCommandArgName(before) {
+		return before, true, true
+	}
+	return "", false, false
+}
+
+func isSensitiveCommandArgName(name string) bool {
+	normalized := strings.ToUpper(strings.TrimLeft(strings.TrimSpace(name), "-"))
+	for _, part := range strings.FieldsFunc(normalized, isCommandArgSeparator) {
+		switch part {
+		case "AUTH", "AUTHORIZATION", "COOKIE", "CREDENTIAL", "CREDENTIALS", "HEADER", "HEADERS", "KEY", "PASS", "PASSWORD", "SECRET", "TOKEN":
+			return true
+		}
+	}
+	for _, marker := range []string{"APIKEY", "API_KEY", "ACCESS_TOKEN", "REFRESH_TOKEN", "CLIENT_SECRET"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCommandArgSeparator(r rune) bool {
+	return !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
 }
 
 func reportStatusClass(status string) string {

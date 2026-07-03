@@ -432,6 +432,28 @@ func TestCommandForProfileOnlyReturnsServerStartCommand(t *testing.T) {
 	}
 }
 
+func TestCommandSummaryFromJSONRedactsSecretFlags(t *testing.T) {
+	got := commandSummaryFromJSON(`[
+		"vllm", "serve", "model",
+		"--api-key", "sk-live-secret",
+		"--hf-token=hf-secret",
+		"HF_TOKEN=env-secret",
+		"--header", "Authorization: Bearer token-secret",
+		"--max-model-len", "8192"
+	]`)
+	for _, forbidden := range []string{"sk-live-secret", "hf-secret", "env-secret", "token-secret"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("commandSummaryFromJSON leaked %q in %q", forbidden, got)
+		}
+	}
+	if strings.Count(got, "<redacted>") != 4 {
+		t.Fatalf("commandSummaryFromJSON redacted count in %q, want 4 redactions", got)
+	}
+	if !strings.Contains(got, "vllm serve model") || !strings.Contains(got, "--max-model-len 8192") {
+		t.Fatalf("commandSummaryFromJSON over-redacted normal args: %q", got)
+	}
+}
+
 func TestMetricFieldDisplay(t *testing.T) {
 	metric := SQLiteReportMetric{
 		Mean:        "10",
