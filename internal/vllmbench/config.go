@@ -121,6 +121,7 @@ type Workload struct {
 	Load                    LoadConfig             `json:"load,omitempty"`
 	Profiles                []string               `json:"profiles,omitempty"`
 	NumPrompts              int                    `json:"num_prompts"`
+	PromptsPerUser          int                    `json:"prompts_per_user,omitempty"`
 	Samples                 int                    `json:"samples,omitempty"`
 	Repeats                 int                    `json:"repeats,omitempty"`
 	MaxConcurrency          []int                  `json:"max_concurrency"`
@@ -355,6 +356,17 @@ func applyWorkloadExecutionDefaults(workload *Workload) {
 	}
 	if workload.Repeats <= 0 {
 		workload.Repeats = 1
+	}
+	// Workload-level num_prompts records the largest point's count; each
+	// planned run resolves its own from prompts_per_user.
+	if workload.NumPrompts <= 0 && workload.PromptsPerUser > 0 {
+		largest := 1
+		for _, concurrency := range workload.MaxConcurrency {
+			if concurrency > largest {
+				largest = concurrency
+			}
+		}
+		workload.NumPrompts = resolvedNumPrompts(*workload, largest)
 	}
 }
 
@@ -994,8 +1006,11 @@ func validateWorkloadDatasetName(prefix string, workload Workload) []string {
 
 func validateWorkloadPositiveFields(prefix string, workload Workload) []string {
 	var issues []string
-	if workload.NumPrompts <= 0 {
-		issues = append(issues, prefix+": num_prompts must be positive")
+	if workload.NumPrompts <= 0 && workload.PromptsPerUser <= 0 {
+		issues = append(issues, prefix+": num_prompts or prompts_per_user must be positive")
+	}
+	if workload.PromptsPerUser < 0 {
+		issues = append(issues, prefix+": prompts_per_user must not be negative")
 	}
 	if workload.Repeats <= 0 {
 		issues = append(issues, prefix+": repeats must be positive")
@@ -1246,6 +1261,7 @@ func plannedRepeats(workload Workload) int {
 
 func buildPlannedRun(runDir string, profile Profile, workload Workload, concurrency, repeat int) PlannedRun {
 	repeats := plannedRepeats(workload)
+	workload.NumPrompts = resolvedNumPrompts(workload, concurrency)
 	return PlannedRun{
 		Profile:     profile,
 		Workload:    workload,
@@ -1253,6 +1269,24 @@ func buildPlannedRun(runDir string, profile Profile, workload Workload, concurre
 		Repeat:      repeat,
 		ResultFile:  ResultPath(runDir, profile.Name, workload.Name, concurrency, repeat, repeats),
 	}
+}
+
+// minPromptsPerPoint is the sample floor per measurement: fewer requests
+// trades hours for noise the ± spreads would only confirm.
+const minPromptsPerPoint = 8
+
+// resolvedNumPrompts scales the request count with concurrency when the
+// workload declares prompts_per_user, so c1 points stop paying for c32-sized
+// sample counts.
+func resolvedNumPrompts(workload Workload, concurrency int) int {
+	if workload.PromptsPerUser <= 0 {
+		return workload.NumPrompts
+	}
+	prompts := workload.PromptsPerUser * concurrency
+	if prompts < minPromptsPerPoint {
+		return minPromptsPerPoint
+	}
+	return prompts
 }
 
 func RunDir(base string, spec Spec, now time.Time) string {

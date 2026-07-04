@@ -87,7 +87,8 @@
       "profiles": [
         "4k-reference"
       ],
-      "num_prompts": 32,
+      "num_prompts": 8,
+      "prompts_per_user": 2,
       "repeats": 1,
       "max_concurrency": [
         1,
@@ -119,7 +120,8 @@
       "profiles": [
         "8k"
       ],
-      "num_prompts": 32,
+      "num_prompts": 8,
+      "prompts_per_user": 2,
       "repeats": 1,
       "max_concurrency": [
         1,
@@ -135,8 +137,8 @@
       "dataset_name": "random",
       "request_rate": "inf",
       "seed": 0,
-      "random_input_len": 6016,
-      "random_output_len": 2048,
+      "random_input_len": 7040,
+      "random_output_len": 1024,
       "random_range_ratio": "0",
       "name": "decode-8k",
       "phase": "decode",
@@ -151,7 +153,8 @@
       "profiles": [
         "8k"
       ],
-      "num_prompts": 32,
+      "num_prompts": 8,
+      "prompts_per_user": 2,
       "repeats": 1,
       "max_concurrency": [
         1,

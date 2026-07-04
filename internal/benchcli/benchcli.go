@@ -78,11 +78,13 @@ func runSweep(args []string) {
 func runSweepPlan(args []string) {
 	flags := flag.NewFlagSet("sweep plan", flag.ExitOnError)
 	model := flags.String("model", "", "model identifier to benchmark (required)")
-	contexts := flags.String("contexts", "8k,16k,32k,64k,128k", "comma-separated active-context ladder (e.g. 8k,16k,32k)")
+	contexts := flags.String("contexts", "8k,16k,32k,64k", "comma-separated active-context ladder (e.g. 8k,16k,32k); 128k and above are capped at c4")
 	concurrency := flags.String("concurrency", "1,4,8,16,32", "comma-separated concurrency levels")
 	repeats := flags.Int("repeats", 1, "repeats per measurement")
-	numPrompts := flags.Int("num-prompts", 0, "prompts per measurement (default 32)")
+	numPrompts := flags.Int("num-prompts", 0, "fixed prompts per measurement; default scales with concurrency")
+	promptsPerUser := flags.Int("prompts-per-user", 0, "prompts per concurrent user (default 2, floor 8 per point)")
 	reference := flags.Bool("reference", true, "include the 4k max-throughput-reference capacity family")
+	stress := flags.Bool("stress", false, "add long-output decode spot checks (4096 tokens at 32k c4, 64k c1/c4) and the 128k points")
 	memFloor := flags.Float64("min-mem-available-gib", 0, "safety memory floor in GiB (default 40)")
 	out := flags.String("out", "", "output spec path (default stdout)")
 	_ = flags.Parse(args)
@@ -102,7 +104,9 @@ func runSweepPlan(args []string) {
 		Concurrency:        concurrencyValues,
 		Repeats:            *repeats,
 		NumPrompts:         *numPrompts,
+		PromptsPerUser:     *promptsPerUser,
 		IncludeReference:   *reference,
+		IncludeStress:      *stress,
 		MinMemAvailableGiB: *memFloor,
 	})
 	if err != nil {
@@ -748,7 +752,7 @@ func usageRoot() {
   localperf artifact check runs/example.sqlite
   localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]
   localperf artifact merge --into runs/models/model.sqlite src1.sqlite [src2.sqlite ...]
-  localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k,128k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--out spec.json]
+  localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--stress] [--out spec.json]
   localperf view runs/model.sqlite [runs/other.sqlite ...] [--addr 127.0.0.1:0] [--open]`)
 }
 
