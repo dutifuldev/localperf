@@ -33,6 +33,7 @@ type RunSummary struct {
 	StartedAt     time.Time   `json:"started_at"`
 	FinishedAt    time.Time   `json:"finished_at"`
 	DryRun        bool        `json:"dry_run"`
+	Error         string      `json:"error,omitempty"`
 	PlannedRuns   int         `json:"planned_runs"`
 	CompletedRuns int         `json:"completed_runs"`
 	FailedRuns    int         `json:"failed_runs"`
@@ -210,6 +211,9 @@ func (session *runSession) run() error {
 }
 
 func (session *runSession) finish(runErr error) (RunSummary, error) {
+	if runErr == nil {
+		runErr = session.ctx.Err()
+	}
 	err := finalizeRun(session.runDir, &session.summary, session.events, session.spec, session.opts.OriginalSpecPath, runErr)
 	return session.summary, err
 }
@@ -389,6 +393,9 @@ func (session *runSession) stopFinishedProfile(profile Profile, proc *serverProc
 
 func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, spec Spec, originalSpecPath string, runErr error) error {
 	summary.FinishedAt = time.Now().UTC()
+	if runErr != nil {
+		summary.Error = runErr.Error()
+	}
 	writeRunFinishEvent(summary, events, runErr)
 	writeFinalReports(runDir, summary)
 	if err := writeJSONFile(filepath.Join(runDir, "summary.json"), summary); err != nil {
@@ -433,7 +440,7 @@ func finalRunError(summary RunSummary, runErr error) error {
 	if runErr != nil {
 		return runErr
 	}
-	if summary.FailedRuns > 0 {
+	if summary.FailedRuns > 0 && summary.CompletedRuns == 0 {
 		return fmt.Errorf("%d benchmark run(s) failed", summary.FailedRuns)
 	}
 	return nil

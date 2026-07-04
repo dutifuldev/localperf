@@ -2572,6 +2572,59 @@ func TestExecuteStopsManagedProfileOnInterrupt(t *testing.T) {
 	}
 }
 
+func TestExecuteContextCancelAfterPartialProgressIsFatal(t *testing.T) {
+	startedDir := t.TempDir()
+	spec := testSpec()
+	spec.Name = "fake-vllm-partial-context-cancel"
+	spec.OutputDir = t.TempDir()
+	appendTimestamp := false
+	spec.Runner.AppendTimestampToRun = &appendTimestamp
+	spec.Runner.VLLMCommand = fakeVLLMScript(t)
+	spec.Runner.VLLMBenchCommand = spec.Runner.VLLMCommand
+	spec.Env["FAKE_BENCH_STARTED_DIR"] = startedDir
+	spec.Env["FAKE_BENCH_SLEEP_MS"] = "5000"
+	spec.Env["FAKE_BENCH_SLEEP_CONCURRENCY"] = "2"
+	spec.Safety.MinMemAvailableGiB = 0.1
+	spec.Safety.StartupTimeoutSec = 10
+	spec.Safety.WorkloadTimeoutSec = 10
+	spec.Safety.HTTPTimeoutSec = 2
+	spec.Warmup.Enabled = false
+	spec.Profiles = spec.Profiles[:1]
+	spec.Profiles[0].Port = freeTestPort()
+	spec.Profiles[0].EnableSleepMode = false
+	spec.Workloads = []Workload{testRandomWorkload("fake-random", []string{spec.Profiles[0].Name}, 128, 16, 1, []int{1, 2})}
+	ApplyDefaults(&spec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type result struct {
+		summary RunSummary
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		summary, err := Execute(ctx, spec, RunOptions{})
+		done <- result{summary: summary, err: err}
+	}()
+	waitForFile(t, filepath.Join(startedDir, "c2.started"))
+	cancel()
+
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not return after context cancellation")
+	}
+	if got.err == nil || !strings.Contains(got.err.Error(), "context canceled") {
+		t.Fatalf("Execute error = %v, want context cancellation", got.err)
+	}
+	if got.summary.CompletedRuns != 1 || got.summary.FailedRuns != 1 || got.summary.Error == "" {
+		t.Fatalf("summary = %+v, want one completed run, one failed run, and fatal summary error", got.summary)
+	}
+	if status := sqliteRunStatus(t, got.summary.ArtifactPath); status != "failed" {
+		t.Fatalf("artifact run status = %q, want failed", status)
+	}
+}
+
 func TestStopProcessUsesSavedProcessGroupAfterParentExit(t *testing.T) {
 	childFile := filepath.Join(t.TempDir(), "child.pid")
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 60 & echo $! > %s", shellSingleQuote(childFile)))
@@ -2674,6 +2727,23 @@ func TestExecuteFailsWhenSleepFails(t *testing.T) {
 	if summary.CompletedRuns != 1 {
 		t.Fatalf("completed runs = %d, want measured workload to complete before sleep failure", summary.CompletedRuns)
 	}
+	if got := sqliteRunStatus(t, summary.ArtifactPath); got != "failed" {
+		t.Fatalf("artifact run status = %q, want failed", got)
+	}
+}
+
+func sqliteRunStatus(t *testing.T, artifactPath string) string {
+	t.Helper()
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var status string
+	if err := db.QueryRow("SELECT status FROM run ORDER BY id LIMIT 1").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	return status
 }
 
 func TestExecuteFinalizesArtifactsWhenPrebootFails(t *testing.T) {
@@ -3350,16 +3420,6 @@ func runFakeBench(args []string) {
 	if resultPath == "" {
 		os.Exit(2)
 	}
-	if startFile := os.Getenv("FAKE_BENCH_STARTED_FILE"); startFile != "" {
-		_ = os.MkdirAll(filepath.Dir(startFile), 0o755)
-		_ = os.WriteFile(startFile, []byte("1\n"), 0o644)
-	}
-	if rawSleepMillis := os.Getenv("FAKE_BENCH_SLEEP_MS"); rawSleepMillis != "" {
-		sleepMillis, _ := strconv.Atoi(rawSleepMillis)
-		if sleepMillis > 0 {
-			time.Sleep(time.Duration(sleepMillis) * time.Millisecond)
-		}
-	}
 	concurrency, _ := strconv.Atoi(flagValue(args, "--max-concurrency"))
 	numPrompts, _ := strconv.Atoi(flagValue(args, "--num-prompts"))
 	if concurrency <= 0 {
@@ -3367,6 +3427,21 @@ func runFakeBench(args []string) {
 	}
 	if numPrompts <= 0 {
 		numPrompts = concurrency
+	}
+	if startFile := os.Getenv("FAKE_BENCH_STARTED_FILE"); startFile != "" {
+		_ = os.MkdirAll(filepath.Dir(startFile), 0o755)
+		_ = os.WriteFile(startFile, []byte("1\n"), 0o644)
+	}
+	if startDir := os.Getenv("FAKE_BENCH_STARTED_DIR"); startDir != "" {
+		_ = os.MkdirAll(startDir, 0o755)
+		_ = os.WriteFile(filepath.Join(startDir, fmt.Sprintf("c%d.started", concurrency)), []byte("1\n"), 0o644)
+	}
+	if rawSleepMillis := os.Getenv("FAKE_BENCH_SLEEP_MS"); rawSleepMillis != "" {
+		sleepMillis, _ := strconv.Atoi(rawSleepMillis)
+		sleepConcurrency, _ := strconv.Atoi(os.Getenv("FAKE_BENCH_SLEEP_CONCURRENCY"))
+		if sleepMillis > 0 && (sleepConcurrency == 0 || sleepConcurrency == concurrency) {
+			time.Sleep(time.Duration(sleepMillis) * time.Millisecond)
+		}
 	}
 	failed, _ := strconv.Atoi(os.Getenv("FAKE_BENCH_FAILED"))
 	if failed < 0 {

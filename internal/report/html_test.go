@@ -69,6 +69,134 @@ func TestRenderSQLiteHTMLReportEscapesAndIsStandalone(t *testing.T) {
 	}
 }
 
+func TestRenderSQLiteHTMLReportShowsFailedCellsAndProvenance(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "Failed Cell")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO workloads (
+		id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
+		save_detailed, capture_payload_artifacts, metadata_json
+	) VALUES (
+		'workload-failed', 'run-1', 'decode-8k', 'decode',
+		'{"dataset_name":"random","random_input_len":8192,"random_output_len":1024}',
+		'[16]', 1, 1, 1, 0,
+		'{"context":{"target":8192,"semantics":"active"}}'
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	result, err := db.Exec(`INSERT INTO measurements (
+		run_id, profile_id, workload_id, repeat_index, concurrency, samples_requested,
+		status, completed_requests, failed_requests, error_type, error_message
+	) VALUES (
+		'run-1', 'profile-1', 'workload-failed', 0, 16, 1,
+		'skipped', 0, 0, 'memory_floor',
+		'MemAvailable 34.2 GiB is below memory floor 40.0 GiB'
+	)`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	measurementID, err := result.LastInsertId()
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO commands (
+		run_id, profile_id, measurement_id, phase, argv_json, status
+	) VALUES
+		('run-1', 'profile-1', NULL, 'server_start',
+		 '["vllm","serve","nvidia/diffusiongemma-26B-A4B-it-NVFP4","--max-model-len","8192","--max-num-seqs","16"]',
+		 'completed'),
+		('run-1', 'profile-1', ?, 'workload_start',
+		 '["localperf","bench","run","--workload","decode-8k","--concurrency","16"]',
+		 'failed')`, measurementID); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := RenderHTMLReport(&out, doc, HTMLReportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	html := out.String()
+	for _, want := range []string{
+		"mem floor",
+		"cell-detail",
+		"cell-popover",
+		"MemAvailable 34.2 GiB is below memory floor 40.0 GiB",
+		"vllm serve nvidia/diffusiongemma-26B-A4B-it-NVFP4 --max-model-len 8192 --max-num-seqs 16",
+		"localperf bench run --workload decode-8k --concurrency 16",
+		"Max seqs",
+		"Batched tokens",
+		"unverified (declared 8k active)",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML report missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestRenderSQLiteHTMLReportDoesNotLabelPlannedRowsAsFailures(t *testing.T) {
+	artifactPath := testSQLiteHTMLArtifact(t, "Dry Run")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO workloads (
+		id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
+		save_detailed, capture_payload_artifacts, metadata_json
+	) VALUES (
+		'workload-planned', 'run-1', 'decode-dry-run', 'decode',
+		'{"dataset_name":"random","random_input_len":1024,"random_output_len":256}',
+		'[1]', 1, 1, 1, 0,
+		'{"context":{"target":4096,"semantics":"capacity"}}'
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO measurements (
+		run_id, profile_id, workload_id, repeat_index, concurrency, samples_requested,
+		status, completed_requests, failed_requests
+	) VALUES (
+		'run-1', 'profile-1', 'workload-planned', 0, 1, 1,
+		'planned', 0, 0
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := RenderHTMLReport(&out, doc, HTMLReportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	html := out.String()
+	for _, forbidden := range []string{"D planned", "P planned", "<summary>planned</summary>"} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("HTML report labels planned measurement as failed via %q:\n%s", forbidden, html)
+		}
+	}
+	if !strings.Contains(html, `status-neutral">planned</span>`) {
+		t.Fatalf("HTML report should still expose planned status in details:\n%s", html)
+	}
+}
+
 func TestContextLabelsFollowContract(t *testing.T) {
 	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
 	createTestSQLiteHTMLArtifact(t, artifactPath, "Context Labels")
@@ -253,6 +381,76 @@ func TestApplyThroughputComparisonHeatmapColumnNeutral(t *testing.T) {
 	})
 	if rows[0].DecodeTokSHeat != "heat-neutral" || rows[1].DecodeTokSHeat != "heat-neutral" {
 		t.Fatalf("equal-value heat classes = %#v", rows)
+	}
+}
+
+func TestThroughputComparisonResultPreservesCountsAfterPriorFailure(t *testing.T) {
+	row := emptyThroughputComparisonRow(4)
+	applyThroughputComparisonSource(&row, SQLiteReportThroughputRow{
+		Mode:         "decode",
+		FailureLabel: "mem floor",
+		Detail:       SQLiteReportCellDetail{Available: true},
+	})
+	applyThroughputComparisonSource(&row, SQLiteReportThroughputRow{
+		Mode:              "prefill",
+		CompletedRequests: 2,
+		Detail:            SQLiteReportCellDetail{Available: true},
+	})
+	if row.Result != "2 / 0 · D mem floor" {
+		t.Fatalf("comparison result = %q, want counts plus prior failure", row.Result)
+	}
+}
+
+func TestThroughputComparisonResultReplacesPlaceholderAfterSuccess(t *testing.T) {
+	row := emptyThroughputComparisonRow(4)
+	applyThroughputComparisonSource(&row, SQLiteReportThroughputRow{
+		Mode:              "prefill",
+		CompletedRequests: 1,
+	})
+	if row.Result != "1 / 0" {
+		t.Fatalf("comparison result = %q, want current counts after first success", row.Result)
+	}
+	applyThroughputComparisonSource(&row, SQLiteReportThroughputRow{
+		Mode:              "decode",
+		CompletedRequests: 1,
+	})
+	if row.Result != "2 / 0" {
+		t.Fatalf("comparison result = %q, want current counts after second success", row.Result)
+	}
+}
+
+func TestCommandForProfileOnlyReturnsServerStartCommand(t *testing.T) {
+	commands := []SQLiteReportCommand{
+		{ProfileID: "profile-1", Phase: "planned_run", Argv: "localperf bench run"},
+	}
+	if got := commandForProfile(commands, "profile-1"); got != "" {
+		t.Fatalf("commandForProfile() = %q, want no mislabeled serve command", got)
+	}
+	commands = append(commands, SQLiteReportCommand{ProfileID: "profile-1", Phase: "server_start", Argv: "vllm serve model"})
+	if got := commandForProfile(commands, "profile-1"); got != "vllm serve model" {
+		t.Fatalf("commandForProfile() = %q, want server_start command", got)
+	}
+}
+
+func TestCommandSummaryFromJSONRedactsSecretFlags(t *testing.T) {
+	got := commandSummaryFromJSON(`[
+		"vllm", "serve", "model",
+		"--api-key", "sk-live-secret",
+		"--hf-token=hf-secret",
+		"HF_TOKEN=env-secret",
+		"--header", "Authorization: Bearer token-secret",
+		"--max-model-len", "8192"
+	]`)
+	for _, forbidden := range []string{"sk-live-secret", "hf-secret", "env-secret", "token-secret"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("commandSummaryFromJSON leaked %q in %q", forbidden, got)
+		}
+	}
+	if strings.Count(got, "<redacted>") != 4 {
+		t.Fatalf("commandSummaryFromJSON redacted count in %q, want 4 redactions", got)
+	}
+	if !strings.Contains(got, "vllm serve model") || !strings.Contains(got, "--max-model-len 8192") {
+		t.Fatalf("commandSummaryFromJSON over-redacted normal args: %q", got)
 	}
 }
 

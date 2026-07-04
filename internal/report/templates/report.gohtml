@@ -24,7 +24,7 @@
 <thead><tr><th class="num">Users</th><th class="num">Decode tok/s</th><th class="num">Decode/user</th><th class="num">Decode TTFT avg</th><th class="num">Decode TTFT p95</th><th class="num">Prefill tok/s</th><th class="num">Prefill/user</th><th class="num">Prefill TTFT avg</th><th class="num">Prefill TTFT p95</th><th class="num">OK / Err</th>{{if $.Doc.HasSLO}}<th class="num">SLO / goodput</th>{{end}}</tr></thead>
 <tbody>
 {{range .Rows}}
-<tr class="{{if .Baseline}}baseline-row{{end}}"><td class="num">{{.Concurrency}}</td><td class="num {{.DecodeTokSHeat}}">{{tokps .DecodeTokS}}</td><td class="num {{.DecodeUserHeat}}">{{tokps .DecodePerUserTokS}}</td><td class="num {{.DecodeTTFTMeanHeat}}">{{seconds .DecodeTTFTMeanMS}}</td><td class="num {{.DecodeTTFTHeat}}">{{seconds .DecodeTTFTMS}}</td><td class="num {{.PrefillTokSHeat}}">{{tokps .PrefillTokS}}</td><td class="num {{.PrefillUserHeat}}">{{tokps .PrefillPerUserTokS}}</td><td class="num {{.PrefillTTFTMeanHeat}}">{{seconds .PrefillTTFTMeanMS}}</td><td class="num {{.PrefillTTFTHeat}}">{{seconds .PrefillTTFTMS}}</td><td class="num {{.ErrHeat}}">{{.Requests}}</td>{{if $.Doc.HasSLO}}<td class="num">{{.SLO}}</td>{{end}}</tr>
+<tr class="{{if .Baseline}}baseline-row{{end}}"><td class="num">{{.Concurrency}}</td><td class="num {{.DecodeTokSHeat}}">{{if .DecodeDetail.Available}}<details class="cell-detail"><summary>{{tokps .DecodeTokS}}</summary>{{template "cell-detail" .DecodeDetail}}</details>{{else}}{{tokps .DecodeTokS}}{{end}}</td><td class="num {{.DecodeUserHeat}}">{{if .DecodeDetail.Available}}<details class="cell-detail"><summary>{{tokps .DecodePerUserTokS}}</summary>{{template "cell-detail" .DecodeDetail}}</details>{{else}}{{tokps .DecodePerUserTokS}}{{end}}</td><td class="num {{.DecodeTTFTMeanHeat}}">{{if .DecodeDetail.Available}}<details class="cell-detail"><summary>{{seconds .DecodeTTFTMeanMS}}</summary>{{template "cell-detail" .DecodeDetail}}</details>{{else}}{{seconds .DecodeTTFTMeanMS}}{{end}}</td><td class="num {{.DecodeTTFTHeat}}">{{if .DecodeDetail.Available}}<details class="cell-detail"><summary>{{seconds .DecodeTTFTMS}}</summary>{{template "cell-detail" .DecodeDetail}}</details>{{else}}{{seconds .DecodeTTFTMS}}{{end}}</td><td class="num {{.PrefillTokSHeat}}">{{if .PrefillDetail.Available}}<details class="cell-detail"><summary>{{tokps .PrefillTokS}}</summary>{{template "cell-detail" .PrefillDetail}}</details>{{else}}{{tokps .PrefillTokS}}{{end}}</td><td class="num {{.PrefillUserHeat}}">{{if .PrefillDetail.Available}}<details class="cell-detail"><summary>{{tokps .PrefillPerUserTokS}}</summary>{{template "cell-detail" .PrefillDetail}}</details>{{else}}{{tokps .PrefillPerUserTokS}}{{end}}</td><td class="num {{.PrefillTTFTMeanHeat}}">{{if .PrefillDetail.Available}}<details class="cell-detail"><summary>{{seconds .PrefillTTFTMeanMS}}</summary>{{template "cell-detail" .PrefillDetail}}</details>{{else}}{{seconds .PrefillTTFTMeanMS}}{{end}}</td><td class="num {{.PrefillTTFTHeat}}">{{if .PrefillDetail.Available}}<details class="cell-detail"><summary>{{seconds .PrefillTTFTMS}}</summary>{{template "cell-detail" .PrefillDetail}}</details>{{else}}{{seconds .PrefillTTFTMS}}{{end}}</td><td class="num {{.ErrHeat}}">{{if .ResultDetail.Available}}<details class="cell-detail"><summary>{{.Result}}</summary>{{template "cell-detail" .ResultDetail}}</details>{{else}}{{.Result}}{{end}}</td>{{if $.Doc.HasSLO}}<td class="num">{{.SLO}}</td>{{end}}</tr>
 {{end}}
 </tbody>
 </table></div>
@@ -33,7 +33,7 @@
 <thead><tr><th class="num">Users</th><th class="num">Decode</th><th class="num">D/user</th><th class="num">D avg/p95</th><th class="num">Prefill</th><th class="num">P/user</th><th class="num">P avg/p95</th><th class="num">OK/Err</th>{{if $.Doc.HasSLO}}<th class="num">SLO</th>{{end}}</tr></thead>
 <tbody>
 {{range .Rows}}
-<tr class="{{if .Baseline}}baseline-row{{end}}"><td class="num">{{.Concurrency}}</td><td class="num {{.DecodeTokSHeat}}">{{tokps .DecodeTokS}}</td><td class="num {{.DecodeUserHeat}}">{{tokps .DecodePerUserTokS}}</td><td class="num {{.DecodeTTFTHeat}}">{{seconds .DecodeTTFTMeanMS}} / {{seconds .DecodeTTFTMS}}</td><td class="num {{.PrefillTokSHeat}}">{{tokps .PrefillTokS}}</td><td class="num {{.PrefillUserHeat}}">{{tokps .PrefillPerUserTokS}}</td><td class="num {{.PrefillTTFTHeat}}">{{seconds .PrefillTTFTMeanMS}} / {{seconds .PrefillTTFTMS}}</td><td class="num {{.ErrHeat}}">{{.Requests}}</td>{{if $.Doc.HasSLO}}<td class="num">{{.SLO}}</td>{{end}}</tr>
+<tr class="{{if .Baseline}}baseline-row{{end}}"><td class="num">{{.Concurrency}}</td><td class="num {{.DecodeTokSHeat}}">{{if .DecodeDetail.Available}}<details class="cell-detail"><summary>{{tokps .DecodeTokS}}</summary>{{template "cell-detail" .DecodeDetail}}</details>{{else}}{{tokps .DecodeTokS}}{{end}}</td><td class="num {{.DecodeUserHeat}}">{{if .DecodeDetail.Available}}<details class="cell-detail"><summary>{{tokps .DecodePerUserTokS}}</summary>{{template "cell-detail" .DecodeDetail}}</details>{{else}}{{tokps .DecodePerUserTokS}}{{end}}</td><td class="num {{.DecodeTTFTHeat}}">{{if .DecodeDetail.Available}}<details class="cell-detail"><summary>{{seconds .DecodeTTFTMeanMS}} / {{seconds .DecodeTTFTMS}}</summary>{{template "cell-detail" .DecodeDetail}}</details>{{else}}{{seconds .DecodeTTFTMeanMS}} / {{seconds .DecodeTTFTMS}}{{end}}</td><td class="num {{.PrefillTokSHeat}}">{{if .PrefillDetail.Available}}<details class="cell-detail"><summary>{{tokps .PrefillTokS}}</summary>{{template "cell-detail" .PrefillDetail}}</details>{{else}}{{tokps .PrefillTokS}}{{end}}</td><td class="num {{.PrefillUserHeat}}">{{if .PrefillDetail.Available}}<details class="cell-detail"><summary>{{tokps .PrefillPerUserTokS}}</summary>{{template "cell-detail" .PrefillDetail}}</details>{{else}}{{tokps .PrefillPerUserTokS}}{{end}}</td><td class="num {{.PrefillTTFTHeat}}">{{if .PrefillDetail.Available}}<details class="cell-detail"><summary>{{seconds .PrefillTTFTMeanMS}} / {{seconds .PrefillTTFTMS}}</summary>{{template "cell-detail" .PrefillDetail}}</details>{{else}}{{seconds .PrefillTTFTMeanMS}} / {{seconds .PrefillTTFTMS}}{{end}}</td><td class="num {{.ErrHeat}}">{{if .ResultDetail.Available}}<details class="cell-detail"><summary>{{.Result}}</summary>{{template "cell-detail" .ResultDetail}}</details>{{else}}{{.Result}}{{end}}</td>{{if $.Doc.HasSLO}}<td class="num">{{.SLO}}</td>{{end}}</tr>
 {{end}}
 </tbody>
 </table></div>
@@ -120,3 +120,29 @@
 </main>
 </body>
 </html>
+
+{{define "cell-detail"}}
+<div class="cell-popover">
+<div class="detail-head"><span class="pill {{statusClass .Status}}">{{.Status}}</span><strong>{{.Phase}}</strong></div>
+{{if .FailureReason}}<div class="detail-reason"><span>Reason</span><code>{{.FailureReason}}</code></div>{{end}}
+<div class="detail-grid">
+<span>Model</span><strong>{{.Model}}</strong>
+<span>Profile</span><strong>{{.Profile}}</strong>
+<span>Workload</span><strong>{{.Workload}}</strong>
+<span>Context</span><strong>{{.ContextLabel}}</strong>
+<span>Users</span><strong>{{.Concurrency}}</strong>
+<span>Samples</span><strong>{{.SamplesRequested}}</strong>
+<span>Shape</span><strong>{{.Shape}}</strong>
+{{if .Source}}<span>Source</span><strong>{{.Source}}</strong>{{end}}
+{{if .RunID}}
+<span>Run</span><strong>{{.RunID}}</strong>
+{{end}}
+</div>
+{{if .ProfileConfig}}<div class="detail-grid detail-config">{{range .ProfileConfig}}<span>{{.Label}}</span><strong>{{.Value}}</strong>{{end}}</div>{{end}}
+{{if .ServeCommand}}<div class="detail-command"><span>vLLM serve</span><code>{{.ServeCommand}}</code></div>{{end}}
+{{if .BenchmarkCommand}}<div class="detail-command"><span>Benchmark</span><code>{{.BenchmarkCommand}}</code></div>{{end}}
+{{if .EngineArgs}}<div class="detail-command"><span>Engine args</span><code>{{.EngineArgs}}</code></div>{{end}}
+{{if .ServeJSON}}<div class="detail-command"><span>Serve JSON</span><code>{{.ServeJSON}}</code></div>{{end}}
+{{if .EnvJSON}}<div class="detail-command"><span>Env</span><code>{{.EnvJSON}}</code></div>{{end}}
+</div>
+{{end}}
