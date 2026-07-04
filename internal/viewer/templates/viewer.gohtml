@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<style>{{template "viewer.css"}}</style>
+</head>
+<body>
+<header class="app-head">
+<div>
+<h1>{{.Title}}</h1>
+<p>{{len .Reports}} artifact{{if ne (len .Reports) 1}}s{{end}}</p>
+</div>
+<div class="selected-meta">
+<span>{{.Selected.LatestRunStatus}}</span>
+<strong>{{.Selected.LatestRunName}}</strong>
+</div>
+</header>
+<nav class="tabs" aria-label="Reports">
+{{range .Reports}}
+<a class="tab {{if eq .ID $.Selected.ID}}active{{end}}" href="/?report={{.ID}}">
+<span>{{.Label}}</span>
+<small>{{.RunCount}} run{{if ne .RunCount 1}}s{{end}} · {{.MeasurementCount}} rows</small>
+</a>
+{{end}}
+</nav>
+<main class="viewer-main">
+<iframe class="report-frame" title="{{.Selected.Label}} report" src="{{.SelectedURL}}"></iframe>
+</main>
+</body>
+</html>

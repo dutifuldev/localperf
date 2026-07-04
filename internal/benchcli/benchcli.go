@@ -7,15 +7,18 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/dutifuldev/localperf/internal/artifact"
 	"github.com/dutifuldev/localperf/internal/collections"
 	"github.com/dutifuldev/localperf/internal/report"
 	"github.com/dutifuldev/localperf/internal/sweepplan"
+	"github.com/dutifuldev/localperf/internal/viewer"
 	"github.com/dutifuldev/localperf/internal/vllmbench"
 )
 
@@ -27,6 +30,7 @@ var rootHandlers = commandHandlers{
 	"bench":    VLLMBenchMain,
 	"artifact": runArtifact,
 	"sweep":    runSweep,
+	"view":     runView,
 }
 
 var artifactHandlers = commandHandlers{
@@ -276,6 +280,91 @@ func runBench(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+func runView(args []string) {
+	config, err := parseViewFlags(args, flag.ExitOnError)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err = viewer.Serve(ctx, viewer.ServerConfig{
+		Addr:        config.addr,
+		Title:       config.title,
+		Paths:       config.paths,
+		OpenBrowser: config.open,
+		Out:         os.Stdout,
+		Err:         os.Stderr,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+type viewConfig struct {
+	addr  string
+	title string
+	paths []string
+	open  bool
+}
+
+func parseViewFlags(args []string, errorHandling flag.ErrorHandling) (viewConfig, error) {
+	flags := flag.NewFlagSet("view", errorHandling)
+	addr := flags.String("addr", "127.0.0.1:0", "viewer listen address")
+	title := flags.String("title", "localperf viewer", "viewer title")
+	open := flags.Bool("open", false, "open the viewer in a browser")
+	noOpen := flags.Bool("no-open", false, "do not open the viewer in a browser")
+	positionalPaths, parseArgs := viewParseArgs(args)
+	if err := flags.Parse(parseArgs); err != nil {
+		return viewConfig{}, err
+	}
+	paths := append([]string{}, positionalPaths...)
+	paths = append(paths, flags.Args()...)
+	if len(paths) == 0 {
+		return viewConfig{}, fmt.Errorf("missing SQLite report path")
+	}
+	if *open && *noOpen {
+		return viewConfig{}, fmt.Errorf("--open and --no-open cannot both be set")
+	}
+	return viewConfig{
+		addr:  *addr,
+		title: *title,
+		paths: paths,
+		open:  *open && !*noOpen,
+	}, nil
+}
+
+func viewParseArgs(args []string) ([]string, []string) {
+	var paths []string
+	parseArgs := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if !strings.HasPrefix(arg, "-") {
+			paths = append(paths, arg)
+			continue
+		}
+		parseArgs = append(parseArgs, arg)
+		if viewFlagNeedsValue(arg) && !strings.Contains(arg, "=") && index+1 < len(args) {
+			index++
+			parseArgs = append(parseArgs, args[index])
+		}
+	}
+	return paths, parseArgs
+}
+
+func viewFlagNeedsValue(arg string) bool {
+	if equals := strings.Index(arg, "="); equals >= 0 {
+		arg = arg[:equals]
+	}
+	switch arg {
+	case "-addr", "--addr", "-title", "--title":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -659,7 +748,8 @@ func usageRoot() {
   localperf artifact check runs/example.sqlite
   localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]
   localperf artifact merge --into runs/models/model.sqlite src1.sqlite [src2.sqlite ...]
-  localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k,128k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--out spec.json]`)
+  localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k,128k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--out spec.json]
+  localperf view runs/model.sqlite [runs/other.sqlite ...] [--addr 127.0.0.1:0] [--open]`)
 }
 
 func addOverrideFlags(flags *flag.FlagSet) *overrideFlags {

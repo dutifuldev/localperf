@@ -53,6 +53,7 @@ go:
         - internal/collections
         - internal/vllmbench
         - internal/sweepplan
+        - internal/viewer
     - from: internal/sweepplan
       allow:
         - internal/vllmbench
@@ -65,6 +66,10 @@ go:
         - internal/artifact
         - internal/bench
         - internal/collections
+    - from: internal/viewer
+      allow:
+        - internal/artifact
+        - internal/report
     - from: internal/vllmbench
       allow:
         - internal/artifact
