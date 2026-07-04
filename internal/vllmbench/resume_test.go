@@ -3,6 +3,7 @@ package vllmbench
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,6 +76,49 @@ func TestResumeSkipsCompletedRunsAndSurvivesServerLoss(t *testing.T) {
 	if runStatus != "completed" {
 		t.Fatalf("run status = %q, want completed", runStatus)
 	}
+}
+
+// TestResumeRerunsPartialResults corrupts a completed result to look
+// partial (fewer completed requests than planned): resume must re-run it
+// rather than adopting an incomplete measurement as completed.
+func TestResumeRerunsPartialResults(t *testing.T) {
+	server, host, port := fakeOpenAIServer(t)
+	defer server.Close()
+	spec := httpTestSpec(t, host, port, "resume-partial", 3, 1)
+	spec.Workloads[0].MaxConcurrency = []int{1, 2}
+	ApplyDefaults(&spec)
+	runDir := filepath.Join(spec.OutputDir, "resume-partial")
+	options := RunOptions{RunDir: runDir}
+	if _, err := Execute(context.Background(), spec, options); err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(runDir, "results", "8k__resume-partial__c2.json")
+	content, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial := strings.Replace(string(content), `"completed": 3`, `"completed": 1`, 1)
+	if partial == string(content) {
+		t.Fatalf("result file did not contain expected completed count: %s", content)
+	}
+	if err := os.WriteFile(resultPath, []byte(partial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options.Resume = true
+	summary, err := Execute(context.Background(), spec, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.CompletedRuns != 2 {
+		t.Fatalf("resumed summary = %+v, want partial point re-run to completion", summary)
+	}
+	resumed := 0
+	for _, row := range summary.Rows {
+		if row.Concurrency == 2 && row.Completed != 3 {
+			t.Fatalf("c2 completed = %d, want re-run with 3 requests", row.Completed)
+		}
+	}
+	_ = resumed
 }
 
 func TestResumeRequiresRunDir(t *testing.T) {

@@ -379,7 +379,9 @@ func (session *runSession) skipResumedRuns(runs []PlannedRun) []PlannedRun {
 	remaining := make([]PlannedRun, 0, len(runs))
 	for _, planned := range runs {
 		row, failed, err := parsedPlannedRow(planned)
-		if err != nil || failed > 0 {
+		// A partial result from a killed attempt parses cleanly but has
+		// fewer completed requests than planned; it must re-run.
+		if err != nil || failed > 0 || row.Completed < planned.Workload.NumPrompts {
 			remaining = append(remaining, planned)
 			continue
 		}

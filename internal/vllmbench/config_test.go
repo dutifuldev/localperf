@@ -654,6 +654,22 @@ func TestValidateContextSemantics(t *testing.T) {
 	}
 }
 
+func TestPromptsPerUserWorksForStructuredDatasets(t *testing.T) {
+	spec := testSpec()
+	workload := testCustomJSONLWorkload("structured-ppu", "requests.jsonl", []string{"8k"})
+	workload.Dataset.SampleCount = 0
+	workload.PromptsPerUser = 2
+	workload.Load.MaxConcurrency = []int{1, 4}
+	spec.Workloads = []Workload{workload}
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec error = %v, want prompts_per_user to satisfy structured dataset defaults", err)
+	}
+	if spec.Workloads[0].Dataset.SampleCount != 8 {
+		t.Fatalf("dataset sample count = %d, want 8 derived from prompts_per_user", spec.Workloads[0].Dataset.SampleCount)
+	}
+}
+
 func TestValidateContextSemanticsAcceptsCompliantClaims(t *testing.T) {
 	spec := testSpec()
 	spec.Workloads[0].ContextTarget = 8192

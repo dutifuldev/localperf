@@ -359,6 +359,8 @@ func applyWorkloadDefaults(workloads []Workload) {
 
 func applyWorkloadDefault(workload *Workload) {
 	applyWorkloadCompatibilityDefaults(workload)
+	applyWorkloadConcurrencyDefaults(workload)
+	resolveWorkloadPrompts(workload)
 	applyStructuredWorkloadDefaults(workload)
 	applyWorkloadExecutionDefaults(workload)
 	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
@@ -384,23 +386,38 @@ func applyWorkloadCompatibilityDefaults(workload *Workload) {
 	}
 }
 
-func applyWorkloadExecutionDefaults(workload *Workload) {
+// applyWorkloadConcurrencyDefaults resolves the concurrency ladder before
+// prompt counts and dataset sample counts derive from it. Precedence stays:
+// explicit max_concurrency, then load.max_concurrency (structured), then the
+// concurrency alias.
+func applyWorkloadConcurrencyDefaults(workload *Workload) {
+	if len(workload.MaxConcurrency) == 0 && hasStructuredDataset(*workload) && len(workload.Load.MaxConcurrency) > 0 {
+		workload.MaxConcurrency = append([]int(nil), workload.Load.MaxConcurrency...)
+	}
 	if len(workload.MaxConcurrency) == 0 && len(workload.Concurrency) > 0 {
 		workload.MaxConcurrency = append([]int(nil), workload.Concurrency...)
 	}
+}
+
+// resolveWorkloadPrompts records the largest point's count at the workload
+// level so structured dataset sample counts can derive from it; each planned
+// run resolves its own count from prompts_per_user.
+func resolveWorkloadPrompts(workload *Workload) {
+	if workload.NumPrompts > 0 || workload.PromptsPerUser <= 0 {
+		return
+	}
+	largest := 1
+	for _, concurrency := range workload.MaxConcurrency {
+		if concurrency > largest {
+			largest = concurrency
+		}
+	}
+	workload.NumPrompts = resolvedNumPrompts(*workload, largest)
+}
+
+func applyWorkloadExecutionDefaults(workload *Workload) {
 	if workload.Repeats <= 0 {
 		workload.Repeats = 1
-	}
-	// Workload-level num_prompts records the largest point's count; each
-	// planned run resolves its own from prompts_per_user.
-	if workload.NumPrompts <= 0 && workload.PromptsPerUser > 0 {
-		largest := 1
-		for _, concurrency := range workload.MaxConcurrency {
-			if concurrency > largest {
-				largest = concurrency
-			}
-		}
-		workload.NumPrompts = resolvedNumPrompts(*workload, largest)
 	}
 }
 
@@ -427,9 +444,6 @@ func applyDatasetDefaults(workload *Workload) {
 }
 
 func applyLoadDefaults(workload *Workload) {
-	if len(workload.MaxConcurrency) == 0 && len(workload.Load.MaxConcurrency) > 0 {
-		workload.MaxConcurrency = append([]int(nil), workload.Load.MaxConcurrency...)
-	}
 	if strings.TrimSpace(workload.BenchmarkTrafficConfig.RequestRate) == "" && strings.TrimSpace(workload.Load.RequestRate) != "" {
 		workload.BenchmarkTrafficConfig.RequestRate = workload.Load.RequestRate
 	}
