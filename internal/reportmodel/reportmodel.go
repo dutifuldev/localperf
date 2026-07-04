@@ -574,7 +574,10 @@ func contextGroupLabel(row report.SQLiteReportThroughputRow) string {
 	case "active_verified", "capacity", "unverified":
 		return label
 	default:
-		return contextLabel(row.ContextWindow) + " legacy/unverified"
+		if label != "" {
+			return label
+		}
+		return "legacy/unverified"
 	}
 }
 

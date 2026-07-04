@@ -246,7 +246,7 @@ func createViewerArtifactRows(t *testing.T, db *sql.DB, name string) {
 	) VALUES (
 		'decode-workload', ?, 'decode-8k', 'decode',
 		'{"backend":"openai-chat","dataset_name":"random","random_input_len":8192,"random_output_len":512,"request_rate":"inf"}',
-		'[4]', 4, 1, 1, 0, '{}', '{}', '{}', '{}'
+		'[4]', 4, 1, 1, 0, '{}', '{}', '{}', '{"context":{"target":8192,"semantics":"capacity"}}'
 	)`, runID); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func createViewerArtifactRows(t *testing.T, db *sql.DB, name string) {
 	) VALUES (
 		'prefill-workload', ?, 'prefill-8k', 'prefill',
 		'{"backend":"openai-chat","dataset_name":"random","random_input_len":8192,"random_output_len":16,"request_rate":"inf"}',
-		'[4]', 4, 1, 1, 0, '{}', '{}', '{}', '{}'
+		'[4]', 4, 1, 1, 0, '{}', '{}', '{}', '{"context":{"target":8192,"semantics":"capacity"}}'
 	)`, runID); err != nil {
 		t.Fatal(err)
 	}
