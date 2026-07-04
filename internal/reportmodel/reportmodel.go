@@ -68,11 +68,13 @@ type ThroughputTable struct {
 	ID                 string          `json:"id"`
 	Title              string          `json:"title"`
 	RunID              string          `json:"run_id,omitempty"`
+	RunIDs             []string        `json:"run_ids,omitempty"`
 	ProfileID          string          `json:"profile_id"`
 	Profile            string          `json:"profile"`
 	Model              string          `json:"model"`
 	ServerLimit        int             `json:"server_limit"`
 	ServerLimitLabel   string          `json:"server_limit_label"`
+	ContextLabel       string          `json:"context_label,omitempty"`
 	ContextStatus      string          `json:"context_status"`
 	ContextStatusLabel string          `json:"context_status_label"`
 	Warning            string          `json:"warning,omitempty"`
@@ -148,6 +150,7 @@ type tableBuilder struct {
 	prefillShapes     map[string]struct{}
 	contextSemantics  map[string]struct{}
 	contextMismatches []string
+	runIDs            map[string]struct{}
 }
 
 func Build(path string, doc report.SQLiteReportDocument) Document {
@@ -204,7 +207,7 @@ func compatibleBuilder(builders []*tableBuilder, row report.SQLiteReportThroughp
 			builder.table.Profile != row.Profile ||
 			builder.table.Model != row.Model ||
 			builder.table.ServerLimit != row.ContextWindow ||
-			builder.table.RunID != row.RunID {
+			builder.table.ContextLabel != contextGroupLabel(row) {
 			continue
 		}
 		existing := builder.rows[row.Concurrency]
@@ -223,6 +226,7 @@ func newTableBuilder(row report.SQLiteReportThroughputRow, ordinal int) *tableBu
 	if title == "" {
 		title = contextLabel(row.ContextWindow)
 	}
+	contextDisplay := contextGroupLabel(row)
 	return &tableBuilder{
 		table: ThroughputTable{
 			ID:               fmt.Sprintf("%02d-%s", ordinal, slug(title)),
@@ -233,11 +237,13 @@ func newTableBuilder(row report.SQLiteReportThroughputRow, ordinal int) *tableBu
 			Model:            row.Model,
 			ServerLimit:      row.ContextWindow,
 			ServerLimitLabel: contextLabel(row.ContextWindow),
+			ContextLabel:     contextDisplay,
 		},
 		rows:             map[int]*ThroughputRow{},
 		decodeShapes:     map[string]struct{}{},
 		prefillShapes:    map[string]struct{}{},
 		contextSemantics: map[string]struct{}{},
+		runIDs:           map[string]struct{}{row.RunID: {}},
 	}
 }
 
@@ -273,7 +279,9 @@ func applyRow(builder *tableBuilder, source report.SQLiteReportThroughputRow, de
 	target.SLO = phaseSLO(source, target.SLO)
 	if source.ContextMismatch && source.MismatchNote != "" {
 		builder.contextMismatches = append(builder.contextMismatches, source.MismatchNote)
+		builder.contextSemantics["context_mismatch"] = struct{}{}
 	}
+	builder.runIDs[source.RunID] = struct{}{}
 	if detail := cellDetail(source.Detail); detail.Available {
 		details[source.MeasurementID] = detail
 		semantics := contextSemantics(detail.ContextLabel)
@@ -307,6 +315,10 @@ func phaseMetrics(source report.SQLiteReportThroughputRow) PhaseMetrics {
 }
 
 func finishTable(builder *tableBuilder) {
+	builder.table.RunIDs = sortedMapKeys(builder.runIDs)
+	if len(builder.table.RunIDs) != 1 {
+		builder.table.RunID = ""
+	}
 	builder.table.DecodeShape = shapeSummary(builder.decodeShapes)
 	builder.table.PrefillShape = shapeSummary(builder.prefillShapes)
 	builder.table.ContextStatus, builder.table.ContextStatusLabel = tableContextStatus(builder.contextSemantics)
@@ -327,6 +339,9 @@ func tableContextStatus(semantics map[string]struct{}) (string, string) {
 	if len(semantics) == 0 {
 		return "legacy_unverified", "Legacy/unverified"
 	}
+	if _, ok := semantics["context_mismatch"]; ok {
+		return "context_mismatch", "Context mismatch"
+	}
 	if _, ok := semantics["legacy_unverified"]; ok {
 		return "legacy_unverified", "Legacy/unverified"
 	}
@@ -336,6 +351,9 @@ func tableContextStatus(semantics map[string]struct{}) (string, string) {
 		}
 		if _, ok := semantics["capacity"]; ok {
 			return "capacity", "Capacity"
+		}
+		if _, ok := semantics["unverified"]; ok {
+			return "unverified", "Unverified"
 		}
 	}
 	return "mixed", "Mixed context semantics"
@@ -366,6 +384,10 @@ func tableWarning(status string, mismatches []string) string {
 		return "Legacy/unverified: server limit only. This does not prove active 8k/16k/32k context."
 	case "capacity":
 		return "Capacity point: this table is labeled by server limit, not by active request context."
+	case "unverified":
+		return "Unverified: declared active context was not confirmed by completed token counts."
+	case "context_mismatch":
+		return "Context mismatch: declared active context does not match measured token counts."
 	case "mixed":
 		return "Mixed context semantics: inspect cell details before comparing rows."
 	default:
@@ -530,6 +552,30 @@ func uniqueStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func sortedMapKeys(values map[string]struct{}) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		if strings.TrimSpace(key) != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func contextGroupLabel(row report.SQLiteReportThroughputRow) string {
+	label := strings.TrimSpace(row.ContextLabel)
+	if row.ContextMismatch && label != "" {
+		return label
+	}
+	switch contextSemantics(label) {
+	case "active_verified", "capacity", "unverified":
+		return label
+	default:
+		return contextLabel(row.ContextWindow) + " legacy/unverified"
+	}
 }
 
 func contextLabel(tokens int) string {

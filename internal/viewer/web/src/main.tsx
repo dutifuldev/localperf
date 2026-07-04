@@ -13,6 +13,7 @@ import {
   useFloating,
 } from "@floating-ui/react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -54,6 +55,7 @@ type ThroughputTable = {
   profile: string;
   model: string;
   server_limit_label: string;
+  context_label?: string;
   context_status: string;
   context_status_label: string;
   warning?: string;
@@ -255,6 +257,7 @@ function ThroughputTableView({ table, reportID }: { table: ThroughputTable; repo
           <h2>{table.title}</h2>
           <div className="subline">
             <span>Server limit {table.server_limit_label}</span>
+            {table.context_label && <span>Context {table.context_label}</span>}
             <span className={`status status-${table.context_status}`}>{table.context_status_label}</span>
           </div>
         </div>
@@ -393,7 +396,7 @@ function MetricCell({ reportID, metric, value, heat }: { reportID: string; metri
       >
         {value || "-"}
       </button>
-      {open && (
+      {open && createPortal(
         <div
           ref={(node) => {
             floatingRef.current = node;
@@ -403,7 +406,8 @@ function MetricCell({ reportID, metric, value, heat }: { reportID: string; metri
           className="popover"
         >
           <DetailBody detail={detail} metric={metric} />
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
