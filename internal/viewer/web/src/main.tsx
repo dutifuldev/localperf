@@ -236,18 +236,25 @@ function SummaryStrip({ summary }: { summary: Summary }) {
 
 function ThroughputTableView({ table, reportID }: { table: ThroughputTable; reportID: string }) {
   const enrichedRows = useMemo(() => withHeat(table.rows), [table.rows]);
-  const columns = useMemo<ColumnDef<HeatRow>[]>(() => [
-    { accessorKey: "concurrency", header: "Users", cell: (info) => <span className="num strong">{info.getValue<number>()}</span> },
-    phaseColumn(reportID, "decode", "tokS", "Decode tok/s"),
-    phaseColumn(reportID, "decode", "perUser", "Decode/user"),
-    phaseColumn(reportID, "decode", "ttftAvg", "Decode TTFT avg"),
-    phaseColumn(reportID, "decode", "ttftP95", "Decode TTFT p95"),
-    phaseColumn(reportID, "prefill", "tokS", "Prefill tok/s"),
-    phaseColumn(reportID, "prefill", "perUser", "Prefill/user"),
-    phaseColumn(reportID, "prefill", "ttftAvg", "Prefill TTFT avg"),
-    phaseColumn(reportID, "prefill", "ttftP95", "Prefill TTFT p95"),
-    { accessorKey: "result", header: "OK / Err", cell: (info) => <span className="num">{info.row.original.result}</span> },
-  ], [reportID]);
+  const showSLO = useMemo(() => table.rows.some((row) => isRealValue(row.slo)), [table.rows]);
+  const columns = useMemo<ColumnDef<HeatRow>[]>(() => {
+    const base: ColumnDef<HeatRow>[] = [
+      { accessorKey: "concurrency", header: "Users", cell: (info) => <span className="num strong">{info.getValue<number>()}</span> },
+      phaseColumn(reportID, "decode", "tokS", "Decode tok/s"),
+      phaseColumn(reportID, "decode", "perUser", "Decode/user"),
+      phaseColumn(reportID, "decode", "ttftAvg", "Decode TTFT avg"),
+      phaseColumn(reportID, "decode", "ttftP95", "Decode TTFT p95"),
+      phaseColumn(reportID, "prefill", "tokS", "Prefill tok/s"),
+      phaseColumn(reportID, "prefill", "perUser", "Prefill/user"),
+      phaseColumn(reportID, "prefill", "ttftAvg", "Prefill TTFT avg"),
+      phaseColumn(reportID, "prefill", "ttftP95", "Prefill TTFT p95"),
+      { accessorKey: "result", header: "OK / Err", cell: (info) => <span className="num">{info.row.original.result}</span> },
+    ];
+    if (showSLO) {
+      base.push({ accessorKey: "slo", header: "SLO / goodput", cell: (info) => <span className="num">{info.row.original.slo || "-"}</span> });
+    }
+    return base;
+  }, [reportID, showSLO]);
   const instance = useReactTable({ data: enrichedRows, columns, getCoreRowModel: getCoreRowModel() });
 
   return (
@@ -525,6 +532,11 @@ function parseNumber(value: string): number | null {
   }
   const parsed = Number(match[0]);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isRealValue(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed !== "" && trimmed !== "-";
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
