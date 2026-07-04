@@ -66,10 +66,14 @@ go:
         - internal/artifact
         - internal/bench
         - internal/collections
+    - from: internal/reportmodel
+      allow:
+        - internal/report
     - from: internal/viewer
       allow:
         - internal/artifact
         - internal/report
+        - internal/reportmodel
     - from: internal/vllmbench
       allow:
         - internal/artifact

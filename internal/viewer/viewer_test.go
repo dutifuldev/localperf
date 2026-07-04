@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/dutifuldev/localperf/internal/artifact"
+	"github.com/dutifuldev/localperf/internal/reportmodel"
 )
 
 func TestNewHandlerServesTabbedReports(t *testing.T) {
@@ -35,8 +37,8 @@ func TestNewHandlerServesTabbedReports(t *testing.T) {
 	if manifest.Reports[0].ID == manifest.Reports[1].ID {
 		t.Fatalf("report IDs must be unique: %q", manifest.Reports[0].ID)
 	}
-	if manifest.Reports[0].Label != "gemma" || manifest.Reports[0].RunCount != 1 || manifest.Reports[0].MeasurementCount != 1 {
-		t.Fatalf("first summary = %+v, want gemma with one run and one measurement", manifest.Reports[0])
+	if manifest.Reports[0].Label != "gemma" || manifest.Reports[0].RunCount != 1 || manifest.Reports[0].MeasurementCount != 2 {
+		t.Fatalf("first summary = %+v, want gemma with one run and two measurements", manifest.Reports[0])
 	}
 
 	server := httptest.NewServer(handler)
@@ -44,11 +46,9 @@ func TestNewHandlerServesTabbedReports(t *testing.T) {
 
 	indexHTML := getString(t, server.URL+"/")
 	for _, want := range []string{
-		"Benchmark Viewer",
-		"gemma",
-		"qwen",
-		"/report/" + manifest.Reports[0].ID,
-		"Gemma Run",
+		"<!doctype html>",
+		`<div id="root"></div>`,
+		"/assets/",
 	} {
 		if !strings.Contains(indexHTML, want) {
 			t.Fatalf("index missing %q:\n%s", want, indexHTML)
@@ -71,7 +71,7 @@ func TestNewHandlerServesTabbedReports(t *testing.T) {
 	}
 }
 
-func TestHandlerServesManifestJSON(t *testing.T) {
+func TestHandlerServesJSONAPIs(t *testing.T) {
 	path := testViewerArtifact(t, "run.sqlite", "JSON Run")
 	handler, err := NewHandler(HandlerConfig{Paths: []string{path}})
 	if err != nil {
@@ -94,6 +94,48 @@ func TestHandlerServesManifestJSON(t *testing.T) {
 	}
 	if len(manifest.Reports) != 1 || manifest.Reports[0].LatestRunName != "JSON Run" {
 		t.Fatalf("manifest = %+v, want JSON Run", manifest)
+	}
+	reportID := manifest.Reports[0].ID
+
+	var summary reportmodel.Summary
+	getJSON(t, server.URL+"/api/reports/"+reportID+"/summary", &summary)
+	if summary.MeasurementCount != 2 || summary.LatestRun.Name != "JSON Run" {
+		t.Fatalf("summary = %+v, want two measurements for JSON Run", summary)
+	}
+
+	var throughput reportmodel.ThroughputResponse
+	getJSON(t, server.URL+"/api/reports/"+reportID+"/throughput", &throughput)
+	if len(throughput.Tables) != 1 {
+		t.Fatalf("throughput tables = %d, want 1", len(throughput.Tables))
+	}
+	table := throughput.Tables[0]
+	if len(table.Rows) != 1 {
+		t.Fatalf("throughput rows = %d, want 1", len(table.Rows))
+	}
+	row := table.Rows[0]
+	if row.Concurrency != 4 || !row.Decode.Available || !row.Prefill.Available {
+		t.Fatalf("combined row = %+v, want decode and prefill at c4", row)
+	}
+	if row.Result != "D 4/0; P 4/0" {
+		t.Fatalf("result = %q, want phase-specific OK/Err", row.Result)
+	}
+	if row.Decode.MeasurementID == row.Prefill.MeasurementID {
+		t.Fatalf("decode and prefill measurement IDs should differ: %+v", row)
+	}
+
+	var detail reportmodel.CellDetail
+	getJSON(t, server.URL+"/api/reports/"+reportID+"/measurements/"+strconv.FormatInt(row.Decode.MeasurementID, 10), &detail)
+	if !detail.Available || detail.Mode != "decode" || detail.Profile != "8k" {
+		t.Fatalf("detail = %+v, want decode detail for 8k profile", detail)
+	}
+
+	response, err = http.Get(server.URL + "/api/reports/" + reportID + "/measurements/999999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing measurement status = %d, want 404", response.StatusCode)
 	}
 }
 
@@ -134,6 +176,24 @@ func getString(t *testing.T, url string) string {
 		t.Fatal(err)
 	}
 	return string(body)
+}
+
+func getJSON(t *testing.T, url string, out any) {
+	t.Helper()
+	response, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", url, response.StatusCode)
+	}
+	if contentType := response.Header.Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+		t.Fatalf("content type = %q, want JSON", contentType)
+	}
+	if err := json.NewDecoder(response.Body).Decode(out); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testViewerArtifact(t *testing.T, filename, name string) string {
@@ -184,15 +244,28 @@ func createViewerArtifactRows(t *testing.T, db *sql.DB, name string) {
 		id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
 		save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json, metadata_json
 	) VALUES (
-		'workload-1', ?, 'decode-8k', 'decode',
+		'decode-workload', ?, 'decode-8k', 'decode',
 		'{"backend":"openai-chat","dataset_name":"random","random_input_len":8192,"random_output_len":512,"request_rate":"inf"}',
 		'[4]', 4, 1, 1, 0, '{}', '{}', '{}', '{}'
 	)`, runID); err != nil {
 		t.Fatal(err)
 	}
-	phaseID := insertViewerPhase(t, db, runID, createdAt)
-	measurementID := insertViewerMeasurement(t, db, runID, phaseID, createdAt)
-	insertViewerMetric(t, db, measurementID)
+	if _, err := db.Exec(`INSERT INTO workloads (
+		id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
+		save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json, metadata_json
+	) VALUES (
+		'prefill-workload', ?, 'prefill-8k', 'prefill',
+		'{"backend":"openai-chat","dataset_name":"random","random_input_len":8192,"random_output_len":16,"request_rate":"inf"}',
+		'[4]', 4, 1, 1, 0, '{}', '{}', '{}', '{}'
+	)`, runID); err != nil {
+		t.Fatal(err)
+	}
+	decodePhaseID := insertViewerPhase(t, db, runID, "decode-workload", createdAt)
+	decodeMeasurementID := insertViewerMeasurement(t, db, runID, "decode-workload", decodePhaseID, createdAt, 2048, 256.0, 64.0)
+	insertViewerMetric(t, db, decodeMeasurementID)
+	prefillPhaseID := insertViewerPhase(t, db, runID, "prefill-workload", createdAt)
+	prefillMeasurementID := insertViewerMeasurement(t, db, runID, "prefill-workload", prefillPhaseID, createdAt, 64, 32.0, 8.0)
+	insertViewerMetric(t, db, prefillMeasurementID)
 }
 
 func insertViewerSpecs(t *testing.T, db *sql.DB, runID, createdAt string) {
@@ -212,12 +285,12 @@ func insertViewerSpecs(t *testing.T, db *sql.DB, runID, createdAt string) {
 	}
 }
 
-func insertViewerPhase(t *testing.T, db *sql.DB, runID, createdAt string) int64 {
+func insertViewerPhase(t *testing.T, db *sql.DB, runID, workloadID, createdAt string) int64 {
 	t.Helper()
 	result, err := db.Exec(`INSERT INTO phases (
 		run_id, profile_id, workload_id, name, type, status, started_at, completed_at, metadata_json
-	) VALUES (?, 'profile-1', 'workload-1', 'measurement', 'measurement', 'completed', ?, ?, '{}')`,
-		runID, createdAt, createdAt)
+	) VALUES (?, 'profile-1', ?, 'measurement', 'measurement', 'completed', ?, ?, '{}')`,
+		runID, workloadID, createdAt, createdAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +301,7 @@ func insertViewerPhase(t *testing.T, db *sql.DB, runID, createdAt string) int64 
 	return id
 }
 
-func insertViewerMeasurement(t *testing.T, db *sql.DB, runID string, phaseID int64, createdAt string) int64 {
+func insertViewerMeasurement(t *testing.T, db *sql.DB, runID, workloadID string, phaseID int64, createdAt string, completionTokens int, outputTokS, perUserTokS float64) int64 {
 	t.Helper()
 	result, err := db.Exec(`INSERT INTO measurements (
 		run_id, profile_id, workload_id, phase_id, repeat_index, concurrency, samples_requested,
@@ -236,9 +309,9 @@ func insertViewerMeasurement(t *testing.T, db *sql.DB, runID string, phaseID int
 		prompt_tokens, completion_tokens, total_tokens, aggregate_output_tok_s,
 		per_user_output_tok_s, aggregate_total_tok_s, metadata_json
 	) VALUES (
-		?, 'profile-1', 'workload-1', ?, 0, 4, 4, 'completed', ?, ?, 1000,
-		4, 0, 32768, 2048, 34816, 256.0, 64.0, 512.0, '{}'
-	)`, runID, phaseID, createdAt, createdAt)
+		?, 'profile-1', ?, ?, 0, 4, 4, 'completed', ?, ?, 1000,
+		4, 0, 32768, ?, 32768 + ?, ?, ?, 512.0, '{}'
+)`, runID, workloadID, phaseID, createdAt, createdAt, completionTokens, completionTokens, outputTokS, perUserTokS)
 	if err != nil {
 		t.Fatal(err)
 	}

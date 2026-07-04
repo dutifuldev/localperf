@@ -7,8 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +21,7 @@ import (
 	"unicode"
 
 	"github.com/dutifuldev/localperf/internal/report"
+	"github.com/dutifuldev/localperf/internal/reportmodel"
 )
 
 const defaultAddr = "127.0.0.1:0"
@@ -65,24 +66,13 @@ type Handler struct {
 
 type loadedReport struct {
 	ReportSummary
-	html string
+	model reportmodel.Document
+	html  string
 }
 
-type shellView struct {
-	Title       string
-	Reports     []ReportSummary
-	Selected    ReportSummary
-	SelectedURL string
-}
-
-//go:embed templates/*
-var templateFS embed.FS
-
-var viewerTemplates = template.Must(template.New("viewer").ParseFS(
-	templateFS,
-	"templates/viewer.gohtml",
-	"templates/viewer.css",
-))
+//go:embed web/dist/*
+//go:embed web/dist/assets/*
+var webAssets embed.FS
 
 func NewHandler(config HandlerConfig) (*Handler, error) {
 	title := strings.TrimSpace(config.Title)
@@ -93,12 +83,16 @@ func NewHandler(config HandlerConfig) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	summaries := make([]ReportSummary, 0, len(reports))
+	for _, item := range reports {
+		summaries = append(summaries, item.ReportSummary)
+	}
 	handler := &Handler{
 		title:   title,
 		reports: reports,
 		manifest: Manifest{
 			Title:   title,
-			Reports: reportSummaries(reports),
+			Reports: summaries,
 		},
 		byID: map[string]*loadedReport{},
 	}
@@ -108,8 +102,16 @@ func NewHandler(config HandlerConfig) (*Handler, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/reports", handler.handleManifest)
+	mux.HandleFunc("GET /api/reports/{id}/summary", handler.reportJSONHandler(func(report *loadedReport) any {
+		return report.model.Summary
+	}))
+	mux.HandleFunc("GET /api/reports/{id}/throughput", handler.reportJSONHandler(func(report *loadedReport) any {
+		return report.model.Throughput
+	}))
+	mux.HandleFunc("GET /api/reports/{id}/measurements/{measurement_id}", handler.handleMeasurementDetail)
 	mux.HandleFunc("GET /report/{id}", handler.handleReport)
-	mux.HandleFunc("GET /", handler.handleIndex)
+	mux.Handle("GET /assets/", http.StripPrefix("/", http.FileServer(http.FS(staticFS()))))
+	mux.HandleFunc("GET /", handler.handleApp)
 	handler.mux = mux
 	return handler, nil
 }
@@ -195,12 +197,14 @@ func loadReports(paths []string) ([]loadedReport, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load %s: %w", absolute, err)
 		}
+		model := reportmodel.Build(absolute, doc)
 		var html strings.Builder
 		if err := report.RenderHTMLReport(&html, doc, report.HTMLReportOptions{}); err != nil {
 			return nil, fmt.Errorf("render %s: %w", absolute, err)
 		}
 		reports = append(reports, loadedReport{
 			ReportSummary: summarizeReport(index, absolute, doc),
+			model:         model,
 			html:          html.String(),
 		})
 	}
@@ -229,7 +233,12 @@ func reportLabel(path string) string {
 	base := filepath.Base(path)
 	extension := filepath.Ext(base)
 	label := strings.TrimSuffix(base, extension)
-	return firstNonEmpty(label, base, path)
+	for _, value := range []string{label, base, path} {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func slug(value string) string {
@@ -253,46 +262,26 @@ func slug(value string) string {
 	return out
 }
 
-func reportSummaries(reports []loadedReport) []ReportSummary {
-	summaries := make([]ReportSummary, 0, len(reports))
-	for _, report := range reports {
-		summaries = append(summaries, report.ReportSummary)
-	}
-	return summaries
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func (handler *Handler) handleIndex(writer http.ResponseWriter, request *http.Request) {
-	if request.URL.Path != "/" {
+func (handler *Handler) handleApp(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Path != "/" && strings.HasPrefix(request.URL.Path, "/api/") {
 		http.NotFound(writer, request)
 		return
 	}
-	selected := handler.selectedReport(request.URL.Query().Get("report"))
-	view := shellView{
-		Title:       handler.title,
-		Reports:     handler.manifest.Reports,
-		Selected:    selected.ReportSummary,
-		SelectedURL: "/report/" + selected.ID,
-	}
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := viewerTemplates.ExecuteTemplate(writer, "viewer.gohtml", view); err != nil {
-		http.Error(writer, err.Error(), http.StatusInternalServerError)
+	content, err := webAssets.ReadFile("web/dist/index.html")
+	if err != nil {
+		http.Error(writer, "viewer app is not built", http.StatusInternalServerError)
+		return
 	}
+	_, _ = writer.Write(content)
 }
 
-func (handler *Handler) selectedReport(id string) loadedReport {
-	if report, ok := handler.byID[id]; ok {
-		return *report
+func staticFS() fs.FS {
+	out, err := fs.Sub(webAssets, "web/dist")
+	if err != nil {
+		panic(err)
 	}
-	return handler.reports[0]
+	return out
 }
 
 func (handler *Handler) handleReport(writer http.ResponseWriter, request *http.Request) {
@@ -306,10 +295,44 @@ func (handler *Handler) handleReport(writer http.ResponseWriter, request *http.R
 }
 
 func (handler *Handler) handleManifest(writer http.ResponseWriter, request *http.Request) {
+	writeJSON(writer, handler.manifest)
+}
+
+func (handler *Handler) reportJSONHandler(selectValue func(*loadedReport) any) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		report, ok := handler.byID[request.PathValue("id")]
+		if !ok {
+			http.NotFound(writer, request)
+			return
+		}
+		writeJSON(writer, selectValue(report))
+	}
+}
+
+func (handler *Handler) handleMeasurementDetail(writer http.ResponseWriter, request *http.Request) {
+	report, ok := handler.byID[request.PathValue("id")]
+	if !ok {
+		http.NotFound(writer, request)
+		return
+	}
+	measurementID, err := strconv.ParseInt(request.PathValue("measurement_id"), 10, 64)
+	if err != nil {
+		http.NotFound(writer, request)
+		return
+	}
+	detail, ok := report.model.Details[measurementID]
+	if !ok {
+		http.NotFound(writer, request)
+		return
+	}
+	writeJSON(writer, detail)
+}
+
+func writeJSON(writer http.ResponseWriter, value any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(handler.manifest); err != nil {
+	if err := encoder.Encode(value); err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 	}
 }
