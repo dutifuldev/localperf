@@ -137,12 +137,6 @@ type CellDetail struct {
 	EnvJSON          string         `json:"env_json,omitempty"`
 }
 
-type tableKey struct {
-	runID, profileID, profile, model string
-	serverLimit                      int
-	variant                          int
-}
-
 type tableBuilder struct {
 	table             ThroughputTable
 	rows              map[int]*ThroughputRow
@@ -203,8 +197,7 @@ func buildThroughputTables(doc report.SQLiteReportDocument, details map[int64]Ce
 
 func compatibleBuilder(builders []*tableBuilder, row report.SQLiteReportThroughputRow) *tableBuilder {
 	for _, builder := range builders {
-		if builder.table.ProfileID != row.ProfileID ||
-			builder.table.Profile != row.Profile ||
+		if builder.table.Profile != row.Profile ||
 			builder.table.Model != row.Model ||
 			builder.table.ServerLimit != row.ContextWindow ||
 			builder.table.ContextLabel != contextGroupLabel(row) {

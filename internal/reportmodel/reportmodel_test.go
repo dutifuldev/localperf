@@ -11,8 +11,8 @@ func TestBuildMergesRunsButSplitsActiveContexts(t *testing.T) {
 	doc := report.SQLiteReportDocument{
 		GeneratedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		ThroughputRows: []report.SQLiteReportThroughputRow{
-			throughputRow("run-1", "32k", "16k active context", 16384, 1),
-			throughputRow("run-2", "32k", "16k active context", 16384, 4),
+			throughputRowWithProfileID("run-1", "run-1/profile-1", "32k", "16k active context", 16384, 1),
+			throughputRowWithProfileID("run-2", "run-2/profile-1", "32k", "16k active context", 16384, 4),
 			throughputRow("run-3", "32k", "32k active context", 32768, 8),
 		},
 	}
@@ -99,11 +99,15 @@ func TestBuildKeepsLegacyMeasuredContextsSeparate(t *testing.T) {
 }
 
 func throughputRow(runID, profile, contextLabel string, contextSortKey, concurrency int) report.SQLiteReportThroughputRow {
+	return throughputRowWithProfileID(runID, "profile-1", profile, contextLabel, contextSortKey, concurrency)
+}
+
+func throughputRowWithProfileID(runID, profileID, profile, contextLabel string, contextSortKey, concurrency int) report.SQLiteReportThroughputRow {
 	return report.SQLiteReportThroughputRow{
 		Mode:              "decode",
 		RunID:             runID,
 		MeasurementID:     int64(concurrency),
-		ProfileID:         "profile-1",
+		ProfileID:         profileID,
 		Profile:           profile,
 		Model:             "test/model",
 		ContextWindow:     32768,
