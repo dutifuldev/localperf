@@ -34,9 +34,64 @@ var rootHandlers = commandHandlers{
 }
 
 var artifactHandlers = commandHandlers{
-	"check":  runArtifactCheck,
-	"render": runArtifactRender,
-	"merge":  runArtifactMerge,
+	"check":   runArtifactCheck,
+	"render":  runArtifactRender,
+	"merge":   runArtifactMerge,
+	"rebuild": runArtifactRebuild,
+}
+
+// runArtifactRebuild reconstructs a SQLite artifact from a run directory's
+// raw data (events, results, summary.json) — the recovery path when a run
+// finished without an artifact or the artifact was lost.
+func runArtifactRebuild(args []string) {
+	flags := flag.NewFlagSet("artifact rebuild", flag.ExitOnError)
+	runDir := flags.String("run-dir", "", "run directory with events.jsonl, results, and summary.json")
+	into := flags.String("into", "", "SQLite artifact path to rebuild/append; defaults to <run-dir>.sqlite")
+	specPath := flags.String("spec", "", "optional original spec path for provenance; defaults to <run-dir>/spec.normalized.json")
+	_ = flags.Parse(args)
+	if strings.TrimSpace(*runDir) == "" {
+		fmt.Fprintln(os.Stderr, "missing --run-dir")
+		os.Exit(2)
+	}
+	artifactPath := artifact.Path(*runDir, *into)
+	if err := rebuildArtifactFromRunDir(*runDir, artifactPath, *specPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("artifact: %s\n", artifactPath)
+}
+
+func rebuildArtifactFromRunDir(runDir, artifactPath, originalSpecPath string) error {
+	specLoadPath := originalSpecPath
+	if strings.TrimSpace(specLoadPath) == "" {
+		specLoadPath = filepath.Join(runDir, "spec.normalized.json")
+	}
+	spec, err := vllmbench.LoadSpec(specLoadPath)
+	if err != nil {
+		return err
+	}
+	summary, err := loadRunSummary(runDir)
+	if err != nil {
+		return err
+	}
+	summary.RunDir = runDir
+	summary.ArtifactPath = artifactPath
+	if strings.TrimSpace(summary.SpecPath) == "" {
+		summary.SpecPath = filepath.Join(runDir, "spec.normalized.json")
+	}
+	return vllmbench.WriteSQLiteArtifact(runDir, artifactPath, spec, summary, vllmbench.BuildPlan(spec, runDir), originalSpecPath)
+}
+
+func loadRunSummary(runDir string) (vllmbench.RunSummary, error) {
+	data, err := os.ReadFile(filepath.Join(runDir, "summary.json"))
+	if err != nil {
+		return vllmbench.RunSummary{}, err
+	}
+	var summary vllmbench.RunSummary
+	if err := json.Unmarshal(data, &summary); err != nil {
+		return vllmbench.RunSummary{}, err
+	}
+	return summary, nil
 }
 
 // runArtifactMerge combines run artifacts into one model-level SQLite file;
@@ -767,6 +822,7 @@ func usageRoot() {
   localperf artifact check runs/example.sqlite
   localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]
   localperf artifact merge --into runs/models/model.sqlite src1.sqlite [src2.sqlite ...]
+  localperf artifact rebuild --run-dir runs/example [--into runs/example.sqlite] [--spec spec.json]
   localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--stress] [--vllm-command /path/to/vllm] [--gpu-memory-utilization 0.4] [--kv-cache-memory-bytes N] [--trim 64k=8:'reason'] [--out spec.json]
   localperf view runs/model.sqlite [runs/other.sqlite ...] [--addr 127.0.0.1:0] [--open]`)
 }

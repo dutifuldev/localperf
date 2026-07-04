@@ -44,6 +44,27 @@ func TestModelLevelArtifactAppendsRuns(t *testing.T) {
 	assertRunCount(t, artifactPath, 2)
 }
 
+func TestModelLevelArtifactInitializesEmptyExistingPath(t *testing.T) {
+	dir := t.TempDir()
+	artifactPath := filepath.Join(dir, "model.sqlite")
+	if err := os.WriteFile(artifactPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := testSpec()
+	spec.OutputDir = dir
+	if _, err := Execute(context.Background(), spec, RunOptions{
+		DryRun:       true,
+		RunDir:       filepath.Join(dir, "run"),
+		ArtifactPath: artifactPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := artifact.Check(artifactPath); err != nil {
+		t.Fatalf("empty-path artifact check failed: %v", err)
+	}
+	assertRunCount(t, artifactPath, 1)
+}
+
 func TestArtifactMergeCombinesRunsAndSkipsDuplicates(t *testing.T) {
 	dir := t.TempDir()
 	makeSingle := func(name string) string {

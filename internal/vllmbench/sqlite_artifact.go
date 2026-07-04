@@ -30,8 +30,8 @@ func WriteSQLiteArtifact(runDir, artifactPath string, spec Spec, summary RunSumm
 	if strings.TrimSpace(artifactPath) == "" {
 		return nil
 	}
-	_, statErr := os.Stat(artifactPath)
-	createdFresh := statErr != nil
+	info, statErr := os.Stat(artifactPath)
+	createdFresh := statErr != nil || (statErr == nil && info.Size() == 0)
 	db, err := createSQLiteArtifact(artifactPath)
 	if err != nil {
 		return err
