@@ -12,6 +12,7 @@ spec and CLI shape:
 localperf sweep plan --model <model-id> --out spec.json
 localperf bench run  --spec spec.json --artifact runs/models/<model-slug>.sqlite
 localperf artifact render runs/models/<model-slug>.sqlite
+localperf view runs/models/<model-slug>.sqlite
 ```
 
 ## Install
@@ -83,6 +84,12 @@ Render the HTML report:
 
 ```sh
 localperf artifact render runs/models/<model-slug>.sqlite
+```
+
+Open one or more SQLite reports in a temporary local viewer:
+
+```sh
+localperf view runs/models/<model-slug>.sqlite [runs/models/other.sqlite ...]
 ```
 
 ## Model-Level Artifacts

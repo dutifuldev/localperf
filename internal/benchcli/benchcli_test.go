@@ -108,6 +108,38 @@ func TestParseArtifactRenderFlagsAllowsPathFlag(t *testing.T) {
 	}
 }
 
+func TestParseViewFlagsAllowsMultiplePathsAroundFlags(t *testing.T) {
+	config, err := parseViewFlags([]string{"first.sqlite", "--addr", "127.0.0.1:8766", "second.sqlite", "--title", "Runs", "--open"}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.addr != "127.0.0.1:8766" || config.title != "Runs" || !config.open {
+		t.Fatalf("config = %+v, want addr, title, and open", config)
+	}
+	if len(config.paths) != 2 || config.paths[0] != "first.sqlite" || config.paths[1] != "second.sqlite" {
+		t.Fatalf("paths = %v, want first and second", config.paths)
+	}
+}
+
+func TestParseViewFlagsAllowsEqualsValueFlags(t *testing.T) {
+	config, err := parseViewFlags([]string{"--addr=127.0.0.1:0", "--title=Reports", "run.sqlite", "--open=false"}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.addr != "127.0.0.1:0" || config.title != "Reports" || config.open {
+		t.Fatalf("config = %+v, want addr/title and open false", config)
+	}
+	if len(config.paths) != 1 || config.paths[0] != "run.sqlite" {
+		t.Fatalf("paths = %v, want run.sqlite", config.paths)
+	}
+}
+
+func TestParseViewFlagsRejectsMissingPath(t *testing.T) {
+	if _, err := parseViewFlags([]string{"--addr", "127.0.0.1:0"}, flag.ContinueOnError); err == nil {
+		t.Fatal("parseViewFlags error = nil, want missing path error")
+	}
+}
+
 func TestHTTPLoadWorkloadCarriesConcurrency(t *testing.T) {
 	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "", "", "0", true, 3, 4, 128, 16)
 	if err != nil {
