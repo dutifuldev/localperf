@@ -26,15 +26,20 @@ func TestResumeSkipsCompletedRunsAndSurvivesServerLoss(t *testing.T) {
 	if summary.CompletedRuns != 2 {
 		t.Fatalf("completed = %d, want 2", summary.CompletedRuns)
 	}
-	// The server is gone; a resumed attempt must not need it.
+	// The server is gone; a resumed attempt must not need it. The resumed
+	// attempt also extends the ladder to c3 with a tiny TTFT ceiling:
+	// replayed rows must trip it so c3 is adaptively skipped, not run.
 	server.Close()
 	options.Resume = true
+	spec.Workloads[0].MaxConcurrency = []int{1, 2, 3}
+	spec.Runner.Adaptive = AdaptiveConfig{TTFTP99CeilingMillis: 0.001}
+	ApplyDefaults(&spec)
 	summary, err = Execute(context.Background(), spec, options)
 	if err != nil {
 		t.Fatalf("resume error = %v", err)
 	}
-	if summary.CompletedRuns != 2 || summary.FailedRuns != 0 {
-		t.Fatalf("resumed summary = %+v, want 2 completed via skip", summary)
+	if summary.CompletedRuns != 2 || summary.FailedRuns != 0 || summary.SkippedRuns != 1 {
+		t.Fatalf("resumed summary = %+v, want 2 completed via skip and 1 adaptive skip", summary)
 	}
 	if len(summary.Rows) != 2 {
 		t.Fatalf("resumed rows = %d, want 2 parsed from prior results", len(summary.Rows))
@@ -44,12 +49,24 @@ func TestResumeSkipsCompletedRunsAndSurvivesServerLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	var completed int
+	var completed, skipped int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM measurements WHERE status = 'completed'`).Scan(&completed); err != nil {
 		t.Fatal(err)
 	}
-	if completed != 2 {
-		t.Fatalf("artifact completed measurements = %d, want 2", completed)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM measurements WHERE status = 'skipped'`).Scan(&skipped); err != nil {
+		t.Fatal(err)
+	}
+	if completed != 2 || skipped != 1 {
+		t.Fatalf("artifact measurements completed/skipped = %d/%d, want 2/1", completed, skipped)
+	}
+	// Resumed rows import as completed even if the previous attempt's clean
+	// finish event was lost: the workload_resumed event alone suffices.
+	var resumedCompleted int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM measurements WHERE status = 'completed' AND completed_requests > 0`).Scan(&resumedCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if resumedCompleted != 2 {
+		t.Fatalf("resumed completed rows with request data = %d, want 2", resumedCompleted)
 	}
 	var runStatus string
 	if err := db.QueryRow(`SELECT status FROM run`).Scan(&runStatus); err != nil {

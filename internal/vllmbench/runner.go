@@ -267,6 +267,9 @@ func (session *runSession) runProfile(profile Profile) error {
 	if session.opts.Resume {
 		runs = session.skipResumedRuns(runs)
 	}
+	// Stops replayed from resumed rows are known before boot; a profile
+	// whose remaining points are all adaptively skipped never starts.
+	runs = session.applyAdaptiveSkips(runs)
 	if len(runs) == 0 {
 		return nil
 	}
@@ -355,6 +358,20 @@ func (session *runSession) stopAfterWarmupSleepFailure(profile Profile, proc *se
 	delete(session.processes, profile.Name)
 }
 
+// applyAdaptiveSkips records adaptive skips for planned runs whose stop
+// state is already known, before any server boots for them.
+func (session *runSession) applyAdaptiveSkips(runs []PlannedRun) []PlannedRun {
+	remaining := make([]PlannedRun, 0, len(runs))
+	for _, planned := range runs {
+		if reason := session.adaptiveSkipReason(planned); reason != "" {
+			session.skipPlannedRun(planned, reason)
+			continue
+		}
+		remaining = append(remaining, planned)
+	}
+	return remaining
+}
+
 // skipResumedRuns drops planned runs whose result file already exists and
 // parses as completed with zero failed requests, counting them as completed
 // from the previous attempt. Profiles left with nothing to run never boot.
@@ -368,6 +385,9 @@ func (session *runSession) skipResumedRuns(runs []PlannedRun) []PlannedRun {
 		}
 		session.summary.CompletedRuns++
 		session.summary.Rows = append(session.summary.Rows, *row)
+		// Resumed rows replay the adaptive ladder so stop state from the
+		// previous attempt is not forgotten.
+		session.updateLadder(planned, row)
 		session.events.Write(Event{
 			Timestamp:   time.Now().UTC(),
 			Type:        "workload_resumed",

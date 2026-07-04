@@ -135,13 +135,9 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 			},
 		},
 	}
-	// The server must admit at least the highest requested concurrency.
-	maxNumSeqs := 0
-	for _, concurrency := range request.Concurrency {
-		if concurrency > maxNumSeqs {
-			maxNumSeqs = concurrency
-		}
-	}
+	// The server must admit at least the highest requested concurrency;
+	// high-context profiles cap max_num_seqs to their capped ladder.
+	maxNumSeqs := maxConcurrencyOf(request.Concurrency)
 	port := request.BasePort
 	if request.IncludeReference {
 		spec.Profiles = append(spec.Profiles, sweepProfile("4k-reference", referenceContext, port, maxNumSeqs))
@@ -157,7 +153,7 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 	}
 	for _, context := range contexts {
 		label := vllmbench.TokenCountLabel(context)
-		spec.Profiles = append(spec.Profiles, sweepProfile(label, context, port, maxNumSeqs))
+		spec.Profiles = append(spec.Profiles, sweepProfile(label, context, port, maxConcurrencyOf(pointConcurrency(context, request.Concurrency))))
 		port++
 		prefillInput, prefillOutput := PrefillShape(context)
 		spec.Workloads = append(spec.Workloads, sweepWorkload(
@@ -220,6 +216,16 @@ func stressWorkloads(contexts []int, request PlanRequest) []vllmbench.Workload {
 			input, output, spotRequest))
 	}
 	return workloads
+}
+
+func maxConcurrencyOf(values []int) int {
+	largest := 0
+	for _, value := range values {
+		if value > largest {
+			largest = value
+		}
+	}
+	return largest
 }
 
 func containsInt(values []int, wanted int) bool {

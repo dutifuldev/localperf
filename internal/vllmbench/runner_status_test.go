@@ -43,3 +43,34 @@ func TestRunStatusFailedWhenSweepHasNoSuccess(t *testing.T) {
 		t.Fatalf("runStatus() = %q, want failed when every attempted run failed", got)
 	}
 }
+
+func TestMeasurementStatusLastDecisiveEventWins(t *testing.T) {
+	planned := PlannedRun{Profile: Profile{Name: "p"}, Workload: Workload{Name: "w"}, Concurrency: 1}
+	event := func(kind, errText string) Event {
+		return Event{Type: kind, Profile: "p", Workload: "w", Concurrency: 1, Error: errText}
+	}
+	cases := []struct {
+		name       string
+		events     []Event
+		wantStatus string
+		wantError  bool
+	}{
+		{"no events", nil, "planned", false},
+		{"clean finish", []Event{event("workload_finish", "")}, "completed", false},
+		{"failure", []Event{event("workload_finish", "boom"), event("workload_failed", "boom")}, "failed", true},
+		{"skip", []Event{event("workload_skipped", "reason")}, "skipped", true},
+		{"retry succeeds after failure", []Event{event("workload_failed", "boom"), event("workload_start", ""), event("workload_finish", "")}, "completed", false},
+		{"resumed adoption completes", []Event{event("workload_failed", "boom"), event("workload_resumed", "")}, "completed", false},
+		{"unrelated events ignored", []Event{{Type: "workload_failed", Profile: "other", Concurrency: 1, Error: "x"}}, "planned", false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := measurementStatus(testCase.events, planned); got != testCase.wantStatus {
+				t.Fatalf("status = %q, want %q", got, testCase.wantStatus)
+			}
+			if gotError := measurementError(testCase.events, planned) != nil; gotError != testCase.wantError {
+				t.Fatalf("error present = %t, want %t", gotError, testCase.wantError)
+			}
+		})
+	}
+}

@@ -140,6 +140,13 @@ func TestStressPresetAddsSpotChecksAnd128k(t *testing.T) {
 			t.Fatalf("decode-128k concurrency %v exceeds the high-context cap", decode128.MaxConcurrency)
 		}
 	}
+	// The 128k profile's server admission cap follows its capped ladder;
+	// max_num_seqs 16 there would defeat the memory cap.
+	for _, profile := range spec.Profiles {
+		if profile.Name == "128k" && profile.MaxNumSeqs > 4 {
+			t.Fatalf("128k profile max_num_seqs = %d, want <= 4", profile.MaxNumSeqs)
+		}
+	}
 	// No stress spot for 8k: only contexts with defined spot checks get one.
 	if _, ok := workloads["decode-stress-8k"]; ok {
 		t.Fatal("unexpected stress workload for 8k")

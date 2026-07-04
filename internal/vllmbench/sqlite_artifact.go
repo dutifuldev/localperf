@@ -1232,6 +1232,11 @@ func artifactFinishEvent(events []Event, planned PlannedRun) Event {
 }
 
 func eventHasImportableResult(event Event) bool {
+	// workload_resumed marks a completed result adopted from a previous
+	// attempt whose clean finish event may have been lost to a crash.
+	if event.Type == "workload_resumed" && event.ResultFile != "" {
+		return true
+	}
 	return event.Type == "workload_finish" && event.ResultFile != "" && (event.Error == "" || eventDetailBool(event, "result_written"))
 }
 
@@ -1259,16 +1264,29 @@ func measurementStatus(events []Event, planned PlannedRun) string {
 		if !eventMatchesPlanned(event, planned) {
 			continue
 		}
-		switch {
-		case event.Type == "workload_skipped":
-			status = "skipped"
-		case event.Type == "workload_failed" || event.Error != "":
-			status = "failed"
-		case event.Type == "workload_finish" && event.Error == "":
-			status = "completed"
+		if next := eventMeasurementStatus(event); next != "" {
+			status = next
 		}
 	}
 	return status
+}
+
+// eventMeasurementStatus maps one event to the measurement status it
+// implies, or "" for non-decisive events. workload_resumed adopts a
+// completed result from a previous attempt.
+func eventMeasurementStatus(event Event) string {
+	switch {
+	case event.Type == "workload_skipped":
+		return "skipped"
+	case event.Type == "workload_resumed":
+		return "completed"
+	case event.Type == "workload_failed" || event.Error != "":
+		return "failed"
+	case event.Type == "workload_finish":
+		return "completed"
+	default:
+		return ""
+	}
 }
 
 // measurementError keeps the last error and clears it on a later clean
@@ -1282,7 +1300,7 @@ func measurementError(events []Event, planned PlannedRun) any {
 		if event.Error != "" {
 			lastError = event.Error
 		}
-		if event.Type == "workload_finish" && event.Error == "" {
+		if event.Type == "workload_resumed" || (event.Type == "workload_finish" && event.Error == "") {
 			lastError = nil
 		}
 	}
@@ -1299,7 +1317,7 @@ func measurementTimes(events []Event, planned PlannedRun) (*time.Time, *time.Tim
 			t := event.Timestamp
 			start = &t
 		}
-		if event.Type == "workload_finish" || event.Type == "workload_failed" || event.Type == "workload_skipped" {
+		if event.Type == "workload_finish" || event.Type == "workload_failed" || event.Type == "workload_skipped" || event.Type == "workload_resumed" {
 			t := event.Timestamp
 			end = &t
 		}
