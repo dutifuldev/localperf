@@ -98,6 +98,38 @@ func TestPlanGolden(t *testing.T) {
 	}
 }
 
+func TestPlanProfileArgsCanOmitUnsafeEngineFlags(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:       "example/model",
+		Contexts:    []int{8192},
+		Concurrency: []int{1},
+		ProfileArgs: []string{"--trust-remote-code"},
+		ProfileEngineArgs: []string{
+			"--kv-cache-memory-bytes", "21474836480",
+			"--attention-backend", "flashinfer",
+			"--unsafe-flag=1",
+		},
+		OmitProfileEngineFlags: []string{"--kv-cache-memory-bytes", "--unsafe-flag"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Profiles) != 1 {
+		t.Fatalf("profiles = %d, want 1", len(spec.Profiles))
+	}
+	profile := spec.Profiles[0]
+	if strings.Join(profile.Args, " ") != "--trust-remote-code" {
+		t.Fatalf("args = %v, want trust remote code", profile.Args)
+	}
+	got := strings.Join(profile.EngineArgs, " ")
+	if strings.Contains(got, "kv-cache-memory-bytes") || strings.Contains(got, "unsafe-flag") {
+		t.Fatalf("engine args = %v, want omitted flags removed", profile.EngineArgs)
+	}
+	if got != "--attention-backend flashinfer" {
+		t.Fatalf("engine args = %q, want retained safe args", got)
+	}
+}
+
 func TestStressProfilesAdmitSpotCheckConcurrency(t *testing.T) {
 	spec, err := Plan(PlanRequest{
 		Model:         "example/model",

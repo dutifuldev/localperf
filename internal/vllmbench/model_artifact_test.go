@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dutifuldev/localperf/internal/artifact"
 )
@@ -229,5 +230,27 @@ func assertRunCount(t *testing.T, path string, want int) {
 	}
 	if runs != want {
 		t.Fatalf("run rows = %d, want %d", runs, want)
+	}
+}
+
+func TestWriteSQLiteArtifactNoopWithoutPath(t *testing.T) {
+	if err := WriteSQLiteArtifact(t.TempDir(), "", testSpec(), RunSummary{}, nil, ""); err != nil {
+		t.Fatalf("WriteSQLiteArtifact without path = %v, want nil", err)
+	}
+}
+
+func TestWriteSQLiteArtifactRemovesFreshFileOnFailedWrite(t *testing.T) {
+	dir := t.TempDir()
+	artifactPath := filepath.Join(dir, "model.sqlite")
+	spec := testSpec()
+	// Duplicate workload names violate the artifact's unique constraint,
+	// failing the first write; the fresh file must not be left behind.
+	spec.Workloads = append(spec.Workloads, spec.Workloads[0])
+	err := WriteSQLiteArtifact(filepath.Join(dir, "run"), artifactPath, spec, RunSummary{StartedAt: time.Now()}, nil, "")
+	if err == nil {
+		t.Fatal("write with duplicate workloads succeeded")
+	}
+	if _, statErr := os.Stat(artifactPath); statErr == nil {
+		t.Fatal("failed first write left a schema-only artifact behind")
 	}
 }

@@ -147,6 +147,12 @@ func runSweepPlan(args []string) {
 	var trims trimFlags
 	flags.Var(&trims, "trim", "cap a context's ladder with a reason, e.g. 64k=8:'12 GiB KV budget'; repeatable")
 	out := flags.String("out", "", "output spec path (default stdout)")
+	var profileArgs repeatedStringFlag
+	var profileEngineArgs repeatedStringFlag
+	var omitProfileEngineFlags repeatedStringFlag
+	flags.Var(&profileArgs, "profile-arg", "extra generated profile arg; repeat once per arg")
+	flags.Var(&profileEngineArgs, "profile-engine-arg", "extra generated profile engine arg; repeat once per arg")
+	flags.Var(&omitProfileEngineFlags, "omit-profile-engine-flag", "engine flag to remove from generated profile engine args; repeatable")
 	_ = flags.Parse(args)
 	contextValues, err := parseTokenList(*contexts)
 	if err != nil {
@@ -159,19 +165,22 @@ func runSweepPlan(args []string) {
 		os.Exit(2)
 	}
 	spec, err := sweepplan.Plan(sweepplan.PlanRequest{
-		Model:                *model,
-		Contexts:             contextValues,
-		Concurrency:          concurrencyValues,
-		Repeats:              *repeats,
-		NumPrompts:           *numPrompts,
-		PromptsPerUser:       *promptsPerUser,
-		IncludeReference:     *reference,
-		IncludeStress:        *stress,
-		MinMemAvailableGiB:   *memFloor,
-		VLLMCommand:          *vllmCommand,
-		GPUMemoryUtilization: *gpuMemUtil,
-		KVCacheMemoryBytes:   *kvCacheBytes,
-		Trims:                trims.values,
+		Model:                  *model,
+		Contexts:               contextValues,
+		Concurrency:            concurrencyValues,
+		Repeats:                *repeats,
+		NumPrompts:             *numPrompts,
+		PromptsPerUser:         *promptsPerUser,
+		IncludeReference:       *reference,
+		IncludeStress:          *stress,
+		ProfileArgs:            profileArgs.values,
+		ProfileEngineArgs:      profileEngineArgs.values,
+		OmitProfileEngineFlags: omitProfileEngineFlags.values,
+		MinMemAvailableGiB:     *memFloor,
+		VLLMCommand:            *vllmCommand,
+		GPUMemoryUtilization:   *gpuMemUtil,
+		KVCacheMemoryBytes:     *kvCacheBytes,
+		Trims:                  trims.values,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -232,6 +241,19 @@ func (flags *trimFlags) Set(value string) error {
 		Reason:         strings.TrimSpace(reason),
 	})
 	return nil
+}
+
+type repeatedStringFlag struct {
+	values []string
+}
+
+func (flag *repeatedStringFlag) Set(value string) error {
+	flag.values = append(flag.values, value)
+	return nil
+}
+
+func (flag *repeatedStringFlag) String() string {
+	return strings.Join(flag.values, ",")
 }
 
 // parseTokenList parses values such as "8k,16k,32768" into token counts.
