@@ -276,7 +276,7 @@ func runBench(args []string) {
 		OriginalSpecPath: *specPath,
 	})
 	fmt.Printf("run dir: %s\n", summary.RunDir)
-	fmt.Printf("planned: %d completed: %d failed: %d\n", summary.PlannedRuns, summary.CompletedRuns, summary.FailedRuns)
+	fmt.Printf("planned: %d completed: %d failed: %d skipped: %d\n", summary.PlannedRuns, summary.CompletedRuns, summary.FailedRuns, summary.SkippedRuns)
 	if summary.ReportPath != "" {
 		fmt.Printf("report: %s\n", summary.ReportPath)
 	}

@@ -165,5 +165,19 @@ Prefer a sparse search first:
   impractical,
 - confirm near the best working point with the exact production-style profile.
 
+The runner enforces this automatically (`runner.adaptive`, on by default):
+per profile and workload, concurrency runs ascending and higher points are
+skipped, with the reason recorded, when throughput improves less than 10%
+over the previous point, a point's TTFT p99 exceeds a configured ceiling
+(`ttft_p99_ceiling_ms`, off unless set), the previous point failed, or the
+concurrency exceeds 2x vLLM's reported maximum concurrency. Disable with
+`"runner": {"adaptive": {"enabled": false}}`; negative thresholds disable
+individual rules.
+
+Long sweeps are crash-tolerant: the artifact is refreshed after every point
+(run status `running` until the sweep finishes), so partial results render at
+any time, and `bench run --resume` with the same `--run-dir` skips points
+whose results already completed.
+
 Do not call a sweep complete until all completed, skipped, and failed cases are
 recorded with enough metadata to reproduce the run.

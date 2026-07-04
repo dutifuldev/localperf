@@ -42,6 +42,7 @@ type RunSummary struct {
 	PlannedRuns   int         `json:"planned_runs"`
 	CompletedRuns int         `json:"completed_runs"`
 	FailedRuns    int         `json:"failed_runs"`
+	SkippedRuns   int         `json:"skipped_runs,omitempty"`
 	Rows          []ReportRow `json:"rows,omitempty"`
 	EventsPath    string      `json:"events_path"`
 	ReportPath    string      `json:"report_path,omitempty"`
@@ -84,14 +85,17 @@ type eventWriter struct {
 }
 
 type runSession struct {
-	ctx       context.Context
-	spec      Spec
-	opts      RunOptions
-	runDir    string
-	summary   RunSummary
-	events    *eventWriter
-	plan      []PlannedRun
-	processes map[string]*serverProcess
+	ctx                    context.Context
+	spec                   Spec
+	opts                   RunOptions
+	runDir                 string
+	summary                RunSummary
+	events                 *eventWriter
+	plan                   []PlannedRun
+	processes              map[string]*serverProcess
+	ladderRows             map[string]*ReportRow
+	ladderStops            map[string]adaptiveStop
+	reportedMaxConcurrency map[string]float64
 }
 
 func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error) {
@@ -169,7 +173,13 @@ func initRunSession(ctx context.Context, spec Spec, opts RunOptions) *runSession
 		SpecPath:     filepath.Join(runDir, "spec.normalized.json"),
 		MemoryFloor:  spec.Safety.MinMemAvailableGiB,
 	}
-	return &runSession{ctx: ctx, spec: spec, opts: opts, runDir: runDir, summary: summary, processes: map[string]*serverProcess{}}
+	return &runSession{
+		ctx: ctx, spec: spec, opts: opts, runDir: runDir, summary: summary,
+		processes:              map[string]*serverProcess{},
+		ladderRows:             map[string]*ReportRow{},
+		ladderStops:            map[string]adaptiveStop{},
+		reportedMaxConcurrency: map[string]float64{},
+	}
 }
 
 func prepareRunDirs(session *runSession) error {
@@ -264,6 +274,7 @@ func (session *runSession) runProfile(profile Profile) error {
 	if !ok {
 		return nil
 	}
+	session.recordReportedMaxConcurrency(profile, proc)
 	if session.runProfileWorkloads(profile, proc, runs) {
 		return nil
 	}
@@ -395,11 +406,16 @@ func (session *runSession) runProfileWorkloads(profile Profile, proc *serverProc
 }
 
 func (session *runSession) runProfileWorkload(profile Profile, proc *serverProcess, runs []PlannedRun, index int, planned PlannedRun) bool {
+	if reason := session.adaptiveSkipReason(planned); reason != "" {
+		session.skipPlannedRun(planned, reason)
+		return false
+	}
 	if err := checkMemoryEvent(session.spec, session.events, "before_workload", planned.Profile.Name); err != nil {
 		return session.handleWorkloadError(profile, proc, runs, index, planned, "workload_skipped", err)
 	}
 	result, err := executeBench(session.ctx, session.spec, planned, session.runDir, session.events)
 	if err != nil {
+		session.stopLadder(planned, fmt.Sprintf("concurrency %d failed: %v", planned.Concurrency, err))
 		aborted := session.handleWorkloadError(profile, proc, runs, index, planned, "workload_failed", err)
 		session.writeArtifactSnapshot()
 		return aborted
@@ -408,8 +424,25 @@ func (session *runSession) runProfileWorkload(profile Profile, proc *serverProce
 	if result != nil {
 		session.summary.Rows = append(session.summary.Rows, *result)
 	}
+	session.updateLadder(planned, result)
 	session.writeArtifactSnapshot()
 	return false
+}
+
+// skipPlannedRun records an adaptive skip: skipped is a first-class outcome
+// with a reason, never a silent hole and never a failure.
+func (session *runSession) skipPlannedRun(planned PlannedRun, reason string) {
+	session.summary.SkippedRuns++
+	session.events.Write(Event{
+		Timestamp:   time.Now().UTC(),
+		Type:        "workload_skipped",
+		Profile:     planned.Profile.Name,
+		Workload:    planned.Workload.Name,
+		Concurrency: planned.Concurrency,
+		Repeat:      planned.Repeat,
+		Error:       reason,
+	})
+	session.writeArtifactSnapshot()
 }
 
 func (session *runSession) handleWorkloadError(profile Profile, proc *serverProcess, runs []PlannedRun, index int, planned PlannedRun, eventType string, err error) bool {

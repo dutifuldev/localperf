@@ -60,12 +60,40 @@ type EngineConfig struct {
 }
 
 type RunnerConfig struct {
-	VLLMCommand          string `json:"vllm_command,omitempty"`
-	VLLMBenchCommand     string `json:"vllm_bench_command,omitempty"`
-	OneAwakeProfile      *bool  `json:"one_awake_profile,omitempty"`
-	PrebootProfiles      bool   `json:"preboot_profiles,omitempty"`
-	StopManagedOnExit    *bool  `json:"stop_managed_on_exit,omitempty"`
-	AppendTimestampToRun *bool  `json:"append_timestamp_to_run,omitempty"`
+	VLLMCommand          string         `json:"vllm_command,omitempty"`
+	VLLMBenchCommand     string         `json:"vllm_bench_command,omitempty"`
+	OneAwakeProfile      *bool          `json:"one_awake_profile,omitempty"`
+	PrebootProfiles      bool           `json:"preboot_profiles,omitempty"`
+	StopManagedOnExit    *bool          `json:"stop_managed_on_exit,omitempty"`
+	AppendTimestampToRun *bool          `json:"append_timestamp_to_run,omitempty"`
+	Adaptive             AdaptiveConfig `json:"adaptive,omitempty"`
+}
+
+// AdaptiveConfig automates the sparse-search rule from
+// docs/2026-07-02-default-inference-sweep.md: per profile and workload,
+// concurrency runs ascending and higher points are skipped, with the reason
+// recorded, once a stop rule fires. Negative thresholds disable a rule.
+type AdaptiveConfig struct {
+	// Enabled defaults to true; {"enabled": false} opts out entirely.
+	Enabled *bool `json:"enabled,omitempty"`
+	// MinThroughputGainPct stops the ladder when the phase throughput
+	// improved less than this over the previous concurrency (default 10).
+	MinThroughputGainPct float64 `json:"min_throughput_gain_pct,omitempty"`
+	// TTFTP99CeilingMillis stops the ladder when a point's p99 TTFT
+	// exceeds the ceiling; 0 leaves the rule off.
+	TTFTP99CeilingMillis float64 `json:"ttft_p99_ceiling_ms,omitempty"`
+	// MaxConcurrencyFactor skips points whose concurrency exceeds this
+	// multiple of vLLM's reported maximum concurrency (default 2).
+	MaxConcurrencyFactor float64 `json:"max_concurrency_factor,omitempty"`
+}
+
+const (
+	defaultMinThroughputGainPct = 10
+	defaultMaxConcurrencyFactor = 2
+)
+
+func (config AdaptiveConfig) enabled() bool {
+	return config.Enabled == nil || *config.Enabled
 }
 
 type SafetyConfig struct {
@@ -222,6 +250,12 @@ func ApplyDefaults(spec *Spec) {
 func applyRunnerDefaults(spec *Spec) {
 	if strings.TrimSpace(spec.Runner.VLLMCommand) == "" {
 		spec.Runner.VLLMCommand = "vllm"
+	}
+	if spec.Runner.Adaptive.MinThroughputGainPct == 0 {
+		spec.Runner.Adaptive.MinThroughputGainPct = defaultMinThroughputGainPct
+	}
+	if spec.Runner.Adaptive.MaxConcurrencyFactor == 0 {
+		spec.Runner.Adaptive.MaxConcurrencyFactor = defaultMaxConcurrencyFactor
 	}
 	if strings.TrimSpace(spec.Runner.VLLMBenchCommand) == "" {
 		spec.Runner.VLLMBenchCommand = "vllm"
