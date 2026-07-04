@@ -254,6 +254,7 @@ func runBench(args []string) {
 	specPath := flags.String("spec", "", "benchmark spec JSON file")
 	runDir := flags.String("run-dir", "", "optional run directory")
 	artifactPath := flags.String("artifact", "", "optional artifact path; an existing artifact is appended to (model-level accumulation)")
+	resume := flags.Bool("resume", false, "skip planned runs whose result files already completed; requires --run-dir of the previous attempt")
 	dryRun := flags.Bool("dry-run", false, "write planned artifacts without launching vLLM or benchmark commands")
 	timeout := flags.Duration("timeout", 0, "optional overall timeout, for example 2h")
 	overrides := addOverrideFlags(flags)
@@ -271,6 +272,7 @@ func runBench(args []string) {
 		RunDir:           *runDir,
 		ArtifactPath:     *artifactPath,
 		DryRun:           *dryRun,
+		Resume:           *resume,
 		OriginalSpecPath: *specPath,
 	})
 	fmt.Printf("run dir: %s\n", summary.RunDir)

@@ -22,9 +22,13 @@ import (
 )
 
 type RunOptions struct {
-	RunDir           string
-	ArtifactPath     string
-	DryRun           bool
+	RunDir       string
+	ArtifactPath string
+	DryRun       bool
+	// Resume skips planned runs whose result file already exists and
+	// parses as completed with no failed requests; requires an explicit
+	// RunDir pointing at the previous attempt.
+	Resume           bool
 	OriginalSpecPath string
 }
 
@@ -33,6 +37,7 @@ type RunSummary struct {
 	StartedAt     time.Time   `json:"started_at"`
 	FinishedAt    time.Time   `json:"finished_at"`
 	DryRun        bool        `json:"dry_run"`
+	InProgress    bool        `json:"-"`
 	Error         string      `json:"error,omitempty"`
 	PlannedRuns   int         `json:"planned_runs"`
 	CompletedRuns int         `json:"completed_runs"`
@@ -118,18 +123,24 @@ func newRunSession(ctx context.Context, spec Spec, opts RunOptions) (*runSession
 	if err := ValidateSpec(spec); err != nil {
 		return nil, err
 	}
+	if opts.Resume && strings.TrimSpace(opts.RunDir) == "" {
+		return nil, fmt.Errorf("--resume requires --run-dir pointing at the previous attempt")
+	}
 	session := initRunSession(ctx, spec, opts)
 	if err := prepareSessionSpec(ctx, session); err != nil {
 		return session, err
 	}
-	events, err := newEventWriter(session.summary.EventsPath)
+	events, err := openEventWriter(session.summary.EventsPath, opts.Resume)
 	if err != nil {
 		return session, err
 	}
 	session.events = events
 	session.plan = BuildPlan(session.spec, session.runDir)
 	session.summary.PlannedRuns = len(session.plan)
-	writePlanEvents(session)
+	// A resumed attempt keeps the previous log's plan events.
+	if !opts.Resume {
+		writePlanEvents(session)
+	}
 	return session, nil
 }
 
@@ -243,6 +254,9 @@ func (session *runSession) runProfiles() error {
 
 func (session *runSession) runProfile(profile Profile) error {
 	runs := runsForProfile(session.plan, profile.Name)
+	if session.opts.Resume {
+		runs = session.skipResumedRuns(runs)
+	}
 	if len(runs) == 0 {
 		return nil
 	}
@@ -330,6 +344,47 @@ func (session *runSession) stopAfterWarmupSleepFailure(profile Profile, proc *se
 	delete(session.processes, profile.Name)
 }
 
+// skipResumedRuns drops planned runs whose result file already exists and
+// parses as completed with zero failed requests, counting them as completed
+// from the previous attempt. Profiles left with nothing to run never boot.
+func (session *runSession) skipResumedRuns(runs []PlannedRun) []PlannedRun {
+	remaining := make([]PlannedRun, 0, len(runs))
+	for _, planned := range runs {
+		row, failed, err := parsedPlannedRow(planned)
+		if err != nil || failed > 0 {
+			remaining = append(remaining, planned)
+			continue
+		}
+		session.summary.CompletedRuns++
+		session.summary.Rows = append(session.summary.Rows, *row)
+		session.events.Write(Event{
+			Timestamp:   time.Now().UTC(),
+			Type:        "workload_resumed",
+			Profile:     planned.Profile.Name,
+			Workload:    planned.Workload.Name,
+			Concurrency: planned.Concurrency,
+			Repeat:      planned.Repeat,
+			ResultFile:  planned.ResultFile,
+		})
+	}
+	return remaining
+}
+
+// writeArtifactSnapshot refreshes the artifact after every planned run so a
+// crash or abort never loses completed measurements and partial results can
+// be rendered mid-sweep. Snapshot failures are recorded but never abort the
+// benchmark.
+func (session *runSession) writeArtifactSnapshot() {
+	if session.summary.ArtifactPath == "" || session.opts.DryRun {
+		return
+	}
+	snapshot := session.summary
+	snapshot.InProgress = true
+	if err := WriteSQLiteArtifact(session.runDir, snapshot.ArtifactPath, session.spec, snapshot, session.plan, session.opts.OriginalSpecPath); err != nil {
+		session.events.Write(Event{Timestamp: time.Now().UTC(), Type: "artifact_snapshot_failed", Error: err.Error()})
+	}
+}
+
 func (session *runSession) runProfileWorkloads(profile Profile, proc *serverProcess, runs []PlannedRun) bool {
 	for i, planned := range runs {
 		if aborted := session.runProfileWorkload(profile, proc, runs, i, planned); aborted {
@@ -345,12 +400,15 @@ func (session *runSession) runProfileWorkload(profile Profile, proc *serverProce
 	}
 	result, err := executeBench(session.ctx, session.spec, planned, session.runDir, session.events)
 	if err != nil {
-		return session.handleWorkloadError(profile, proc, runs, index, planned, "workload_failed", err)
+		aborted := session.handleWorkloadError(profile, proc, runs, index, planned, "workload_failed", err)
+		session.writeArtifactSnapshot()
+		return aborted
 	}
 	session.summary.CompletedRuns++
 	if result != nil {
 		session.summary.Rows = append(session.summary.Rows, *result)
 	}
+	session.writeArtifactSnapshot()
 	return false
 }
 
@@ -836,12 +894,26 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		return nil, err
 	}
 	events.Write(event)
-	rows, err := ParseResultFile(planned.ResultFile)
+	row, failed, err := parsedPlannedRow(planned)
 	if err != nil {
 		return nil, err
 	}
+	if failed > 0 {
+		return row, fmt.Errorf("benchmark result reported %d failed request(s)", failed)
+	}
+	return row, nil
+}
+
+// parsedPlannedRow parses and enriches the planned run's result file; it is
+// shared by fresh execution and resume, which trusts an existing result file
+// only when it parses with zero failed requests.
+func parsedPlannedRow(planned PlannedRun) (*ReportRow, int, error) {
+	rows, err := ParseResultFile(planned.ResultFile)
+	if err != nil {
+		return nil, 0, err
+	}
 	if len(rows) == 0 {
-		return nil, errors.New("benchmark result file did not contain a parseable row")
+		return nil, 0, errors.New("benchmark result file did not contain a parseable row")
 	}
 	row := rows[0]
 	row.Profile = planned.Profile.Name
@@ -857,10 +929,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	row.ResultFile = planned.ResultFile
 	applyWorkloadFields(&row, planned.Workload)
 	deriveReportRowFields(&row)
-	if failed := failedRequestCount(rows); failed > 0 {
-		return &row, fmt.Errorf("benchmark result reported %d failed request(s)", failed)
-	}
-	return &row, nil
+	return &row, failedRequestCount(rows), nil
 }
 
 func executeLoadCommand(ctx context.Context, spec Spec, planned PlannedRun, command CommandSpec, logPath string) (commandResult, error) {
@@ -1181,10 +1250,20 @@ func checkMemoryEvent(spec Spec, events *eventWriter, eventType, profile string)
 }
 
 func newEventWriter(path string) (*eventWriter, error) {
+	return openEventWriter(path, false)
+}
+
+// openEventWriter appends when resuming so the previous attempt's events
+// stay part of the run's history; otherwise it truncates.
+func openEventWriter(path string, appendEvents bool) (*eventWriter, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	file, err := os.Create(path)
+	mode := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if appendEvents {
+		mode = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	}
+	file, err := os.OpenFile(path, mode, 0o644)
 	if err != nil {
 		return nil, err
 	}

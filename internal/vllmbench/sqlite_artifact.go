@@ -159,6 +159,10 @@ func insertRunRow(tx *sql.Tx, runID, runDir string, spec Spec, summary RunSummar
 }
 
 func runStatus(summary RunSummary) string {
+	// Incremental snapshots record the run as still in flight.
+	if summary.InProgress {
+		return "running"
+	}
 	if strings.TrimSpace(summary.Error) != "" {
 		return "failed"
 	}
@@ -1246,31 +1250,43 @@ func eventDetailBool(event Event, key string) bool {
 	return details[key]
 }
 
+// measurementStatus takes the last decisive event: resumed runs append a
+// fresh attempt's events after a failed one, and the retry outcome must win
+// over the stale failure.
 func measurementStatus(events []Event, planned PlannedRun) string {
 	status := "planned"
 	for _, event := range events {
-		if eventMatchesPlanned(event, planned) {
-			if event.Type == "workload_skipped" {
-				return "skipped"
-			}
-			if event.Type == "workload_failed" || event.Error != "" {
-				return "failed"
-			}
-			if event.Type == "workload_finish" && event.Error == "" {
-				status = "completed"
-			}
+		if !eventMatchesPlanned(event, planned) {
+			continue
+		}
+		switch {
+		case event.Type == "workload_skipped":
+			status = "skipped"
+		case event.Type == "workload_failed" || event.Error != "":
+			status = "failed"
+		case event.Type == "workload_finish" && event.Error == "":
+			status = "completed"
 		}
 	}
 	return status
 }
 
+// measurementError keeps the last error and clears it on a later clean
+// finish, matching measurementStatus's last-attempt-wins view.
 func measurementError(events []Event, planned PlannedRun) any {
+	var lastError any
 	for _, event := range events {
-		if eventMatchesPlanned(event, planned) && event.Error != "" {
-			return event.Error
+		if !eventMatchesPlanned(event, planned) {
+			continue
+		}
+		if event.Error != "" {
+			lastError = event.Error
+		}
+		if event.Type == "workload_finish" && event.Error == "" {
+			lastError = nil
 		}
 	}
-	return nil
+	return lastError
 }
 
 func measurementTimes(events []Event, planned PlannedRun) (*time.Time, *time.Time) {
