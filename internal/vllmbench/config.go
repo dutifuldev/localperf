@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -396,6 +397,9 @@ func applyWorkloadConcurrencyDefaults(workload *Workload) {
 	if len(workload.MaxConcurrency) == 0 && len(workload.Concurrency) > 0 {
 		workload.MaxConcurrency = append([]int(nil), workload.Concurrency...)
 	}
+	// Ladders run ascending: the documented sparse search depends on it and
+	// the adaptive stop rules compare against the previous (lower) point.
+	sort.Ints(workload.MaxConcurrency)
 }
 
 // largestConcurrency is the workload's biggest ladder point; sample counts

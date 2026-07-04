@@ -86,13 +86,17 @@ type eventWriter struct {
 }
 
 type runSession struct {
-	ctx                    context.Context
-	spec                   Spec
-	opts                   RunOptions
-	runDir                 string
-	summary                RunSummary
-	events                 *eventWriter
-	plan                   []PlannedRun
+	ctx     context.Context
+	spec    Spec
+	opts    RunOptions
+	runDir  string
+	summary RunSummary
+	events  *eventWriter
+	plan    []PlannedRun
+	// executionRuns is the plan minus resume-adopted points; preboot and
+	// profile execution work from it, while artifact writes keep the full
+	// plan so adopted measurements still import.
+	executionRuns          []PlannedRun
 	processes              map[string]*serverProcess
 	ladderRows             map[string]*ReportRow
 	ladderStops            map[string]adaptiveStop
@@ -226,6 +230,12 @@ func (session *runSession) close() {
 }
 
 func (session *runSession) run() error {
+	// Resume skimming happens before preboot so profiles with nothing left
+	// to run never start or wake a server.
+	session.executionRuns = session.plan
+	if session.opts.Resume {
+		session.executionRuns = session.skipResumedRuns(session.plan)
+	}
 	if err := session.prebootProfiles(); err != nil {
 		return err
 	}
@@ -244,18 +254,18 @@ func (session *runSession) prebootProfiles() error {
 	if !session.spec.Runner.PrebootProfiles {
 		return nil
 	}
-	err := prebootProfiles(session.ctx, session.spec, session.runDir, session.plan, session.events, session.processes)
+	err := prebootProfiles(session.ctx, session.spec, session.runDir, session.executionRuns, session.events, session.processes)
 	if err == nil {
 		return nil
 	}
 	session.summary.FailedRuns += remainingUnaccountedRuns(session.summary)
 	session.events.Write(Event{Timestamp: time.Now().UTC(), Type: "preboot_failed", Error: err.Error()})
-	markRunsSkipped(session.events, session.plan, err.Error())
+	markRunsSkipped(session.events, session.executionRuns, err.Error())
 	return fmt.Errorf("preboot profiles failed: %w", err)
 }
 
 func (session *runSession) runProfiles() error {
-	for _, profile := range profilesInPlanOrder(session.spec.Profiles, session.plan) {
+	for _, profile := range profilesInPlanOrder(session.spec.Profiles, session.executionRuns) {
 		if err := session.runProfile(profile); err != nil {
 			return err
 		}
@@ -264,10 +274,7 @@ func (session *runSession) runProfiles() error {
 }
 
 func (session *runSession) runProfile(profile Profile) error {
-	runs := runsForProfile(session.plan, profile.Name)
-	if session.opts.Resume {
-		runs = session.skipResumedRuns(runs)
-	}
+	runs := runsForProfile(session.executionRuns, profile.Name)
 	// Stops replayed from resumed rows are known before boot; a profile
 	// whose remaining points are all adaptively skipped never starts.
 	runs = session.applyAdaptiveSkips(runs)
