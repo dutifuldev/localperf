@@ -670,6 +670,24 @@ func TestPromptsPerUserWorksForStructuredDatasets(t *testing.T) {
 	}
 }
 
+func TestStructuredScaledWorkloadSurvivesMaterialization(t *testing.T) {
+	workload := testCustomJSONLWorkload("scaled-materialized", "requests.jsonl", []string{"8k"})
+	workload.Dataset.SampleCount = 0
+	workload.PromptsPerUser = 2
+	workload.Load.MaxConcurrency = []int{1, 4}
+	applyWorkloadDefault(&workload)
+	applyMaterializedDatasetToWorkload(&workload, 8, "rendered.jsonl")
+	if workload.NumPrompts != 0 || workload.PromptsPerUser != 2 {
+		t.Fatalf("after materialization num_prompts=%d ppu=%d, want scaling preserved", workload.NumPrompts, workload.PromptsPerUser)
+	}
+	spec := testSpec()
+	spec.Workloads = []Workload{workload}
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec after materialization = %v, want valid", err)
+	}
+}
+
 func TestValidateContextSemanticsAcceptsCompliantClaims(t *testing.T) {
 	spec := testSpec()
 	spec.Workloads[0].ContextTarget = 8192

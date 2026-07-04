@@ -156,7 +156,7 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 	}
 	for _, context := range contexts {
 		label := vllmbench.TokenCountLabel(context)
-		spec.Profiles = append(spec.Profiles, sweepProfile(label, context, port, maxConcurrencyOf(pointConcurrency(context, request.Concurrency))))
+		spec.Profiles = append(spec.Profiles, sweepProfile(label, context, port, contextMaxSeqs(context, request)))
 		port++
 		prefillInput, prefillOutput := PrefillShape(context)
 		spec.Workloads = append(spec.Workloads, sweepWorkload(
@@ -196,16 +196,17 @@ func sweepProfile(name string, maxModelLen, port, maxNumSeqs int) vllmbench.Prof
 // stressWorkloads adds long-output decode spot checks for ladder contexts
 // that have them: 4096-token output at 32k c4 and 64k c1/c4. Kept out of the
 // default grid because they dominate sweep wall time.
+var stressSpots = []struct {
+	context     int
+	concurrency []int
+}{
+	{32768, []int{4}},
+	{65536, []int{1, 4}},
+}
+
 func stressWorkloads(contexts []int, request PlanRequest) []vllmbench.Workload {
-	spots := []struct {
-		context     int
-		concurrency []int
-	}{
-		{32768, []int{4}},
-		{65536, []int{1, 4}},
-	}
 	var workloads []vllmbench.Workload
-	for _, spot := range spots {
+	for _, spot := range stressSpots {
 		if !containsInt(contexts, spot.context) {
 			continue
 		}
@@ -219,6 +220,21 @@ func stressWorkloads(contexts []int, request PlanRequest) []vllmbench.Workload {
 			input, output, spotRequest))
 	}
 	return workloads
+}
+
+// contextMaxSeqs sizes a context profile's server admission for its capped
+// ladder plus any stress spot checks attached to that context; a stress c4
+// point must not run against a server that only admits c1.
+func contextMaxSeqs(context int, request PlanRequest) int {
+	seqs := maxConcurrencyOf(pointConcurrency(context, request.Concurrency))
+	if request.IncludeStress {
+		for _, spot := range stressSpots {
+			if spot.context == context {
+				seqs = max(seqs, maxConcurrencyOf(spot.concurrency))
+			}
+		}
+	}
+	return seqs
 }
 
 func maxConcurrencyOf(values []int) int {

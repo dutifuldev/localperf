@@ -98,6 +98,23 @@ func TestPlanGolden(t *testing.T) {
 	}
 }
 
+func TestStressProfilesAdmitSpotCheckConcurrency(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:         "example/model",
+		Contexts:      []int{32768, 65536},
+		Concurrency:   []int{1},
+		IncludeStress: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range spec.Profiles {
+		if (profile.Name == "32k" || profile.Name == "64k") && profile.MaxNumSeqs < 4 {
+			t.Fatalf("profile %s max_num_seqs = %d, want >= 4 for stress spot checks", profile.Name, profile.MaxNumSeqs)
+		}
+	}
+}
+
 func TestPlanRequiresModel(t *testing.T) {
 	if _, err := Plan(PlanRequest{Contexts: []int{8192}}); err == nil || !strings.Contains(err.Error(), "model is required") {
 		t.Fatalf("Plan error = %v, want model required", err)

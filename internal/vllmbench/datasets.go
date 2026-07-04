@@ -237,7 +237,7 @@ func collectCanonicalRequests(ctx context.Context, iterator RequestIterator, dat
 }
 
 func applyMaterializedDatasetToWorkload(workload *Workload, requestCount int, vllmPath string) {
-	workload.NumPrompts = requestCount
+	workload.NumPrompts = materializedPromptCount(*workload, requestCount)
 	workload.BenchmarkTrafficConfig.DatasetName = "custom"
 	workload.BenchmarkTrafficConfig.DatasetPath = vllmPath
 	workload.BenchmarkTrafficConfig.CustomOutputLen = intPointer(-1)
@@ -813,4 +813,15 @@ func cloneStringMap(maps ...map[string]string) map[string]string {
 		}
 	}
 	return out
+}
+
+// materializedPromptCount pins the request count for fixed workloads only:
+// scaled workloads keep resolving prompts per planned run (the materialized
+// rows already cover the largest ladder point), and pinning num_prompts
+// would trip the mutual-exclusion validation.
+func materializedPromptCount(workload Workload, requestCount int) int {
+	if workload.PromptsPerUser > 0 {
+		return 0
+	}
+	return requestCount
 }
