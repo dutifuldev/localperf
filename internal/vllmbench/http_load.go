@@ -47,6 +47,8 @@ type HTTPBenchmarkResult struct {
 	RequestOutputThroughputMax    float64         `json:"request_output_throughput_max,omitempty"`
 	RequestTotalThroughputMean    float64         `json:"request_total_throughput_mean,omitempty"`
 	RequestTotalThroughputStdDev  float64         `json:"request_total_throughput_stddev,omitempty"`
+	MeanTTFTMillis                float64         `json:"mean_ttft_ms,omitempty"`
+	P99TTFTMillis                 float64         `json:"p99_ttft_ms,omitempty"`
 	MeanLatencyMillis             float64         `json:"mean_latency_ms,omitempty"`
 	StdLatencyMillis              float64         `json:"std_latency_ms,omitempty"`
 	P50LatencyMillis              float64         `json:"p50_latency_ms,omitempty"`
@@ -768,6 +770,14 @@ func applyRequestStats(result *HTTPBenchmarkResult, samples []RequestSample) {
 	outputStats := statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.OutputTokensPerSecond })
 	totalStats := statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.TotalTokensPerSecond })
 	latencyStats := statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.LatencyMillis })
+	// Non-streaming requests have no inter-token TTFT; the first byte is
+	// when the response (and so the first token) arrived.
+	ttftStats := statsFromSamples(samples, false, func(sample RequestSample) float64 {
+		if sample.TTFTMillis > 0 {
+			return sample.TTFTMillis
+		}
+		return sample.FirstByteMillis
+	})
 	result.RequestOutputThroughputMean = outputStats.Mean
 	result.RequestOutputThroughputStdDev = outputStats.StdDev
 	result.RequestOutputThroughputMin = outputStats.Min
@@ -777,6 +787,8 @@ func applyRequestStats(result *HTTPBenchmarkResult, samples []RequestSample) {
 	result.RequestOutputThroughputMax = outputStats.Max
 	result.RequestTotalThroughputMean = totalStats.Mean
 	result.RequestTotalThroughputStdDev = totalStats.StdDev
+	result.MeanTTFTMillis = ttftStats.Mean
+	result.P99TTFTMillis = ttftStats.P99
 	result.MeanLatencyMillis = latencyStats.Mean
 	result.StdLatencyMillis = latencyStats.StdDev
 	result.P50LatencyMillis = latencyStats.P50

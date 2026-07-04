@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -60,12 +61,40 @@ type EngineConfig struct {
 }
 
 type RunnerConfig struct {
-	VLLMCommand          string `json:"vllm_command,omitempty"`
-	VLLMBenchCommand     string `json:"vllm_bench_command,omitempty"`
-	OneAwakeProfile      *bool  `json:"one_awake_profile,omitempty"`
-	PrebootProfiles      bool   `json:"preboot_profiles,omitempty"`
-	StopManagedOnExit    *bool  `json:"stop_managed_on_exit,omitempty"`
-	AppendTimestampToRun *bool  `json:"append_timestamp_to_run,omitempty"`
+	VLLMCommand          string         `json:"vllm_command,omitempty"`
+	VLLMBenchCommand     string         `json:"vllm_bench_command,omitempty"`
+	OneAwakeProfile      *bool          `json:"one_awake_profile,omitempty"`
+	PrebootProfiles      bool           `json:"preboot_profiles,omitempty"`
+	StopManagedOnExit    *bool          `json:"stop_managed_on_exit,omitempty"`
+	AppendTimestampToRun *bool          `json:"append_timestamp_to_run,omitempty"`
+	Adaptive             AdaptiveConfig `json:"adaptive,omitempty"`
+}
+
+// AdaptiveConfig automates the sparse-search rule from
+// docs/2026-07-02-default-inference-sweep.md: per profile and workload,
+// concurrency runs ascending and higher points are skipped, with the reason
+// recorded, once a stop rule fires. Negative thresholds disable a rule.
+type AdaptiveConfig struct {
+	// Enabled defaults to true; {"enabled": false} opts out entirely.
+	Enabled *bool `json:"enabled,omitempty"`
+	// MinThroughputGainPct stops the ladder when the phase throughput
+	// improved less than this over the previous concurrency (default 10).
+	MinThroughputGainPct float64 `json:"min_throughput_gain_pct,omitempty"`
+	// TTFTP99CeilingMillis stops the ladder when a point's p99 TTFT
+	// exceeds the ceiling; 0 leaves the rule off.
+	TTFTP99CeilingMillis float64 `json:"ttft_p99_ceiling_ms,omitempty"`
+	// MaxConcurrencyFactor skips points whose concurrency exceeds this
+	// multiple of vLLM's reported maximum concurrency (default 2).
+	MaxConcurrencyFactor float64 `json:"max_concurrency_factor,omitempty"`
+}
+
+const (
+	defaultMinThroughputGainPct = 10
+	defaultMaxConcurrencyFactor = 2
+)
+
+func (config AdaptiveConfig) enabled() bool {
+	return config.Enabled == nil || *config.Enabled
 }
 
 type SafetyConfig struct {
@@ -121,6 +150,7 @@ type Workload struct {
 	Load                    LoadConfig             `json:"load,omitempty"`
 	Profiles                []string               `json:"profiles,omitempty"`
 	NumPrompts              int                    `json:"num_prompts"`
+	PromptsPerUser          int                    `json:"prompts_per_user,omitempty"`
 	Samples                 int                    `json:"samples,omitempty"`
 	Repeats                 int                    `json:"repeats,omitempty"`
 	MaxConcurrency          []int                  `json:"max_concurrency"`
@@ -221,6 +251,12 @@ func ApplyDefaults(spec *Spec) {
 func applyRunnerDefaults(spec *Spec) {
 	if strings.TrimSpace(spec.Runner.VLLMCommand) == "" {
 		spec.Runner.VLLMCommand = "vllm"
+	}
+	if spec.Runner.Adaptive.MinThroughputGainPct == 0 {
+		spec.Runner.Adaptive.MinThroughputGainPct = defaultMinThroughputGainPct
+	}
+	if spec.Runner.Adaptive.MaxConcurrencyFactor == 0 {
+		spec.Runner.Adaptive.MaxConcurrencyFactor = defaultMaxConcurrencyFactor
 	}
 	if strings.TrimSpace(spec.Runner.VLLMBenchCommand) == "" {
 		spec.Runner.VLLMBenchCommand = "vllm"
@@ -324,6 +360,7 @@ func applyWorkloadDefaults(workloads []Workload) {
 
 func applyWorkloadDefault(workload *Workload) {
 	applyWorkloadCompatibilityDefaults(workload)
+	applyWorkloadConcurrencyDefaults(workload)
 	applyStructuredWorkloadDefaults(workload)
 	applyWorkloadExecutionDefaults(workload)
 	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
@@ -349,10 +386,36 @@ func applyWorkloadCompatibilityDefaults(workload *Workload) {
 	}
 }
 
-func applyWorkloadExecutionDefaults(workload *Workload) {
+// applyWorkloadConcurrencyDefaults resolves the concurrency ladder before
+// prompt counts and dataset sample counts derive from it. Precedence stays:
+// explicit max_concurrency, then load.max_concurrency (structured), then the
+// concurrency alias.
+func applyWorkloadConcurrencyDefaults(workload *Workload) {
+	if len(workload.MaxConcurrency) == 0 && hasStructuredDataset(*workload) && len(workload.Load.MaxConcurrency) > 0 {
+		workload.MaxConcurrency = append([]int(nil), workload.Load.MaxConcurrency...)
+	}
 	if len(workload.MaxConcurrency) == 0 && len(workload.Concurrency) > 0 {
 		workload.MaxConcurrency = append([]int(nil), workload.Concurrency...)
 	}
+	// Ladders run ascending: the documented sparse search depends on it and
+	// the adaptive stop rules compare against the previous (lower) point.
+	sort.Ints(workload.MaxConcurrency)
+}
+
+// largestConcurrency is the workload's biggest ladder point; sample counts
+// for structured datasets and workload-level bookkeeping derive from it when
+// prompts scale with concurrency.
+func largestConcurrency(workload Workload) int {
+	largest := 1
+	for _, concurrency := range workload.MaxConcurrency {
+		if concurrency > largest {
+			largest = concurrency
+		}
+	}
+	return largest
+}
+
+func applyWorkloadExecutionDefaults(workload *Workload) {
 	if workload.Repeats <= 0 {
 		workload.Repeats = 1
 	}
@@ -372,18 +435,27 @@ func applyDatasetDefaults(workload *Workload) {
 	if strings.TrimSpace(workload.Dataset.Selection) == "" {
 		workload.Dataset.Selection = "first_n"
 	}
-	if workload.Dataset.SampleCount <= 0 && workload.NumPrompts > 0 {
-		workload.Dataset.SampleCount = workload.NumPrompts
+	if workload.Dataset.SampleCount <= 0 {
+		workload.Dataset.SampleCount = defaultDatasetSampleCount(*workload)
 	}
-	if workload.NumPrompts <= 0 && workload.Dataset.SampleCount > 0 {
+	if workload.NumPrompts <= 0 && workload.PromptsPerUser <= 0 && workload.Dataset.SampleCount > 0 {
 		workload.NumPrompts = workload.Dataset.SampleCount
 	}
 }
 
-func applyLoadDefaults(workload *Workload) {
-	if len(workload.MaxConcurrency) == 0 && len(workload.Load.MaxConcurrency) > 0 {
-		workload.MaxConcurrency = append([]int(nil), workload.Load.MaxConcurrency...)
+// defaultDatasetSampleCount prepares enough rows for the workload: the fixed
+// request count, or the largest ladder point when prompts scale.
+func defaultDatasetSampleCount(workload Workload) int {
+	if workload.NumPrompts > 0 {
+		return workload.NumPrompts
 	}
+	if workload.PromptsPerUser > 0 {
+		return resolvedNumPrompts(workload, largestConcurrency(workload))
+	}
+	return 0
+}
+
+func applyLoadDefaults(workload *Workload) {
 	if strings.TrimSpace(workload.BenchmarkTrafficConfig.RequestRate) == "" && strings.TrimSpace(workload.Load.RequestRate) != "" {
 		workload.BenchmarkTrafficConfig.RequestRate = workload.Load.RequestRate
 	}
@@ -994,8 +1066,14 @@ func validateWorkloadDatasetName(prefix string, workload Workload) []string {
 
 func validateWorkloadPositiveFields(prefix string, workload Workload) []string {
 	var issues []string
-	if workload.NumPrompts <= 0 {
-		issues = append(issues, prefix+": num_prompts must be positive")
+	if workload.NumPrompts <= 0 && workload.PromptsPerUser <= 0 {
+		issues = append(issues, prefix+": num_prompts or prompts_per_user must be positive")
+	}
+	if workload.NumPrompts > 0 && workload.PromptsPerUser > 0 {
+		issues = append(issues, prefix+": set either num_prompts (fixed) or prompts_per_user (scales with concurrency), not both")
+	}
+	if workload.PromptsPerUser < 0 {
+		issues = append(issues, prefix+": prompts_per_user must not be negative")
 	}
 	if workload.Repeats <= 0 {
 		issues = append(issues, prefix+": repeats must be positive")
@@ -1246,6 +1324,7 @@ func plannedRepeats(workload Workload) int {
 
 func buildPlannedRun(runDir string, profile Profile, workload Workload, concurrency, repeat int) PlannedRun {
 	repeats := plannedRepeats(workload)
+	workload.NumPrompts = resolvedNumPrompts(workload, concurrency)
 	return PlannedRun{
 		Profile:     profile,
 		Workload:    workload,
@@ -1253,6 +1332,24 @@ func buildPlannedRun(runDir string, profile Profile, workload Workload, concurre
 		Repeat:      repeat,
 		ResultFile:  ResultPath(runDir, profile.Name, workload.Name, concurrency, repeat, repeats),
 	}
+}
+
+// minPromptsPerPoint is the sample floor per measurement: fewer requests
+// trades hours for noise the ± spreads would only confirm.
+const minPromptsPerPoint = 8
+
+// resolvedNumPrompts scales the request count with concurrency when the
+// workload declares prompts_per_user, so c1 points stop paying for c32-sized
+// sample counts.
+func resolvedNumPrompts(workload Workload, concurrency int) int {
+	if workload.PromptsPerUser <= 0 {
+		return workload.NumPrompts
+	}
+	prompts := workload.PromptsPerUser * concurrency
+	if prompts < minPromptsPerPoint {
+		return minPromptsPerPoint
+	}
+	return prompts
 }
 
 func RunDir(base string, spec Spec, now time.Time) string {

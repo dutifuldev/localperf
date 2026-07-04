@@ -654,6 +654,40 @@ func TestValidateContextSemantics(t *testing.T) {
 	}
 }
 
+func TestPromptsPerUserWorksForStructuredDatasets(t *testing.T) {
+	spec := testSpec()
+	workload := testCustomJSONLWorkload("structured-ppu", "requests.jsonl", []string{"8k"})
+	workload.Dataset.SampleCount = 0
+	workload.PromptsPerUser = 2
+	workload.Load.MaxConcurrency = []int{1, 4}
+	spec.Workloads = []Workload{workload}
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec error = %v, want prompts_per_user to satisfy structured dataset defaults", err)
+	}
+	if spec.Workloads[0].Dataset.SampleCount != 8 {
+		t.Fatalf("dataset sample count = %d, want 8 derived from prompts_per_user", spec.Workloads[0].Dataset.SampleCount)
+	}
+}
+
+func TestStructuredScaledWorkloadSurvivesMaterialization(t *testing.T) {
+	workload := testCustomJSONLWorkload("scaled-materialized", "requests.jsonl", []string{"8k"})
+	workload.Dataset.SampleCount = 0
+	workload.PromptsPerUser = 2
+	workload.Load.MaxConcurrency = []int{1, 4}
+	applyWorkloadDefault(&workload)
+	applyMaterializedDatasetToWorkload(&workload, 8, "rendered.jsonl")
+	if workload.NumPrompts != 0 || workload.PromptsPerUser != 2 {
+		t.Fatalf("after materialization num_prompts=%d ppu=%d, want scaling preserved", workload.NumPrompts, workload.PromptsPerUser)
+	}
+	spec := testSpec()
+	spec.Workloads = []Workload{workload}
+	ApplyDefaults(&spec)
+	if err := ValidateSpec(spec); err != nil {
+		t.Fatalf("ValidateSpec after materialization = %v, want valid", err)
+	}
+}
+
 func TestValidateContextSemanticsAcceptsCompliantClaims(t *testing.T) {
 	spec := testSpec()
 	spec.Workloads[0].ContextTarget = 8192
@@ -3539,4 +3573,49 @@ func freeTestPort() int {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port
+}
+
+func TestWorkloadPromptFieldValidation(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads[0].NumPrompts = 8
+	spec.Workloads[0].PromptsPerUser = 2
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("ValidateSpec error = %v, want mutual exclusion", err)
+	}
+	spec.Workloads[0].NumPrompts = 0
+	spec.Workloads[0].PromptsPerUser = -1
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "must not be negative") {
+		t.Fatalf("ValidateSpec error = %v, want negative rejection", err)
+	}
+	spec.Workloads[0].PromptsPerUser = 0
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "num_prompts or prompts_per_user") {
+		t.Fatalf("ValidateSpec error = %v, want either-field requirement", err)
+	}
+}
+
+func TestDatasetSampleCountDefaults(t *testing.T) {
+	// Fixed num_prompts flows into the sample count.
+	fixed := testCustomJSONLWorkload("fixed", "requests.jsonl", []string{"8k"})
+	fixed.Dataset.SampleCount = 0
+	fixed.NumPrompts = 5
+	applyWorkloadDefault(&fixed)
+	if fixed.Dataset.SampleCount != 5 {
+		t.Fatalf("sample count = %d, want 5 from num_prompts", fixed.Dataset.SampleCount)
+	}
+	// An explicit sample count backfills num_prompts only without scaling.
+	backfill := testCustomJSONLWorkload("backfill", "requests.jsonl", []string{"8k"})
+	backfill.Dataset.SampleCount = 7
+	backfill.NumPrompts = 0
+	applyWorkloadDefault(&backfill)
+	if backfill.NumPrompts != 7 {
+		t.Fatalf("num_prompts = %d, want 7 backfilled", backfill.NumPrompts)
+	}
+	scaled := testCustomJSONLWorkload("scaled", "requests.jsonl", []string{"8k"})
+	scaled.Dataset.SampleCount = 7
+	scaled.NumPrompts = 0
+	scaled.PromptsPerUser = 2
+	applyWorkloadDefault(&scaled)
+	if scaled.NumPrompts != 0 {
+		t.Fatalf("num_prompts = %d, want 0 when prompts scale", scaled.NumPrompts)
+	}
 }

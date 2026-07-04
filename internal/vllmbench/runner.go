@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,9 +23,13 @@ import (
 )
 
 type RunOptions struct {
-	RunDir           string
-	ArtifactPath     string
-	DryRun           bool
+	RunDir       string
+	ArtifactPath string
+	DryRun       bool
+	// Resume skips planned runs whose result file already exists and
+	// parses as completed with no failed requests; requires an explicit
+	// RunDir pointing at the previous attempt.
+	Resume           bool
 	OriginalSpecPath string
 }
 
@@ -33,10 +38,12 @@ type RunSummary struct {
 	StartedAt     time.Time   `json:"started_at"`
 	FinishedAt    time.Time   `json:"finished_at"`
 	DryRun        bool        `json:"dry_run"`
+	InProgress    bool        `json:"-"`
 	Error         string      `json:"error,omitempty"`
 	PlannedRuns   int         `json:"planned_runs"`
 	CompletedRuns int         `json:"completed_runs"`
 	FailedRuns    int         `json:"failed_runs"`
+	SkippedRuns   int         `json:"skipped_runs,omitempty"`
 	Rows          []ReportRow `json:"rows,omitempty"`
 	EventsPath    string      `json:"events_path"`
 	ReportPath    string      `json:"report_path,omitempty"`
@@ -79,14 +86,21 @@ type eventWriter struct {
 }
 
 type runSession struct {
-	ctx       context.Context
-	spec      Spec
-	opts      RunOptions
-	runDir    string
-	summary   RunSummary
-	events    *eventWriter
-	plan      []PlannedRun
-	processes map[string]*serverProcess
+	ctx     context.Context
+	spec    Spec
+	opts    RunOptions
+	runDir  string
+	summary RunSummary
+	events  *eventWriter
+	plan    []PlannedRun
+	// executionRuns is the plan minus resume-adopted points; preboot and
+	// profile execution work from it, while artifact writes keep the full
+	// plan so adopted measurements still import.
+	executionRuns          []PlannedRun
+	processes              map[string]*serverProcess
+	ladderRows             map[string]*ReportRow
+	ladderStops            map[string]adaptiveStop
+	reportedMaxConcurrency map[string]float64
 }
 
 func Execute(ctx context.Context, spec Spec, opts RunOptions) (RunSummary, error) {
@@ -118,18 +132,24 @@ func newRunSession(ctx context.Context, spec Spec, opts RunOptions) (*runSession
 	if err := ValidateSpec(spec); err != nil {
 		return nil, err
 	}
+	if opts.Resume && strings.TrimSpace(opts.RunDir) == "" {
+		return nil, fmt.Errorf("--resume requires --run-dir pointing at the previous attempt")
+	}
 	session := initRunSession(ctx, spec, opts)
 	if err := prepareSessionSpec(ctx, session); err != nil {
 		return session, err
 	}
-	events, err := newEventWriter(session.summary.EventsPath)
+	events, err := openEventWriter(session.summary.EventsPath, opts.Resume)
 	if err != nil {
 		return session, err
 	}
 	session.events = events
 	session.plan = BuildPlan(session.spec, session.runDir)
 	session.summary.PlannedRuns = len(session.plan)
-	writePlanEvents(session)
+	// A resumed attempt keeps the previous log's plan events.
+	if !opts.Resume {
+		writePlanEvents(session)
+	}
 	return session, nil
 }
 
@@ -158,7 +178,13 @@ func initRunSession(ctx context.Context, spec Spec, opts RunOptions) *runSession
 		SpecPath:     filepath.Join(runDir, "spec.normalized.json"),
 		MemoryFloor:  spec.Safety.MinMemAvailableGiB,
 	}
-	return &runSession{ctx: ctx, spec: spec, opts: opts, runDir: runDir, summary: summary, processes: map[string]*serverProcess{}}
+	return &runSession{
+		ctx: ctx, spec: spec, opts: opts, runDir: runDir, summary: summary,
+		processes:              map[string]*serverProcess{},
+		ladderRows:             map[string]*ReportRow{},
+		ladderStops:            map[string]adaptiveStop{},
+		reportedMaxConcurrency: map[string]float64{},
+	}
 }
 
 func prepareRunDirs(session *runSession) error {
@@ -204,6 +230,12 @@ func (session *runSession) close() {
 }
 
 func (session *runSession) run() error {
+	// Resume skimming happens before preboot so profiles with nothing left
+	// to run never start or wake a server.
+	session.executionRuns = session.plan
+	if session.opts.Resume {
+		session.executionRuns = session.skipResumedRuns(session.plan)
+	}
 	if err := session.prebootProfiles(); err != nil {
 		return err
 	}
@@ -222,18 +254,18 @@ func (session *runSession) prebootProfiles() error {
 	if !session.spec.Runner.PrebootProfiles {
 		return nil
 	}
-	err := prebootProfiles(session.ctx, session.spec, session.runDir, session.plan, session.events, session.processes)
+	err := prebootProfiles(session.ctx, session.spec, session.runDir, session.executionRuns, session.events, session.processes)
 	if err == nil {
 		return nil
 	}
 	session.summary.FailedRuns += remainingUnaccountedRuns(session.summary)
 	session.events.Write(Event{Timestamp: time.Now().UTC(), Type: "preboot_failed", Error: err.Error()})
-	markRunsSkipped(session.events, session.plan, err.Error())
+	markRunsSkipped(session.events, session.executionRuns, err.Error())
 	return fmt.Errorf("preboot profiles failed: %w", err)
 }
 
 func (session *runSession) runProfiles() error {
-	for _, profile := range profilesInPlanOrder(session.spec.Profiles, session.plan) {
+	for _, profile := range profilesInPlanOrder(session.spec.Profiles, session.executionRuns) {
 		if err := session.runProfile(profile); err != nil {
 			return err
 		}
@@ -242,7 +274,10 @@ func (session *runSession) runProfiles() error {
 }
 
 func (session *runSession) runProfile(profile Profile) error {
-	runs := runsForProfile(session.plan, profile.Name)
+	runs := runsForProfile(session.executionRuns, profile.Name)
+	// Stops replayed from resumed rows are known before boot; a profile
+	// whose remaining points are all adaptively skipped never starts.
+	runs = session.applyAdaptiveSkips(runs)
 	if len(runs) == 0 {
 		return nil
 	}
@@ -250,6 +285,7 @@ func (session *runSession) runProfile(profile Profile) error {
 	if !ok {
 		return nil
 	}
+	session.recordReportedMaxConcurrency(profile, proc)
 	if session.runProfileWorkloads(profile, proc, runs) {
 		return nil
 	}
@@ -330,6 +366,64 @@ func (session *runSession) stopAfterWarmupSleepFailure(profile Profile, proc *se
 	delete(session.processes, profile.Name)
 }
 
+// applyAdaptiveSkips records adaptive skips for planned runs whose stop
+// state is already known, before any server boots for them.
+func (session *runSession) applyAdaptiveSkips(runs []PlannedRun) []PlannedRun {
+	remaining := make([]PlannedRun, 0, len(runs))
+	for _, planned := range runs {
+		if reason := session.adaptiveSkipReason(planned); reason != "" {
+			session.skipPlannedRun(planned, reason)
+			continue
+		}
+		remaining = append(remaining, planned)
+	}
+	return remaining
+}
+
+// skipResumedRuns drops planned runs whose result file already exists and
+// parses as completed with zero failed requests, counting them as completed
+// from the previous attempt. Profiles left with nothing to run never boot.
+func (session *runSession) skipResumedRuns(runs []PlannedRun) []PlannedRun {
+	remaining := make([]PlannedRun, 0, len(runs))
+	for _, planned := range runs {
+		row, ok := resumableRow(planned)
+		if !ok {
+			remaining = append(remaining, planned)
+			continue
+		}
+		session.summary.CompletedRuns++
+		session.summary.Rows = append(session.summary.Rows, *row)
+		// Resumed rows replay the adaptive ladder so stop state from the
+		// previous attempt is not forgotten.
+		session.updateLadder(planned, row)
+		session.events.Write(Event{
+			Timestamp:   time.Now().UTC(),
+			Type:        "workload_resumed",
+			Profile:     planned.Profile.Name,
+			Workload:    planned.Workload.Name,
+			Concurrency: planned.Concurrency,
+			Repeat:      planned.Repeat,
+			ResultFile:  planned.ResultFile,
+		})
+	}
+	return remaining
+}
+
+// writeArtifactSnapshot refreshes the artifact after every planned run so a
+// crash or abort never loses completed measurements and partial results can
+// be rendered mid-sweep. Snapshot failures are recorded but never abort the
+// benchmark.
+func (session *runSession) writeArtifactSnapshot() {
+	if session.summary.ArtifactPath == "" || session.opts.DryRun {
+		return
+	}
+	snapshot := session.summary
+	snapshot.InProgress = true
+	if err := WriteSQLiteArtifact(session.runDir, snapshot.ArtifactPath, session.spec, snapshot, session.plan, session.opts.OriginalSpecPath); err != nil {
+		session.events.Write(Event{Timestamp: time.Now().UTC(), Type: "artifact_snapshot_failed", Error: err.Error()})
+	}
+}
+
 func (session *runSession) runProfileWorkloads(profile Profile, proc *serverProcess, runs []PlannedRun) bool {
 	for i, planned := range runs {
 		if aborted := session.runProfileWorkload(profile, proc, runs, i, planned); aborted {
@@ -340,18 +434,43 @@ func (session *runSession) runProfileWorkloads(profile Profile, proc *serverProc
 }
 
 func (session *runSession) runProfileWorkload(profile Profile, proc *serverProcess, runs []PlannedRun, index int, planned PlannedRun) bool {
+	if reason := session.adaptiveSkipReason(planned); reason != "" {
+		session.skipPlannedRun(planned, reason)
+		return false
+	}
 	if err := checkMemoryEvent(session.spec, session.events, "before_workload", planned.Profile.Name); err != nil {
 		return session.handleWorkloadError(profile, proc, runs, index, planned, "workload_skipped", err)
 	}
 	result, err := executeBench(session.ctx, session.spec, planned, session.runDir, session.events)
 	if err != nil {
-		return session.handleWorkloadError(profile, proc, runs, index, planned, "workload_failed", err)
+		session.stopLadder(planned, fmt.Sprintf("concurrency %d failed: %v", planned.Concurrency, err))
+		aborted := session.handleWorkloadError(profile, proc, runs, index, planned, "workload_failed", err)
+		session.writeArtifactSnapshot()
+		return aborted
 	}
 	session.summary.CompletedRuns++
 	if result != nil {
 		session.summary.Rows = append(session.summary.Rows, *result)
 	}
+	session.updateLadder(planned, result)
+	session.writeArtifactSnapshot()
 	return false
+}
+
+// skipPlannedRun records an adaptive skip: skipped is a first-class outcome
+// with a reason, never a silent hole and never a failure.
+func (session *runSession) skipPlannedRun(planned PlannedRun, reason string) {
+	session.summary.SkippedRuns++
+	session.events.Write(Event{
+		Timestamp:   time.Now().UTC(),
+		Type:        "workload_skipped",
+		Profile:     planned.Profile.Name,
+		Workload:    planned.Workload.Name,
+		Concurrency: planned.Concurrency,
+		Repeat:      planned.Repeat,
+		Error:       reason,
+	})
+	session.writeArtifactSnapshot()
 }
 
 func (session *runSession) handleWorkloadError(profile Profile, proc *serverProcess, runs []PlannedRun, index int, planned PlannedRun, eventType string, err error) bool {
@@ -836,14 +955,31 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 		return nil, err
 	}
 	events.Write(event)
-	rows, err := ParseResultFile(planned.ResultFile)
+	row, failed, err := parsedPlannedRow(planned)
 	if err != nil {
 		return nil, err
 	}
+	if failed > 0 {
+		return row, fmt.Errorf("benchmark result reported %d failed request(s)", failed)
+	}
+	return row, nil
+}
+
+// parsedPlannedRow parses and enriches the planned run's result file.
+func parsedPlannedRow(planned PlannedRun) (*ReportRow, int, error) {
+	rows, err := ParseResultFile(planned.ResultFile)
+	if err != nil {
+		return nil, 0, err
+	}
 	if len(rows) == 0 {
-		return nil, errors.New("benchmark result file did not contain a parseable row")
+		return nil, 0, errors.New("benchmark result file did not contain a parseable row")
 	}
 	row := rows[0]
+	enrichPlannedRow(&row, planned)
+	return &row, failedRequestCount(rows), nil
+}
+
+func enrichPlannedRow(row *ReportRow, planned PlannedRun) {
 	row.Profile = planned.Profile.Name
 	row.Workload = planned.Workload.Name
 	row.Context = planned.Profile.MaxModelLen
@@ -855,12 +991,53 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	row.RandomOutputLen = planned.Workload.RandomOutputLen
 	row.DatasetName = planned.Workload.DatasetName
 	row.ResultFile = planned.ResultFile
-	applyWorkloadFields(&row, planned.Workload)
-	deriveReportRowFields(&row)
-	if failed := failedRequestCount(rows); failed > 0 {
-		return &row, fmt.Errorf("benchmark result reported %d failed request(s)", failed)
+	applyWorkloadFields(row, planned.Workload)
+	deriveReportRowFields(row)
+}
+
+// resumableRow adopts a previous attempt's result only when it demonstrably
+// measured the same point: parses cleanly with zero failures, completed at
+// least the planned request count, ran at the planned concurrency, and (for
+// random workloads) the measured token shape matches the current spec, so an
+// edited spec re-runs instead of silently inheriting stale results.
+func resumableRow(planned PlannedRun) (*ReportRow, bool) {
+	rows, err := ParseResultFile(planned.ResultFile)
+	if err != nil || len(rows) == 0 || failedRequestCount(rows) > 0 {
+		return nil, false
 	}
-	return &row, nil
+	raw := rows[0]
+	if raw.Completed < planned.Workload.NumPrompts {
+		return nil, false
+	}
+	if raw.Concurrency != 0 && raw.Concurrency != planned.Concurrency {
+		return nil, false
+	}
+	if !resultMatchesShape(raw, planned.Workload) {
+		return nil, false
+	}
+	enrichPlannedRow(&raw, planned)
+	return &raw, true
+}
+
+// resultMatchesShape compares the recorded mean token shape against the
+// current workload for random traffic; a 20% + 16 token band absorbs
+// tokenizer and template drift while catching real spec edits.
+func resultMatchesShape(raw ReportRow, workload Workload) bool {
+	if workload.DatasetName != "random" || raw.Completed <= 0 {
+		return true
+	}
+	completed := float64(raw.Completed)
+	if workload.RandomInputLen > 0 && shapeDiffers(float64(raw.PromptTokens)/completed, float64(workload.RandomInputLen)) {
+		return false
+	}
+	if workload.IgnoreEOS && workload.RandomOutputLen > 0 && shapeDiffers(float64(raw.CompletionTokens)/completed, float64(workload.RandomOutputLen)) {
+		return false
+	}
+	return true
+}
+
+func shapeDiffers(measured, requested float64) bool {
+	return math.Abs(measured-requested) > 0.2*requested+16
 }
 
 func executeLoadCommand(ctx context.Context, spec Spec, planned PlannedRun, command CommandSpec, logPath string) (commandResult, error) {
@@ -1181,10 +1358,20 @@ func checkMemoryEvent(spec Spec, events *eventWriter, eventType, profile string)
 }
 
 func newEventWriter(path string) (*eventWriter, error) {
+	return openEventWriter(path, false)
+}
+
+// openEventWriter appends when resuming so the previous attempt's events
+// stay part of the run's history; otherwise it truncates.
+func openEventWriter(path string, appendEvents bool) (*eventWriter, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	file, err := os.Create(path)
+	mode := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if appendEvents {
+		mode = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	}
+	file, err := os.OpenFile(path, mode, 0o644)
 	if err != nil {
 		return nil, err
 	}

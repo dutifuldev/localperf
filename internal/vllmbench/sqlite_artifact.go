@@ -159,6 +159,10 @@ func insertRunRow(tx *sql.Tx, runID, runDir string, spec Spec, summary RunSummar
 }
 
 func runStatus(summary RunSummary) string {
+	// Incremental snapshots record the run as still in flight.
+	if summary.InProgress {
+		return "running"
+	}
 	if strings.TrimSpace(summary.Error) != "" {
 		return "failed"
 	}
@@ -403,7 +407,7 @@ func insertWorkloads(tx *sql.Tx, runID string, spec Spec) error {
 			id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
 			save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json, metadata_json
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			dimensionID(runID, workload.Name), runID, workload.Name, workload.Phase, trafficJSON, concurrencyJSON, workload.NumPrompts,
+			dimensionID(runID, workload.Name), runID, workload.Name, workload.Phase, trafficJSON, concurrencyJSON, workloadSampleCount(workload),
 			workload.Repeats, boolToInt(boolValue(workload.BenchmarkTrafficConfig.SaveDetailed)),
 			boolToInt(workload.CapturePayloadArtifacts), structuredWorkloadJSON(workload, workload.Dataset),
 			structuredWorkloadJSON(workload, workload.Request), structuredWorkloadJSON(workload, workload.Load),
@@ -419,6 +423,15 @@ func structuredWorkloadJSON(workload Workload, value any) any {
 		return nil
 	}
 	return nullableJSON(value)
+}
+
+// workloadSampleCount records the largest point's request count for
+// workloads whose prompts scale with concurrency.
+func workloadSampleCount(workload Workload) int {
+	if workload.NumPrompts > 0 {
+		return workload.NumPrompts
+	}
+	return resolvedNumPrompts(workload, largestConcurrency(workload))
 }
 
 // workloadClaimsJSON stores declared workload claims keyed by claim type in
@@ -1228,11 +1241,16 @@ func artifactFinishEvent(events []Event, planned PlannedRun) Event {
 }
 
 func eventHasImportableResult(event Event) bool {
+	// workload_resumed marks a completed result adopted from a previous
+	// attempt whose clean finish event may have been lost to a crash.
+	if event.Type == "workload_resumed" && event.ResultFile != "" {
+		return true
+	}
 	return event.Type == "workload_finish" && event.ResultFile != "" && (event.Error == "" || eventDetailBool(event, "result_written"))
 }
 
 func eventHasArtifactResult(event Event) bool {
-	return event.ResultFile != "" && (event.Type == "workload_finish" || event.Type == "warmup_finish")
+	return event.ResultFile != "" && (event.Type == "workload_finish" || event.Type == "warmup_finish" || event.Type == "workload_resumed")
 }
 
 func eventDetailBool(event Event, key string) bool {
@@ -1246,31 +1264,56 @@ func eventDetailBool(event Event, key string) bool {
 	return details[key]
 }
 
+// measurementStatus takes the last decisive event: resumed runs append a
+// fresh attempt's events after a failed one, and the retry outcome must win
+// over the stale failure.
 func measurementStatus(events []Event, planned PlannedRun) string {
 	status := "planned"
 	for _, event := range events {
-		if eventMatchesPlanned(event, planned) {
-			if event.Type == "workload_skipped" {
-				return "skipped"
-			}
-			if event.Type == "workload_failed" || event.Error != "" {
-				return "failed"
-			}
-			if event.Type == "workload_finish" && event.Error == "" {
-				status = "completed"
-			}
+		if !eventMatchesPlanned(event, planned) {
+			continue
+		}
+		if next := eventMeasurementStatus(event); next != "" {
+			status = next
 		}
 	}
 	return status
 }
 
+// eventMeasurementStatus maps one event to the measurement status it
+// implies, or "" for non-decisive events. workload_resumed adopts a
+// completed result from a previous attempt.
+func eventMeasurementStatus(event Event) string {
+	switch {
+	case event.Type == "workload_skipped":
+		return "skipped"
+	case event.Type == "workload_resumed":
+		return "completed"
+	case event.Type == "workload_failed" || event.Error != "":
+		return "failed"
+	case event.Type == "workload_finish":
+		return "completed"
+	default:
+		return ""
+	}
+}
+
+// measurementError keeps the last error and clears it on a later clean
+// finish, matching measurementStatus's last-attempt-wins view.
 func measurementError(events []Event, planned PlannedRun) any {
+	var lastError any
 	for _, event := range events {
-		if eventMatchesPlanned(event, planned) && event.Error != "" {
-			return event.Error
+		if !eventMatchesPlanned(event, planned) {
+			continue
+		}
+		if event.Error != "" {
+			lastError = event.Error
+		}
+		if event.Type == "workload_resumed" || (event.Type == "workload_finish" && event.Error == "") {
+			lastError = nil
 		}
 	}
-	return nil
+	return lastError
 }
 
 func measurementTimes(events []Event, planned PlannedRun) (*time.Time, *time.Time) {
@@ -1283,7 +1326,7 @@ func measurementTimes(events []Event, planned PlannedRun) (*time.Time, *time.Tim
 			t := event.Timestamp
 			start = &t
 		}
-		if event.Type == "workload_finish" || event.Type == "workload_failed" || event.Type == "workload_skipped" {
+		if event.Type == "workload_finish" || event.Type == "workload_failed" || event.Type == "workload_skipped" || event.Type == "workload_resumed" {
 			t := event.Timestamp
 			end = &t
 		}

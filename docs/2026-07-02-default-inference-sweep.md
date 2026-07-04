@@ -35,8 +35,10 @@ Run two benchmark families:
   maximum aggregate token throughput even if the setting is not practically
   useful. These are capacity points (`context_semantics: "capacity"`).
 - `practical-context-sweep`: **active** context points `8k`, `16k`, `32k`,
-  `64k`, and `128k`, with concurrency `1`, `4`, `8`, `16`, and `32` where the
-  hardware can safely run them.
+  and `64k`, with concurrency `1`, `4`, `8`, `16`, and `32` where the
+  hardware can safely run them. `128k` is opt-in and capped at `c4`; at that
+  KV budget, higher concurrency is an hours-long stress exercise, not a
+  default grid point.
 
 The ladder points mean active context, not server capacity: a `32k` point must
 actually move ~32k tokens per request through the KV cache. Setting
@@ -51,21 +53,31 @@ lengths that track `N`:
   shape: `input = N - headroom`, `output = 1`. Keep output at 1 (at most a
   few tokens); anything larger spends run time decoding and pollutes the
   prefill numbers.
-- `decode`: long prompt, long output within `N`. Default shape:
-  `output = min(4096, N/4)`, `input = N - output - headroom`. A decode row
-  sweeps an active context range from `input` up to `N` as output tokens
-  accumulate; reports label it with that range per
-  `2026-07-02-context-semantics.md`.
+- `decode`: long prompt, `1024` generated tokens. Default shape:
+  `output = min(1024, N/4)`, `input = N - output - headroom`. 1024 tokens is
+  still hundreds of steady-state decode steps, and the shorter output keeps
+  the measured active range close to `N`. A decode row sweeps an active
+  context range from `input` up to `N` as output tokens accumulate; reports
+  label it with that range per `2026-07-02-context-semantics.md`.
 
 with `headroom = max(64, N/64)` to absorb chat template and tokenizer drift.
 Prefill rows are reported as aggregate and per-user prefill tok/s; decode rows
 as aggregate and per-user output tok/s.
 
+Request counts scale with concurrency: `prompts_per_user` (default 2) gives
+`num_prompts = max(8, 2 x concurrency)` per point, so `c1` points stop paying
+for `c32`-sized sample counts. Do not go below the floor of 8 requests per
+point; that trades hours for noise.
+
+Long-output behavior is a stress preset, not the default:
+`localperf sweep plan --stress` adds `4096`-token decode spot checks at
+`32k c4` and `64k c1/c4` plus the `128k` points at `c1/c4`.
+
 Default sweeps must be generated with `localperf sweep plan`, for example:
 
 ```sh
 localperf sweep plan --model <model-id> \
-  --contexts 8k,16k,32k,64k,128k --concurrency 1,4,8,16,32 \
+  --contexts 8k,16k,32k,64k --concurrency 1,4,8,16,32 \
   --out spec.json
 ```
 
@@ -152,6 +164,20 @@ Prefer a sparse search first:
 - skip higher concurrency once memory, TTFT, or error rate makes the profile
   impractical,
 - confirm near the best working point with the exact production-style profile.
+
+The runner enforces this automatically (`runner.adaptive`, on by default):
+per profile and workload, concurrency runs ascending and higher points are
+skipped, with the reason recorded, when throughput improves less than 10%
+over the previous point, a point's TTFT p99 exceeds a configured ceiling
+(`ttft_p99_ceiling_ms`, off unless set), the previous point failed, or the
+concurrency exceeds 2x vLLM's reported maximum concurrency. Disable with
+`"runner": {"adaptive": {"enabled": false}}`; negative thresholds disable
+individual rules.
+
+Long sweeps are crash-tolerant: the artifact is refreshed after every point
+(run status `running` until the sweep finishes), so partial results render at
+any time, and `bench run --resume` with the same `--run-dir` skips points
+whose results already completed.
 
 Do not call a sweep complete until all completed, skipped, and failed cases are
 recorded with enough metadata to reproduce the run.

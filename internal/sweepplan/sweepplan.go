@@ -23,10 +23,18 @@ type PlanRequest struct {
 	Concurrency []int
 	// Repeats per measurement; defaults to 1.
 	Repeats int
-	// NumPrompts per measurement; defaults to 32.
+	// NumPrompts fixes the request count per measurement; when 0, prompts
+	// scale with concurrency via PromptsPerUser instead.
 	NumPrompts int
+	// PromptsPerUser scales requests with concurrency
+	// (num_prompts = max(8, PromptsPerUser * concurrency)); defaults to 2.
+	PromptsPerUser int
 	// IncludeReference adds the 4k max-throughput-reference capacity family.
 	IncludeReference bool
+	// IncludeStress adds long-output decode spot checks (4096 tokens at
+	// 32k c4 and 64k c1/c4 when those contexts are in the ladder) and the
+	// 128k points at c1/c4.
+	IncludeStress bool
 	// MinMemAvailableGiB is the safety memory floor; defaults to 40.
 	MinMemAvailableGiB float64
 	// BasePort is the first server port; defaults to 8100.
@@ -34,12 +42,18 @@ type PlanRequest struct {
 }
 
 const (
-	defaultNumPrompts   = 32
-	defaultMemFloorGiB  = 40
-	defaultBasePort     = 8100
-	referenceContext    = 4096
-	decodeOutputCap     = 4096
-	prefillOutputTokens = 1
+	defaultPromptsPerUser = 2
+	defaultMemFloorGiB    = 40
+	defaultBasePort       = 8100
+	referenceContext      = 4096
+	decodeOutputTokens    = 1024
+	stressOutputTokens    = 4096
+	prefillOutputTokens   = 1
+	stressContext         = 131072
+	// highContextConcurrencyCap bounds contexts >= 128k to c1/c4: beyond
+	// that the KV budget makes higher concurrency an hours-long stress
+	// exercise, which belongs in --stress, not the default grid.
+	highContextConcurrencyCap = 4
 )
 
 // headroom absorbs chat template and tokenizer drift between requested and
@@ -59,13 +73,23 @@ func PrefillShape(context int) (inputLen, outputLen int) {
 }
 
 // DecodeShape returns input/output lengths for an active decode point: long
-// prompt plus long output within the target.
+// prompt plus 1024 generated tokens. That is still hundreds of steady-state
+// decode steps, and the shorter output keeps the measured active range close
+// to the target; 4096-token outputs are the --stress preset's job.
 func DecodeShape(context int) (inputLen, outputLen int) {
-	outputLen = context / 4
-	if outputLen > decodeOutputCap {
-		outputLen = decodeOutputCap
+	return decodeShapeWithOutput(context, decodeOutputTokens)
+}
+
+// StressDecodeShape is the long-output variant used by stress spot checks.
+func StressDecodeShape(context int) (inputLen, outputLen int) {
+	return decodeShapeWithOutput(context, stressOutputTokens)
+}
+
+func decodeShapeWithOutput(context, output int) (inputLen, outputLen int) {
+	if output > context/4 {
+		output = context / 4
 	}
-	return context - outputLen - headroom(context), outputLen
+	return context - output - headroom(context), output
 }
 
 // Plan generates a validated sweep spec. Every workload carries a declared
@@ -81,8 +105,11 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 	if len(request.Concurrency) == 0 {
 		request.Concurrency = []int{1, 4, 8, 16, 32}
 	}
-	if request.NumPrompts <= 0 {
-		request.NumPrompts = defaultNumPrompts
+	if request.NumPrompts > 0 {
+		// A fixed count and scaling are mutually exclusive.
+		request.PromptsPerUser = 0
+	} else if request.PromptsPerUser <= 0 {
+		request.PromptsPerUser = defaultPromptsPerUser
 	}
 	if request.MinMemAvailableGiB <= 0 {
 		request.MinMemAvailableGiB = defaultMemFloorGiB
@@ -111,13 +138,9 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 			},
 		},
 	}
-	// The server must admit at least the highest requested concurrency.
-	maxNumSeqs := 0
-	for _, concurrency := range request.Concurrency {
-		if concurrency > maxNumSeqs {
-			maxNumSeqs = concurrency
-		}
-	}
+	// The server must admit at least the highest requested concurrency;
+	// high-context profiles cap max_num_seqs to their capped ladder.
+	maxNumSeqs := maxConcurrencyOf(request.Concurrency)
 	port := request.BasePort
 	if request.IncludeReference {
 		spec.Profiles = append(spec.Profiles, sweepProfile("4k-reference", referenceContext, port, maxNumSeqs))
@@ -127,9 +150,13 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 			referenceContext, vllmbench.ContextSemanticsCapacity,
 			1024, 1024, request))
 	}
-	for _, context := range request.Contexts {
+	contexts := append([]int{}, request.Contexts...)
+	if request.IncludeStress && !containsInt(contexts, stressContext) {
+		contexts = append(contexts, stressContext)
+	}
+	for _, context := range contexts {
 		label := vllmbench.TokenCountLabel(context)
-		spec.Profiles = append(spec.Profiles, sweepProfile(label, context, port, maxNumSeqs))
+		spec.Profiles = append(spec.Profiles, sweepProfile(label, context, port, contextMaxSeqs(context, request)))
 		port++
 		prefillInput, prefillOutput := PrefillShape(context)
 		spec.Workloads = append(spec.Workloads, sweepWorkload(
@@ -141,6 +168,9 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 			fmt.Sprintf("decode-%s", label), "decode", label,
 			context, vllmbench.ContextSemanticsActive,
 			decodeInput, decodeOutput, request))
+	}
+	if request.IncludeStress {
+		spec.Workloads = append(spec.Workloads, stressWorkloads(contexts, request)...)
 	}
 
 	// Emit the normalized spec: explicit defaults are stable to diff and
@@ -163,6 +193,87 @@ func sweepProfile(name string, maxModelLen, port, maxNumSeqs int) vllmbench.Prof
 	}
 }
 
+// stressWorkloads adds long-output decode spot checks for ladder contexts
+// that have them: 4096-token output at 32k c4 and 64k c1/c4. Kept out of the
+// default grid because they dominate sweep wall time.
+var stressSpots = []struct {
+	context     int
+	concurrency []int
+}{
+	{32768, []int{4}},
+	{65536, []int{1, 4}},
+}
+
+func stressWorkloads(contexts []int, request PlanRequest) []vllmbench.Workload {
+	var workloads []vllmbench.Workload
+	for _, spot := range stressSpots {
+		if !containsInt(contexts, spot.context) {
+			continue
+		}
+		label := vllmbench.TokenCountLabel(spot.context)
+		input, output := StressDecodeShape(spot.context)
+		spotRequest := request
+		spotRequest.Concurrency = spot.concurrency
+		workloads = append(workloads, sweepWorkload(
+			fmt.Sprintf("decode-stress-%s", label), "decode", label,
+			spot.context, vllmbench.ContextSemanticsActive,
+			input, output, spotRequest))
+	}
+	return workloads
+}
+
+// contextMaxSeqs sizes a context profile's server admission for its capped
+// ladder plus any stress spot checks attached to that context; a stress c4
+// point must not run against a server that only admits c1.
+func contextMaxSeqs(context int, request PlanRequest) int {
+	seqs := maxConcurrencyOf(pointConcurrency(context, request.Concurrency))
+	if request.IncludeStress {
+		for _, spot := range stressSpots {
+			if spot.context == context {
+				seqs = max(seqs, maxConcurrencyOf(spot.concurrency))
+			}
+		}
+	}
+	return seqs
+}
+
+func maxConcurrencyOf(values []int) int {
+	largest := 0
+	for _, value := range values {
+		if value > largest {
+			largest = value
+		}
+	}
+	return largest
+}
+
+func containsInt(values []int, wanted int) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+// pointConcurrency caps contexts >= 128k at c4; higher concurrency at those
+// KV budgets is stress territory, not the default grid.
+func pointConcurrency(context int, concurrency []int) []int {
+	if context < stressContext {
+		return append([]int{}, concurrency...)
+	}
+	capped := []int{}
+	for _, value := range concurrency {
+		if value <= highContextConcurrencyCap {
+			capped = append(capped, value)
+		}
+	}
+	if len(capped) == 0 {
+		capped = []int{1}
+	}
+	return capped
+}
+
 func sweepWorkload(name, phase, profile string, target int, semantics string, inputLen, outputLen int, request PlanRequest) vllmbench.Workload {
 	seed := 0
 	temperature := 0.0
@@ -182,7 +293,8 @@ func sweepWorkload(name, phase, profile string, target int, semantics string, in
 			RequestRate:      "inf",
 		},
 		NumPrompts:     request.NumPrompts,
-		MaxConcurrency: append([]int{}, request.Concurrency...),
+		PromptsPerUser: request.PromptsPerUser,
+		MaxConcurrency: pointConcurrency(target, request.Concurrency),
 		IgnoreEOS:      true,
 		Temperature:    &temperature,
 	}

@@ -98,8 +98,109 @@ func TestPlanGolden(t *testing.T) {
 	}
 }
 
+func TestStressProfilesAdmitSpotCheckConcurrency(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:         "example/model",
+		Contexts:      []int{32768, 65536},
+		Concurrency:   []int{1},
+		IncludeStress: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range spec.Profiles {
+		if (profile.Name == "32k" || profile.Name == "64k") && profile.MaxNumSeqs < 4 {
+			t.Fatalf("profile %s max_num_seqs = %d, want >= 4 for stress spot checks", profile.Name, profile.MaxNumSeqs)
+		}
+	}
+}
+
 func TestPlanRequiresModel(t *testing.T) {
 	if _, err := Plan(PlanRequest{Contexts: []int{8192}}); err == nil || !strings.Contains(err.Error(), "model is required") {
 		t.Fatalf("Plan error = %v, want model required", err)
+	}
+}
+
+func TestStressPresetAddsSpotChecksAnd128k(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:         "example/model",
+		Contexts:      []int{8192, 32768, 65536},
+		Concurrency:   []int{1, 4, 8, 16},
+		IncludeStress: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vllmbench.ApplyDefaults(&spec)
+	if err := vllmbench.ValidateSpec(spec); err != nil {
+		t.Fatalf("stress spec failed validation: %v", err)
+	}
+	workloads := map[string]vllmbench.Workload{}
+	for _, workload := range spec.Workloads {
+		workloads[workload.Name] = workload
+	}
+	stress32 := workloads["decode-stress-32k"]
+	if stress32.RandomOutputLen != 4096 || len(stress32.MaxConcurrency) != 1 || stress32.MaxConcurrency[0] != 4 {
+		t.Fatalf("decode-stress-32k = %+v, want 4096 output at c4", stress32)
+	}
+	stress64 := workloads["decode-stress-64k"]
+	if stress64.RandomOutputLen != 4096 || len(stress64.MaxConcurrency) != 2 {
+		t.Fatalf("decode-stress-64k = %+v, want 4096 output at c1,c4", stress64)
+	}
+	// Stress adds the 128k points, capped at c4.
+	decode128 := workloads["decode-128k"]
+	if decode128.ContextTarget != 131072 {
+		t.Fatalf("decode-128k target = %d, want 131072", decode128.ContextTarget)
+	}
+	for _, concurrency := range decode128.MaxConcurrency {
+		if concurrency > 4 {
+			t.Fatalf("decode-128k concurrency %v exceeds the high-context cap", decode128.MaxConcurrency)
+		}
+	}
+	// The 128k profile's server admission cap follows its capped ladder;
+	// max_num_seqs 16 there would defeat the memory cap.
+	for _, profile := range spec.Profiles {
+		if profile.Name == "128k" && profile.MaxNumSeqs > 4 {
+			t.Fatalf("128k profile max_num_seqs = %d, want <= 4", profile.MaxNumSeqs)
+		}
+	}
+	// No stress spot for 8k: only contexts with defined spot checks get one.
+	if _, ok := workloads["decode-stress-8k"]; ok {
+		t.Fatal("unexpected stress workload for 8k")
+	}
+}
+
+func TestDefaultGridUsesShortDecodeAndScaledPrompts(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:       "example/model",
+		Contexts:    []int{65536},
+		Concurrency: []int{1, 4, 16},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vllmbench.ApplyDefaults(&spec)
+	var decode vllmbench.Workload
+	for _, workload := range spec.Workloads {
+		if workload.Name == "decode-64k" {
+			decode = workload
+		}
+	}
+	if decode.RandomOutputLen != 1024 {
+		t.Fatalf("decode output = %d, want 1024 by default", decode.RandomOutputLen)
+	}
+	if decode.PromptsPerUser != 2 {
+		t.Fatalf("prompts_per_user = %d, want 2 by default", decode.PromptsPerUser)
+	}
+	// Planned runs resolve prompts per concurrency: c1 -> floor 8, c16 -> 32.
+	plan := vllmbench.BuildPlan(spec, "runs/example")
+	prompts := map[int]int{}
+	for _, planned := range plan {
+		if planned.Workload.Name == "decode-64k" {
+			prompts[planned.Concurrency] = planned.Workload.NumPrompts
+		}
+	}
+	if prompts[1] != 8 || prompts[4] != 8 || prompts[16] != 32 {
+		t.Fatalf("resolved prompts = %v, want map[1:8 4:8 16:32]", prompts)
 	}
 }
