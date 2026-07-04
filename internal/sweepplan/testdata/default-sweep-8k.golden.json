@@ -91,7 +91,7 @@
       "profiles": [
         "4k-reference"
       ],
-      "num_prompts": 8,
+      "num_prompts": 0,
       "prompts_per_user": 2,
       "repeats": 1,
       "max_concurrency": [
@@ -124,7 +124,7 @@
       "profiles": [
         "8k"
       ],
-      "num_prompts": 8,
+      "num_prompts": 0,
       "prompts_per_user": 2,
       "repeats": 1,
       "max_concurrency": [
@@ -157,7 +157,7 @@
       "profiles": [
         "8k"
       ],
-      "num_prompts": 8,
+      "num_prompts": 0,
       "prompts_per_user": 2,
       "repeats": 1,
       "max_concurrency": [

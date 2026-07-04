@@ -360,7 +360,6 @@ func applyWorkloadDefaults(workloads []Workload) {
 func applyWorkloadDefault(workload *Workload) {
 	applyWorkloadCompatibilityDefaults(workload)
 	applyWorkloadConcurrencyDefaults(workload)
-	resolveWorkloadPrompts(workload)
 	applyStructuredWorkloadDefaults(workload)
 	applyWorkloadExecutionDefaults(workload)
 	applyTrafficDefaults(&workload.BenchmarkTrafficConfig, "")
@@ -399,20 +398,17 @@ func applyWorkloadConcurrencyDefaults(workload *Workload) {
 	}
 }
 
-// resolveWorkloadPrompts records the largest point's count at the workload
-// level so structured dataset sample counts can derive from it; each planned
-// run resolves its own count from prompts_per_user.
-func resolveWorkloadPrompts(workload *Workload) {
-	if workload.NumPrompts > 0 || workload.PromptsPerUser <= 0 {
-		return
-	}
+// largestConcurrency is the workload's biggest ladder point; sample counts
+// for structured datasets and workload-level bookkeeping derive from it when
+// prompts scale with concurrency.
+func largestConcurrency(workload Workload) int {
 	largest := 1
 	for _, concurrency := range workload.MaxConcurrency {
 		if concurrency > largest {
 			largest = concurrency
 		}
 	}
-	workload.NumPrompts = resolvedNumPrompts(*workload, largest)
+	return largest
 }
 
 func applyWorkloadExecutionDefaults(workload *Workload) {
@@ -435,12 +431,24 @@ func applyDatasetDefaults(workload *Workload) {
 	if strings.TrimSpace(workload.Dataset.Selection) == "" {
 		workload.Dataset.Selection = "first_n"
 	}
-	if workload.Dataset.SampleCount <= 0 && workload.NumPrompts > 0 {
-		workload.Dataset.SampleCount = workload.NumPrompts
+	if workload.Dataset.SampleCount <= 0 {
+		workload.Dataset.SampleCount = defaultDatasetSampleCount(*workload)
 	}
-	if workload.NumPrompts <= 0 && workload.Dataset.SampleCount > 0 {
+	if workload.NumPrompts <= 0 && workload.PromptsPerUser <= 0 && workload.Dataset.SampleCount > 0 {
 		workload.NumPrompts = workload.Dataset.SampleCount
 	}
+}
+
+// defaultDatasetSampleCount prepares enough rows for the workload: the fixed
+// request count, or the largest ladder point when prompts scale.
+func defaultDatasetSampleCount(workload Workload) int {
+	if workload.NumPrompts > 0 {
+		return workload.NumPrompts
+	}
+	if workload.PromptsPerUser > 0 {
+		return resolvedNumPrompts(workload, largestConcurrency(workload))
+	}
+	return 0
 }
 
 func applyLoadDefaults(workload *Workload) {
@@ -1056,6 +1064,9 @@ func validateWorkloadPositiveFields(prefix string, workload Workload) []string {
 	var issues []string
 	if workload.NumPrompts <= 0 && workload.PromptsPerUser <= 0 {
 		issues = append(issues, prefix+": num_prompts or prompts_per_user must be positive")
+	}
+	if workload.NumPrompts > 0 && workload.PromptsPerUser > 0 {
+		issues = append(issues, prefix+": set either num_prompts (fixed) or prompts_per_user (scales with concurrency), not both")
 	}
 	if workload.PromptsPerUser < 0 {
 		issues = append(issues, prefix+": prompts_per_user must not be negative")

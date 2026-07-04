@@ -164,3 +164,83 @@ func TestIncrementalSnapshotsKeepArtifactCurrent(t *testing.T) {
 		t.Fatalf("final run status = %q, want completed", status)
 	}
 }
+
+func TestResultMatchesShape(t *testing.T) {
+	random := Workload{
+		BenchmarkTrafficConfig: BenchmarkTrafficConfig{DatasetName: "random", RandomInputLen: 1000, RandomOutputLen: 100},
+		IgnoreEOS:              true,
+	}
+	cases := []struct {
+		name string
+		raw  ReportRow
+		want bool
+	}{
+		{"matching shape", ReportRow{Completed: 4, PromptTokens: 4100, CompletionTokens: 400}, true},
+		{"prompt shape drifted", ReportRow{Completed: 4, PromptTokens: 8000, CompletionTokens: 400}, false},
+		{"output shape drifted", ReportRow{Completed: 4, PromptTokens: 4100, CompletionTokens: 2000}, false},
+		{"no completed requests", ReportRow{Completed: 0}, true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := resultMatchesShape(testCase.raw, random); got != testCase.want {
+				t.Fatalf("resultMatchesShape = %t, want %t", got, testCase.want)
+			}
+		})
+	}
+	// Non-random datasets and EOS-terminated outputs are not shape-checked.
+	custom := Workload{BenchmarkTrafficConfig: BenchmarkTrafficConfig{DatasetName: "custom"}}
+	if !resultMatchesShape(ReportRow{Completed: 4, PromptTokens: 1}, custom) {
+		t.Fatal("custom dataset shape-checked")
+	}
+	eos := random
+	eos.IgnoreEOS = false
+	if !resultMatchesShape(ReportRow{Completed: 4, PromptTokens: 4100, CompletionTokens: 40}, eos) {
+		t.Fatal("EOS-terminated output shape-checked")
+	}
+}
+
+func TestResumableRowRejectsMismatches(t *testing.T) {
+	dir := t.TempDir()
+	writeResult := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	planned := PlannedRun{
+		Profile: Profile{Name: "p", MaxModelLen: 8192},
+		Workload: Workload{
+			Name:                   "w",
+			NumPrompts:             3,
+			BenchmarkTrafficConfig: BenchmarkTrafficConfig{DatasetName: "random", RandomInputLen: 64, RandomOutputLen: 8},
+			IgnoreEOS:              true,
+		},
+		Concurrency: 2,
+	}
+	complete := `{"completed": 3, "failed": 0, "max_concurrency": 2, "total_input_tokens": 192, "total_output_tokens": 24, "duration": 1}`
+	planned.ResultFile = writeResult("ok.json", complete)
+	if _, ok := resumableRow(planned); !ok {
+		t.Fatal("complete matching result not resumable")
+	}
+	planned.ResultFile = writeResult("partial.json", `{"completed": 1, "failed": 0, "max_concurrency": 2, "total_input_tokens": 64, "total_output_tokens": 8, "duration": 1}`)
+	if _, ok := resumableRow(planned); ok {
+		t.Fatal("partial result adopted")
+	}
+	planned.ResultFile = writeResult("failed.json", `{"completed": 3, "failed": 1, "max_concurrency": 2, "total_input_tokens": 192, "total_output_tokens": 24, "duration": 1}`)
+	if _, ok := resumableRow(planned); ok {
+		t.Fatal("failed result adopted")
+	}
+	planned.ResultFile = writeResult("other-conc.json", `{"completed": 3, "failed": 0, "max_concurrency": 4, "total_input_tokens": 192, "total_output_tokens": 24, "duration": 1}`)
+	if _, ok := resumableRow(planned); ok {
+		t.Fatal("different-concurrency result adopted")
+	}
+	planned.ResultFile = writeResult("other-shape.json", `{"completed": 3, "failed": 0, "max_concurrency": 2, "total_input_tokens": 9000, "total_output_tokens": 24, "duration": 1}`)
+	if _, ok := resumableRow(planned); ok {
+		t.Fatal("different-shape result adopted")
+	}
+	planned.ResultFile = filepath.Join(dir, "missing.json")
+	if _, ok := resumableRow(planned); ok {
+		t.Fatal("missing result adopted")
+	}
+}

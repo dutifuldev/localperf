@@ -105,7 +105,10 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 	if len(request.Concurrency) == 0 {
 		request.Concurrency = []int{1, 4, 8, 16, 32}
 	}
-	if request.NumPrompts <= 0 && request.PromptsPerUser <= 0 {
+	if request.NumPrompts > 0 {
+		// A fixed count and scaling are mutually exclusive.
+		request.PromptsPerUser = 0
+	} else if request.PromptsPerUser <= 0 {
 		request.PromptsPerUser = defaultPromptsPerUser
 	}
 	if request.MinMemAvailableGiB <= 0 {

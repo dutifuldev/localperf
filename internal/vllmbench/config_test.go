@@ -3556,3 +3556,48 @@ func freeTestPort() int {
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port
 }
+
+func TestWorkloadPromptFieldValidation(t *testing.T) {
+	spec := testSpec()
+	spec.Workloads[0].NumPrompts = 8
+	spec.Workloads[0].PromptsPerUser = 2
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("ValidateSpec error = %v, want mutual exclusion", err)
+	}
+	spec.Workloads[0].NumPrompts = 0
+	spec.Workloads[0].PromptsPerUser = -1
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "must not be negative") {
+		t.Fatalf("ValidateSpec error = %v, want negative rejection", err)
+	}
+	spec.Workloads[0].PromptsPerUser = 0
+	if err := ValidateSpec(spec); err == nil || !strings.Contains(err.Error(), "num_prompts or prompts_per_user") {
+		t.Fatalf("ValidateSpec error = %v, want either-field requirement", err)
+	}
+}
+
+func TestDatasetSampleCountDefaults(t *testing.T) {
+	// Fixed num_prompts flows into the sample count.
+	fixed := testCustomJSONLWorkload("fixed", "requests.jsonl", []string{"8k"})
+	fixed.Dataset.SampleCount = 0
+	fixed.NumPrompts = 5
+	applyWorkloadDefault(&fixed)
+	if fixed.Dataset.SampleCount != 5 {
+		t.Fatalf("sample count = %d, want 5 from num_prompts", fixed.Dataset.SampleCount)
+	}
+	// An explicit sample count backfills num_prompts only without scaling.
+	backfill := testCustomJSONLWorkload("backfill", "requests.jsonl", []string{"8k"})
+	backfill.Dataset.SampleCount = 7
+	backfill.NumPrompts = 0
+	applyWorkloadDefault(&backfill)
+	if backfill.NumPrompts != 7 {
+		t.Fatalf("num_prompts = %d, want 7 backfilled", backfill.NumPrompts)
+	}
+	scaled := testCustomJSONLWorkload("scaled", "requests.jsonl", []string{"8k"})
+	scaled.Dataset.SampleCount = 7
+	scaled.NumPrompts = 0
+	scaled.PromptsPerUser = 2
+	applyWorkloadDefault(&scaled)
+	if scaled.NumPrompts != 0 {
+		t.Fatalf("num_prompts = %d, want 0 when prompts scale", scaled.NumPrompts)
+	}
+}

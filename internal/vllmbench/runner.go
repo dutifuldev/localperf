@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -378,10 +379,8 @@ func (session *runSession) applyAdaptiveSkips(runs []PlannedRun) []PlannedRun {
 func (session *runSession) skipResumedRuns(runs []PlannedRun) []PlannedRun {
 	remaining := make([]PlannedRun, 0, len(runs))
 	for _, planned := range runs {
-		row, failed, err := parsedPlannedRow(planned)
-		// A partial result from a killed attempt parses cleanly but has
-		// fewer completed requests than planned; it must re-run.
-		if err != nil || failed > 0 || row.Completed < planned.Workload.NumPrompts {
+		row, ok := resumableRow(planned)
+		if !ok {
 			remaining = append(remaining, planned)
 			continue
 		}
@@ -959,9 +958,7 @@ func executeBench(ctx context.Context, spec Spec, planned PlannedRun, runDir str
 	return row, nil
 }
 
-// parsedPlannedRow parses and enriches the planned run's result file; it is
-// shared by fresh execution and resume, which trusts an existing result file
-// only when it parses with zero failed requests.
+// parsedPlannedRow parses and enriches the planned run's result file.
 func parsedPlannedRow(planned PlannedRun) (*ReportRow, int, error) {
 	rows, err := ParseResultFile(planned.ResultFile)
 	if err != nil {
@@ -971,6 +968,11 @@ func parsedPlannedRow(planned PlannedRun) (*ReportRow, int, error) {
 		return nil, 0, errors.New("benchmark result file did not contain a parseable row")
 	}
 	row := rows[0]
+	enrichPlannedRow(&row, planned)
+	return &row, failedRequestCount(rows), nil
+}
+
+func enrichPlannedRow(row *ReportRow, planned PlannedRun) {
 	row.Profile = planned.Profile.Name
 	row.Workload = planned.Workload.Name
 	row.Context = planned.Profile.MaxModelLen
@@ -982,9 +984,53 @@ func parsedPlannedRow(planned PlannedRun) (*ReportRow, int, error) {
 	row.RandomOutputLen = planned.Workload.RandomOutputLen
 	row.DatasetName = planned.Workload.DatasetName
 	row.ResultFile = planned.ResultFile
-	applyWorkloadFields(&row, planned.Workload)
-	deriveReportRowFields(&row)
-	return &row, failedRequestCount(rows), nil
+	applyWorkloadFields(row, planned.Workload)
+	deriveReportRowFields(row)
+}
+
+// resumableRow adopts a previous attempt's result only when it demonstrably
+// measured the same point: parses cleanly with zero failures, completed at
+// least the planned request count, ran at the planned concurrency, and (for
+// random workloads) the measured token shape matches the current spec, so an
+// edited spec re-runs instead of silently inheriting stale results.
+func resumableRow(planned PlannedRun) (*ReportRow, bool) {
+	rows, err := ParseResultFile(planned.ResultFile)
+	if err != nil || len(rows) == 0 || failedRequestCount(rows) > 0 {
+		return nil, false
+	}
+	raw := rows[0]
+	if raw.Completed < planned.Workload.NumPrompts {
+		return nil, false
+	}
+	if raw.Concurrency != 0 && raw.Concurrency != planned.Concurrency {
+		return nil, false
+	}
+	if !resultMatchesShape(raw, planned.Workload) {
+		return nil, false
+	}
+	enrichPlannedRow(&raw, planned)
+	return &raw, true
+}
+
+// resultMatchesShape compares the recorded mean token shape against the
+// current workload for random traffic; a 20% + 16 token band absorbs
+// tokenizer and template drift while catching real spec edits.
+func resultMatchesShape(raw ReportRow, workload Workload) bool {
+	if workload.DatasetName != "random" || raw.Completed <= 0 {
+		return true
+	}
+	completed := float64(raw.Completed)
+	if workload.RandomInputLen > 0 && shapeDiffers(float64(raw.PromptTokens)/completed, float64(workload.RandomInputLen)) {
+		return false
+	}
+	if workload.IgnoreEOS && workload.RandomOutputLen > 0 && shapeDiffers(float64(raw.CompletionTokens)/completed, float64(workload.RandomOutputLen)) {
+		return false
+	}
+	return true
+}
+
+func shapeDiffers(measured, requested float64) bool {
+	return math.Abs(measured-requested) > 0.2*requested+16
 }
 
 func executeLoadCommand(ctx context.Context, spec Spec, planned PlannedRun, command CommandSpec, logPath string) (commandResult, error) {

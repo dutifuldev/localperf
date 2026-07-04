@@ -407,7 +407,7 @@ func insertWorkloads(tx *sql.Tx, runID string, spec Spec) error {
 			id, run_id, name, phase, traffic_json, concurrency_json, samples, repeats,
 			save_detailed, capture_payload_artifacts, dataset_json, request_json, load_json, metadata_json
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			dimensionID(runID, workload.Name), runID, workload.Name, workload.Phase, trafficJSON, concurrencyJSON, workload.NumPrompts,
+			dimensionID(runID, workload.Name), runID, workload.Name, workload.Phase, trafficJSON, concurrencyJSON, workloadSampleCount(workload),
 			workload.Repeats, boolToInt(boolValue(workload.BenchmarkTrafficConfig.SaveDetailed)),
 			boolToInt(workload.CapturePayloadArtifacts), structuredWorkloadJSON(workload, workload.Dataset),
 			structuredWorkloadJSON(workload, workload.Request), structuredWorkloadJSON(workload, workload.Load),
@@ -423,6 +423,15 @@ func structuredWorkloadJSON(workload Workload, value any) any {
 		return nil
 	}
 	return nullableJSON(value)
+}
+
+// workloadSampleCount records the largest point's request count for
+// workloads whose prompts scale with concurrency.
+func workloadSampleCount(workload Workload) int {
+	if workload.NumPrompts > 0 {
+		return workload.NumPrompts
+	}
+	return resolvedNumPrompts(workload, largestConcurrency(workload))
 }
 
 // workloadClaimsJSON stores declared workload claims keyed by claim type in
