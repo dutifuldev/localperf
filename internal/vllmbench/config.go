@@ -567,6 +567,30 @@ func applyServeDefaults(profile *Profile) {
 	if profile.EnablePrefixCaching == nil {
 		profile.EnablePrefixCaching = profile.Serve.EnablePrefixCaching
 	}
+	if profile.EnablePrefixCaching == nil {
+		profile.EnablePrefixCaching = prefixCachingFromArgs(profile.Args, profile.EngineArgs)
+	}
+}
+
+// prefixCachingFromArgs resolves the prefix-caching tri-state from raw serve
+// args when the structured field is unset: hand-written specs often pass the
+// flag through args, and "unknown" must mean genuinely unknown. The last
+// occurrence wins, matching CLI semantics.
+func prefixCachingFromArgs(argLists ...[]string) *bool {
+	var value *bool
+	for _, args := range argLists {
+		for _, arg := range args {
+			switch strings.TrimSpace(arg) {
+			case "--enable-prefix-caching", "--enable-prefix-caching=true":
+				enabled := true
+				value = &enabled
+			case "--no-enable-prefix-caching", "--enable-prefix-caching=false":
+				enabled := false
+				value = &enabled
+			}
+		}
+	}
+	return value
 }
 
 func fallbackInt(target *int, fallback int) {

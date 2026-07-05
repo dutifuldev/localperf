@@ -16,8 +16,8 @@ go run ./cmd/localperf-vllm-bench run \
   --spec examples/diffusiongemma-vllm-standard/spec.json \
   --timeout 4h
 
-go run ./cmd/localperf-vllm-bench report \
-  --run-dir runs/<run-id>
+go run ./cmd/localperf artifact render \
+  runs/<run-id>.sqlite
 ```
 
 Use `--dry-run` on `run` when changing a spec:
@@ -229,17 +229,12 @@ measurement. Context labels follow `2026-07-02-context-semantics.md`: rows
 are labeled by declared-and-measured active context or by measured token
 shape, not by `max_model_len`.
 
-Every `run` finalization and every `report` command writes three report
-artifacts together:
-
-```text
-report.md
-report.json
-report.csv
-```
-
-Use `report.md` for a quick human read, `report.json` for exact nested data, and
-`report.csv` for notebooks, plotting, and comparing multiple run directories.
+Every `run` finalization writes the SQLite artifact; render it with
+`localperf artifact render <artifact>.sqlite` or open it with
+`localperf view`. The artifact is the machine-readable export — query it
+with `sqlite3` for notebooks, plotting, and comparing runs. The legacy
+`report.md`/`report.json`/`report.csv` exports were removed
+(docs/2026-07-05-report-integrity-plan.md).
 
 Aggregate output token/s answers "how much throughput did the server produce?"
 Per-user output token/s answers "what did each concurrent user experience?"

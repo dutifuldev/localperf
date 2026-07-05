@@ -46,7 +46,6 @@ type RunSummary struct {
 	SkippedRuns   int         `json:"skipped_runs,omitempty"`
 	Rows          []ReportRow `json:"rows,omitempty"`
 	EventsPath    string      `json:"events_path"`
-	ReportPath    string      `json:"report_path,omitempty"`
 	ArtifactPath  string      `json:"artifact_path,omitempty"`
 	SpecPath      string      `json:"spec_path"`
 	MemoryFloor   float64     `json:"memory_floor_gib"`
@@ -516,7 +515,6 @@ func finalizeRun(runDir string, summary *RunSummary, events *eventWriter, spec S
 		summary.Error = runErr.Error()
 	}
 	writeRunFinishEvent(summary, events, runErr)
-	writeFinalReports(runDir, summary)
 	if err := writeJSONFile(filepath.Join(runDir, "summary.json"), summary); err != nil {
 		return err
 	}
@@ -535,17 +533,6 @@ func writeRunFinishEvent(summary *RunSummary, events *eventWriter, runErr error)
 		event.Error = runErr.Error()
 	}
 	events.Write(event)
-}
-
-func writeFinalReports(runDir string, summary *RunSummary) {
-	report, err := BuildReport(runDir)
-	if err != nil {
-		return
-	}
-	reportPath := filepath.Join(runDir, "report.md")
-	if err := WriteReportFiles(report, reportPath); err == nil {
-		summary.ReportPath = reportPath
-	}
 }
 
 func writeFinalArtifact(runDir string, summary *RunSummary, spec Spec, originalSpecPath string) error {

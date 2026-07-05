@@ -34,9 +34,9 @@ func TestRenderSQLiteHTMLReportEscapesAndIsStandalone(t *testing.T) {
 		"decode tok/s",
 		"prefill tok/s",
 		"Decode TTFT avg",
-		"Decode TTFT p95",
+		"Decode TTFT p99",
 		"Prefill TTFT avg",
-		"Prefill TTFT p95",
+		"Prefill TTFT p99",
 		"OK / Err",
 		"table-layout:fixed",
 		"@media print",
@@ -288,11 +288,14 @@ func TestTokenThroughputMetricDisplay(t *testing.T) {
 		{value: "99.950", want: "100"},
 		{value: "99.940", want: "99.9"},
 		{value: "27.765", want: "27.8"},
-		{value: "4.248", want: "4.2"},
+		{value: "4.248", want: "4.25"},
+		{value: "9.996", want: "10.0"},
+		{value: "10.02", want: "10.0"},
 		{value: "-", want: "-"},
+		{value: "35.986 ± 1.2", want: "36.0 ± 1.20"},
 	} {
-		if got := tokenThroughputMetric(tc.value); got != tc.want {
-			t.Fatalf("tokenThroughputMetric(%q) = %q, want %q", tc.value, got, tc.want)
+		if got := FormatRateDisplay(tc.value); got != tc.want {
+			t.Fatalf("FormatRateDisplay(%q) = %q, want %q", tc.value, got, tc.want)
 		}
 	}
 }
@@ -748,7 +751,7 @@ func TestWriteSQLiteHTMLReportRendersOlderRequestSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(html), "123.400") {
+	if !strings.Contains(string(html), "123") {
 		t.Fatalf("older-schema HTML missing aggregate throughput fallback:\n%s", html)
 	}
 }
@@ -949,6 +952,52 @@ func seedSQLiteHTMLMetrics(t *testing.T, db *sql.DB, measurementID int64) {
 			'2026-01-01T00:00:01Z', 1000, 200, 30, 28, 100, 10, 110, 61.7, 111.7)`,
 			measurementID, i, "request"); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestDisplayFailureMetricPrefersOutcome(t *testing.T) {
+	if got := displayFailureMetric("0.000", "failed"); got != "failed" {
+		t.Fatalf("failed cell = %q, want the failure label instead of a residual number", got)
+	}
+	if got := displayFailureMetric("35.9", ""); got != "35.9" {
+		t.Fatalf("healthy cell = %q, want the value", got)
+	}
+}
+
+func TestFormatDurationDisplayComposites(t *testing.T) {
+	for value, want := range map[string]string{
+		"144744.403":          "2m25s",
+		"9187.587":            "9.2s",
+		"321.4":               "321ms",
+		"144744.403 ± 1200.5": "2m25s ± 1.2s",
+		"-":                   "-",
+		"skipped":             "skipped",
+	} {
+		if got := FormatDurationDisplay(value); got != want {
+			t.Fatalf("FormatDurationDisplay(%q) = %q, want %q", value, got, want)
+		}
+	}
+}
+
+func TestCellDetailIncludesMetrics(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
+	createTestSQLiteHTMLArtifact(t, artifactPath, "DetailMetrics")
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := doc.ThroughputRows[0].Detail
+	if len(detail.Metrics) == 0 {
+		t.Fatal("detail metrics empty, want measurement numbers in the detail view")
+	}
+	labels := map[string]bool{}
+	for _, item := range detail.Metrics {
+		labels[item.Label] = true
+	}
+	for _, want := range []string{"Requests ok/err", "Output tok/s", "Latency p50/p95/p99"} {
+		if !labels[want] {
+			t.Fatalf("detail metrics missing %q; got %v", want, labels)
 		}
 	}
 }

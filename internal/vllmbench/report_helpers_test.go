@@ -6,9 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/dutifuldev/localperf/internal/collections"
 )
@@ -231,24 +229,22 @@ func TestReportPathHelpers(t *testing.T) {
 }
 
 func TestReportPhasesGroupRowsByExplicitAndInferredPhase(t *testing.T) {
-	report := Report{
-		RunDir:    t.TempDir(),
-		Generated: time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC),
-		Rows: []ReportRow{
-			{Profile: "p", Workload: "long-input", InputLen: 4096, OutputLen: 16},
-			{Profile: "p", Workload: "explicit decode", Phase: "decode", InputLen: 1024, OutputLen: 16},
-			{Profile: "p", Workload: "mixed", InputLen: 128, OutputLen: 16},
-		},
+	rows := []ReportRow{
+		{Profile: "p", Workload: "long-input", InputLen: 4096, OutputLen: 16},
+		{Profile: "p", Workload: "explicit decode", Phase: "decode", InputLen: 1024, OutputLen: 16},
+		{Profile: "p", Workload: "mixed", InputLen: 128, OutputLen: 16},
 	}
-
-	got := RenderMarkdown(report)
-	for _, want := range []string{"### Decode", "### Prefill", "### Mixed"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("markdown report missing %q:\n%s", want, got)
+	for index := range rows {
+		deriveReportRowFields(&rows[index])
+	}
+	phases := reportPhases(rows)
+	if len(phases) != 3 || phases[0] != "decode" || phases[1] != "prefill" || phases[2] != "mixed" {
+		t.Fatalf("phases = %v, want decode/prefill/mixed order", phases)
+	}
+	for _, phase := range phases {
+		if len(rowsForPhase(rows, phase)) != 1 {
+			t.Fatalf("phase %q rows = %d, want 1", phase, len(rowsForPhase(rows, phase)))
 		}
-	}
-	if strings.Index(got, "### Decode") > strings.Index(got, "### Prefill") {
-		t.Fatalf("phase sections were not ranked decode before prefill:\n%s", got)
 	}
 	if phase := reportRowPhase(ReportRow{Profile: "p", Workload: "default-mixed", Phase: "mixed", InputLen: 4096, OutputLen: 16}); phase != "prefill" {
 		t.Fatalf("default mixed row phase = %q, want prefill", phase)

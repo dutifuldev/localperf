@@ -180,8 +180,6 @@ func VLLMBenchMain(args []string) {
 		runBench(args[1:])
 	case "http-load":
 		runHTTPLoad(args[1:])
-	case "report":
-		runReport(args[1:])
 	case "artifact":
 		runArtifact(args[1:])
 	default:
@@ -277,9 +275,6 @@ func runBench(args []string) {
 	})
 	fmt.Printf("run dir: %s\n", summary.RunDir)
 	fmt.Printf("planned: %d completed: %d failed: %d skipped: %d\n", summary.PlannedRuns, summary.CompletedRuns, summary.FailedRuns, summary.SkippedRuns)
-	if summary.ReportPath != "" {
-		fmt.Printf("report: %s\n", summary.ReportPath)
-	}
 	if summary.ArtifactPath != "" {
 		fmt.Printf("artifact: %s\n", summary.ArtifactPath)
 	}
@@ -425,41 +420,6 @@ func runHTTPLoad(args []string) {
 	}
 	row := rows[0]
 	fmt.Printf("completed: %d failed: %d output_tok_s: %.3f request_output_tok_s_stddev: %.3f\n", row.Completed, row.Failed, row.OutputTokensPerSec, row.OutputTokSecStdDev)
-}
-
-func runReport(args []string) {
-	flags := flag.NewFlagSet("report", flag.ExitOnError)
-	runDir := flags.String("run-dir", "", "run directory with events.jsonl and results")
-	output := flags.String("output", "", "Markdown report output path; defaults to <run-dir>/report.md")
-	jsonOutput := flags.Bool("json", false, "print report JSON to stdout instead of writing files")
-	_ = flags.Parse(args)
-	if strings.TrimSpace(*runDir) == "" {
-		fmt.Fprintln(os.Stderr, "missing --run-dir")
-		os.Exit(2)
-	}
-	report, err := vllmbench.BuildReport(*runDir)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	if *jsonOutput {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		_ = encoder.Encode(report)
-		return
-	}
-	outPath := *output
-	if strings.TrimSpace(outPath) == "" {
-		outPath = *runDir + "/report.md"
-	}
-	if err := vllmbench.WriteReportFiles(report, outPath); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	fmt.Printf("report: %s\n", outPath)
-	sidecarBase := strings.TrimSuffix(outPath, filepath.Ext(outPath))
-	fmt.Printf("json: %s\n", sidecarBase+".json")
-	fmt.Printf("csv: %s\n", sidecarBase+".csv")
 }
 
 func runArtifact(args []string) {
@@ -745,7 +705,6 @@ func usage() {
   localperf-vllm-bench plan   --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--json]
   localperf-vllm-bench run    --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--dry-run] [--timeout 2h]
   localperf-vllm-bench http-load --base-url http://127.0.0.1:8000 --model model --dataset-name random --random-input-len 1024 --random-output-len 128 --num-prompts 8 --max-concurrency 4 --result-filename result.json [--dataset-path canonical.jsonl] [--extra-body '{"guided_decoding_backend":"outlines"}']
-  localperf-vllm-bench report --run-dir runs/example [--output runs/example/report.md] [--json]
   localperf-vllm-bench artifact check runs/example.sqlite
   localperf-vllm-bench artifact render runs/example.sqlite [--output runs/example.html] [--store]`)
 }
@@ -755,7 +714,6 @@ func usageRoot() {
   localperf bench plan   --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--json]
   localperf bench run    --spec spec.json [--run-dir runs/example] [--profile 8k] [--workload prefill-8k-out16-fixed] [--concurrency 4] [--vllm-command /path/to/vllm] [--dry-run] [--timeout 2h]
   localperf bench http-load --base-url http://127.0.0.1:8000 --model model --dataset-name random --random-input-len 1024 --random-output-len 128 --num-prompts 8 --max-concurrency 4 --result-filename result.json [--dataset-path canonical.jsonl] [--extra-body '{"guided_decoding_backend":"outlines"}']
-  localperf bench report --run-dir runs/example [--output runs/example/report.md] [--json]
   localperf artifact check runs/example.sqlite
   localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]
   localperf artifact merge --into runs/models/model.sqlite src1.sqlite [src2.sqlite ...]

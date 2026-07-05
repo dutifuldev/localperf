@@ -1,6 +1,7 @@
 package reportmodel
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -42,16 +43,19 @@ func TestBuildLabelsUnverifiedContext(t *testing.T) {
 		GeneratedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		ThroughputRows: []report.SQLiteReportThroughputRow{
 			{
-				Mode:          "decode",
-				RunID:         "run-1",
-				MeasurementID: 1,
-				ProfileID:     "profile-1",
-				Profile:       "64k",
-				Model:         "test/model",
-				ContextWindow: 65536,
-				ContextLabel:  "unverified (declared 64k active)",
-				Concurrency:   1,
-				Shape:         "-",
+				Mode:             "decode",
+				RunID:            "run-1",
+				MeasurementID:    1,
+				ProfileID:        "profile-1",
+				Profile:          "64k",
+				Model:            "test/model",
+				ContextWindow:    65536,
+				ContextLabel:     "unverified (declared 64k active)",
+				ContextTarget:    65536,
+				ContextSemantics: "active",
+				Status:           "skipped",
+				Concurrency:      1,
+				Shape:            "-",
 				Detail: report.SQLiteReportCellDetail{
 					Available:     true,
 					Mode:          "decode",
@@ -135,4 +139,78 @@ func legacyThroughputRow(concurrency int, contextLabel string) report.SQLiteRepo
 	row.ContextWindow = 32768
 	row.Detail.ContextLabel = contextLabel
 	return row
+}
+
+func TestSkippedPointStaysInDeclaredContextTable(t *testing.T) {
+	verified := throughputRow("run-1", "16k", "16k active context", 16384, 1)
+	verified.ContextTarget = 16384
+	verified.ContextSemantics = "active"
+	verified.ContextVerified = true
+	verified.Status = "completed"
+	skipped := throughputRow("run-1", "16k", "unverified (declared 16k active)", 16384, 32)
+	skipped.ContextTarget = 16384
+	skipped.ContextSemantics = "active"
+	skipped.Status = "skipped"
+	skipped.FailureLabel = "skipped"
+	skipped.FailureReason = "concurrency 32 exceeds 2.0x reported max"
+	doc := report.SQLiteReportDocument{
+		GeneratedAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		ThroughputRows: []report.SQLiteReportThroughputRow{verified, skipped},
+	}
+	tables := Build("/tmp/report.sqlite", doc).Throughput.Tables
+	if len(tables) != 1 {
+		t.Fatalf("tables = %d, want the skipped point inside its declared context table", len(tables))
+	}
+	table := tables[0]
+	if table.ContextLabel != "16k active context" || table.ContextStatus != "active_verified" {
+		t.Fatalf("table = %q/%q, want verified 16k table", table.ContextLabel, table.ContextStatus)
+	}
+	if table.Warning != "" {
+		t.Fatalf("warning = %q, want none: the skip is a row-level outcome", table.Warning)
+	}
+	if len(table.Rows) != 2 {
+		t.Fatalf("rows = %d, want both concurrency points", len(table.Rows))
+	}
+	last := table.Rows[1]
+	if last.Decode.FailureLabel != "skipped" || last.Decode.FailureReason == "" {
+		t.Fatalf("skipped cell = %+v, want failure label and reason inline", last.Decode)
+	}
+}
+
+func TestAllSkippedTableGetsNotRunWarning(t *testing.T) {
+	skipped := throughputRow("run-1", "32k", "unverified (declared 32k active)", 32768, 16)
+	skipped.ContextTarget = 32768
+	skipped.ContextSemantics = "active"
+	skipped.Status = "skipped"
+	skipped.FailureLabel = "skipped"
+	doc := report.SQLiteReportDocument{
+		GeneratedAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		ThroughputRows: []report.SQLiteReportThroughputRow{skipped},
+	}
+	table := Build("/tmp/report.sqlite", doc).Throughput.Tables[0]
+	if table.ContextStatus != "unverified" {
+		t.Fatalf("status = %q, want unverified", table.ContextStatus)
+	}
+	if !strings.Contains(table.Warning, "Not run") {
+		t.Fatalf("warning = %q, want a not-run explanation instead of a token-count complaint", table.Warning)
+	}
+}
+
+func TestPhaseMetricsCarryDisplayStrings(t *testing.T) {
+	row := throughputRow("run-1", "8k", "8k active context", 8192, 1)
+	row.ThroughputTokS = "878.846"
+	row.PerUserTokS = "878.846"
+	row.TTFTMeanMS = "102175.763"
+	row.TTFTP99MS = "110000.5"
+	doc := report.SQLiteReportDocument{
+		GeneratedAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		ThroughputRows: []report.SQLiteReportThroughputRow{row},
+	}
+	metrics := Build("/tmp/report.sqlite", doc).Throughput.Tables[0].Rows[0].Decode
+	if metrics.TokS != "878.846" || metrics.TokSDisplay != "879" {
+		t.Fatalf("tok_s raw/display = %q/%q, want raw preserved and display rounded", metrics.TokS, metrics.TokSDisplay)
+	}
+	if metrics.TTFTMeanDisplay != "1m42s" {
+		t.Fatalf("ttft display = %q, want unit-promoted 1m42s", metrics.TTFTMeanDisplay)
+	}
 }

@@ -248,14 +248,7 @@ func insertRunEventData(tx *sql.Tx, runID string, events []Event, phaseIDs, meas
 	if err := insertCommands(tx, runID, events, phaseIDs, measurementIDs, artifactIDs); err != nil {
 		return err
 	}
-	return insertTelemetryAndReports(tx, runID, events, phaseIDs, measurementIDs, artifactIDs, now)
-}
-
-func insertTelemetryAndReports(tx *sql.Tx, runID string, events []Event, phaseIDs, measurementIDs, artifactIDs map[string]int64, now time.Time) error {
-	if err := insertTelemetry(tx, runID, events, phaseIDs, measurementIDs); err != nil {
-		return err
-	}
-	return insertReports(tx, runID, artifactIDs, now)
+	return insertTelemetry(tx, runID, events, phaseIDs, measurementIDs)
 }
 
 func insertSpec(tx *sql.Tx, runID, kind string, data []byte, createdAt time.Time) error {
@@ -593,9 +586,6 @@ func (inserter artifactInserter) addDefaultArtifacts() error {
 	for _, artifact := range []artifactSpec{
 		{"debug", "events.jsonl", filepath.Join(inserter.runDir, "events.jsonl"), "application/x-ndjson"},
 		{"debug", "summary.json", filepath.Join(inserter.runDir, "summary.json"), "application/json"},
-		{"normalized_report", "report.md", filepath.Join(inserter.runDir, "report.md"), "text/markdown"},
-		{"normalized_report", "report.json", filepath.Join(inserter.runDir, "report.json"), "application/json"},
-		{"normalized_report", "report.csv", filepath.Join(inserter.runDir, "report.csv"), "text/csv"},
 	} {
 		if err := inserter.add(artifact); err != nil {
 			return err
@@ -1204,29 +1194,6 @@ func ensureTelemetrySeries(tx *sql.Tx, runID, source, metric, unit, target, tags
 		WHERE run_id = ? AND source = ? AND metric = ? AND target = ? AND tags_json = ?`,
 		runID, source, metric, target, tags).Scan(&id)
 	return id, err
-}
-
-func insertReports(tx *sql.Tx, runID string, artifactIDs map[string]int64, createdAt time.Time) error {
-	for _, report := range []struct {
-		name      string
-		format    string
-		mediaType string
-	}{
-		{"report.md", "markdown", "text/markdown"},
-		{"report.json", "json", "application/json"},
-		{"report.csv", "csv", "text/csv"},
-	} {
-		id := artifactIDs[report.name]
-		if id == 0 {
-			continue
-		}
-		if _, err := tx.Exec(`INSERT INTO reports (
-			run_id, name, format, media_type, artifact_id, created_at
-		) VALUES (?, ?, ?, ?, ?, ?)`, runID, report.name, report.format, report.mediaType, id, createdAt.Format(time.RFC3339)); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func rowsByMeasurement(runDir string, events []Event) map[string]ReportRow {

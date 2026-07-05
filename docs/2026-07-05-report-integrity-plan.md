@@ -6,7 +6,8 @@ date: 2026-07-05
 
 # Report Integrity Plan
 
-Date: 2026-07-05. Status: planned.
+Date: 2026-07-05. Status: PR 1 (streaming TTFT) and PR 2 (rendering +
+legacy cutover) implemented; PR 3 (provenance) in progress.
 
 Fixes every problem found while inspecting the live viewer serving the
 4-model GB10 sweep of 2026-07-05, each verified against the code.
@@ -123,11 +124,10 @@ The measurement fix; everything else is presentation or provenance.
   pre-formatted strings) targeting roughly three significant digits.
   - Rates (tok/s, req/s): >= 100 -> no decimals (879); 10-100 -> one
     decimal (36.0); < 10 -> two decimals (8.24).
-  - Durations: promote units instead of stacking digits. < 100 ms -> one
-    decimal (42.3 ms); 100 ms to 10 s -> whole milliseconds (321 ms,
-    9,188 ms); >= 10 s -> seconds with one decimal (102.2 s); >= 120 s ->
-    minutes and seconds (4m 37s). Thousands separators on 4+ digit
-    millisecond values.
+  - Durations: promote units instead of stacking digits. < 1 s -> whole
+    milliseconds (321ms); 1-10 s -> seconds with one decimal (9.2s);
+    >= 10 s -> whole seconds (102s); >= 60 s -> minutes and seconds
+    (2m25s).
   - Aggregates and spreads (mean +/- stddev) use the precision of their
     magnitude, both parts formatted by the same rule.
   - Raw unrounded values stay in the artifact and JSON payloads
