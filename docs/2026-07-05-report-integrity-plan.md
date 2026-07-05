@@ -36,6 +36,11 @@ Problems, ranked:
    silently trimmed 32k/64k ladders and a non-streaming backend. Nothing
    distinguishes generated specs from hand-written ones, and nothing
    records deliberate ladder trims.
+8. Legacy exports still exist: every run writes `report.md`,
+   `report.json`, and `report.csv` (`internal/vllmbench/report.go`,
+   `bench report`) with pre-contract labeling, and the artifact ingests
+   them as `normalized_report` attachments. They contradict the HTML
+   report and would keep publishing the fake TTFT values.
 
 Design principle throughout, same contract as
 [Context Semantics](2026-07-02-context-semantics.md): declared, then
@@ -99,6 +104,17 @@ The measurement fix; everything else is presentation or provenance.
   structs the static HTML report already computes; do not re-derive.
 - Engine comparability: when the viewer serves multiple reports with
   different engine versions, show a note in the report list/header.
+- Legacy export cutover: delete the `report.md`/`report.json`/`report.csv`
+  pipeline outright — `internal/vllmbench/report.go`, the finalize-time
+  markdown write in `runner.go`, the `bench report` rendering command, and
+  the `normalized_report` attachment ingestion in `sqlite_artifact.go`.
+  The run directory keeps raw data only (spec, events, results, logs,
+  datasets, summary.json); the SQLite artifact is the canonical record and
+  the HTML report/viewer the only rendered views. Machine-readable export
+  is the artifact itself. Update the README Outputs section and any docs
+  referencing the deleted files. Coordinate with the viewer-mode branch:
+  its rebuild-from-run-dir path must key off events/results/summary.json,
+  never the deleted exports.
 - Rebuild `web/dist` (npm build) and re-embed.
 
 ## PR 3: spec provenance and intent compilation
