@@ -595,12 +595,14 @@ func (client openAIHTTPClient) sendStreamingRequest(ctx context.Context, endpoin
 func (stream *httpStreamResult) consume(body io.Reader) *httpLoadFailure {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	terminated := false
 	for scanner.Scan() {
 		data, ok := ssePayload(scanner.Text())
 		if !ok {
 			continue
 		}
 		if data == "[DONE]" {
+			terminated = true
 			break
 		}
 		if failure := stream.applyChunk(data); failure != nil {
@@ -610,6 +612,11 @@ func (stream *httpStreamResult) consume(body io.Reader) *httpLoadFailure {
 	stream.completedAt = time.Now().UTC()
 	if err := scanner.Err(); err != nil {
 		return newHTTPLoadFailure("response_read", "", err.Error(), stream.completedAt, nil)
+	}
+	// EOF before [DONE] is a truncated stream: recording it as completed
+	// would silently keep partial output and fallback token counts.
+	if !terminated {
+		return newHTTPLoadFailure("response_read", "", "stream ended before [DONE] terminator", stream.completedAt, nil)
 	}
 	if stream.firstTokenAt == nil {
 		return newHTTPLoadFailure("response_shape", "", "stream produced no completion content", stream.completedAt, nil)

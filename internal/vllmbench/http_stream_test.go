@@ -256,6 +256,26 @@ func TestStampVLLMBenchTTFTSource(t *testing.T) {
 	}
 }
 
+func TestTruncatedStreamFailsRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Content arrives but the stream ends without a [DONE] terminator.
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"trunc-1\",\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+	}))
+	defer server.Close()
+	result, err := runHTTPBenchmark(context.Background(), streamTestPlannedRun(server.URL, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Failed != 2 || result.Completed != 0 {
+		t.Fatalf("completed/failed = %d/%d, want 0/2 for truncated streams", result.Completed, result.Failed)
+	}
+	sample := result.RequestSamples[0]
+	if sample.ErrorType != "response_read" || !strings.Contains(sample.ErrorMessage, "[DONE]") {
+		t.Fatalf("error = %q/%q, want response_read truncation", sample.ErrorType, sample.ErrorMessage)
+	}
+}
+
 func TestStreamErrorChunkFailsRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
