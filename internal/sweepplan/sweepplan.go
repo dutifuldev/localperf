@@ -313,7 +313,9 @@ func omittedFlagValues(args, omittedFlags []string) []string {
 	for index := 0; index < len(args); index++ {
 		arg := args[index]
 		if _, ok := omitted[arg]; ok {
-			if index+1 < len(args) {
+			// Skip a separate value ("--flag value") but never a following
+			// flag: boolean flags carry no value token.
+			if index+1 < len(args) && !strings.HasPrefix(args[index+1], "--") {
 				index++
 			}
 			continue

@@ -62,11 +62,10 @@ func runArtifactRebuild(args []string) {
 }
 
 func rebuildArtifactFromRunDir(runDir, artifactPath, originalSpecPath string) error {
-	specLoadPath := originalSpecPath
-	if strings.TrimSpace(specLoadPath) == "" {
-		specLoadPath = filepath.Join(runDir, "spec.normalized.json")
-	}
-	spec, err := vllmbench.LoadSpec(specLoadPath)
+	// Reconstruction always follows the normalized spec the run actually
+	// executed (filters applied); --spec supplies only the original file
+	// for provenance.
+	spec, err := vllmbench.LoadSpec(filepath.Join(runDir, "spec.normalized.json"))
 	if err != nil {
 		return err
 	}

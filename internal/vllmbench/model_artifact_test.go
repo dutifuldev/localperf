@@ -254,3 +254,35 @@ func TestWriteSQLiteArtifactRemovesFreshFileOnFailedWrite(t *testing.T) {
 		t.Fatal("failed first write left a schema-only artifact behind")
 	}
 }
+
+func TestMergeCleansUpEmptyDestinationOnCollision(t *testing.T) {
+	dir := t.TempDir()
+	makeSingle := func(parent string) string {
+		spec := testSpec()
+		spec.OutputDir = dir
+		path := filepath.Join(dir, parent+".sqlite")
+		if _, err := Execute(context.Background(), spec, RunOptions{
+			DryRun:       true,
+			RunDir:       filepath.Join(dir, parent, "run"),
+			ArtifactPath: path,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	first := makeSingle("c")
+	second := makeSingle("d")
+	dst := filepath.Join(dir, "empty-model.sqlite")
+	// A pre-existing zero-byte destination is initialized by the merge; a
+	// later collision must remove it like a freshly created file, not
+	// leave a partially merged artifact behind.
+	if err := os.WriteFile(dst, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifact.Merge(dst, []string{first, second}); err == nil {
+		t.Fatal("expected provenance collision failure")
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatalf("destination stat = %v, want removed after failed merge into an empty file", err)
+	}
+}

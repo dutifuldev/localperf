@@ -29,8 +29,11 @@ func Merge(dstPath string, srcPaths []string) (MergeSummary, error) {
 			return summary, fmt.Errorf("merge source %s: %w", srcPath, err)
 		}
 	}
-	_, statErr := os.Stat(dstPath)
-	createdFresh := statErr != nil
+	info, statErr := os.Stat(dstPath)
+	// An empty destination file is initialized by CreateOrAppend; on
+	// failure it must be removed like a missing one, not left behind as a
+	// schema-only artifact.
+	createdFresh := statErr != nil || (info != nil && info.Size() == 0)
 	db, err := CreateOrAppend(dstPath, Schema)
 	if err != nil {
 		return summary, err

@@ -315,3 +315,14 @@ func TestDefaultGridUsesShortDecodeAndScaledPrompts(t *testing.T) {
 		t.Fatalf("resolved prompts = %v, want map[1:8 4:8 16:32]", prompts)
 	}
 }
+
+func TestOmittedFlagValuesKeepsFollowingFlags(t *testing.T) {
+	got := omittedFlagValues(
+		[]string{"--disable-log-requests", "--attention-backend", "flashinfer", "--kv-cache-memory-bytes", "123"},
+		[]string{"--disable-log-requests", "--kv-cache-memory-bytes"},
+	)
+	want := []string{"--attention-backend", "flashinfer"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("omitted args = %v, want %v: a boolean flag must not swallow the next flag", got, want)
+	}
+}
