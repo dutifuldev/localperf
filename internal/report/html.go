@@ -1838,6 +1838,9 @@ func sqliteReportThroughputGroups(rows []SQLiteReportThroughputRow) []SQLiteRepo
 		if row.ContextVerified {
 			claims[index].anyVerified = true
 		}
+		if strings.EqualFold(strings.TrimSpace(row.Status), "completed") && !row.ContextVerified && !row.ContextMismatch {
+			claims[index].completedUnverified++
+		}
 		if row.ContextMismatch && row.MismatchNote != "" {
 			mismatchNotes[index] = row.MismatchNote
 		}
@@ -1850,7 +1853,7 @@ func sqliteReportThroughputGroups(rows []SQLiteReportThroughputRow) []SQLiteRepo
 		applyThroughputComparisonSource(&groups[index].Rows[rowIndex], row)
 	}
 	for index := range groups {
-		groups[index].Title = ClaimTitle(claims[index].semantics, claims[index].target, claims[index].anyVerified, claims[index].fallback)
+		groups[index].Title = ClaimTitle(claims[index].semantics, claims[index].target, claims[index].verified(), claims[index].fallback)
 		sort.SliceStable(groups[index].Rows, func(i, j int) bool {
 			return groups[index].Rows[i].Concurrency < groups[index].Rows[j].Concurrency
 		})
@@ -1866,10 +1869,17 @@ func sqliteReportThroughputGroups(rows []SQLiteReportThroughputRow) []SQLiteRepo
 }
 
 type throughputGroupClaim struct {
-	semantics   string
-	target      int
-	fallback    string
-	anyVerified bool
+	semantics           string
+	target              int
+	fallback            string
+	anyVerified         bool
+	completedUnverified int
+}
+
+// verified requires every completed row to verify the claim; one completed
+// row without confirmed token counts demotes the whole table.
+func (claim throughputGroupClaim) verified() bool {
+	return claim.anyVerified && claim.completedUnverified == 0
 }
 
 func emptyThroughputComparisonRow(concurrency int) SQLiteReportThroughputComparisonRow {

@@ -144,18 +144,19 @@ type CellDetail struct {
 }
 
 type tableBuilder struct {
-	table             ThroughputTable
-	rows              map[int]*ThroughputRow
-	decodeShapes      map[string]struct{}
-	prefillShapes     map[string]struct{}
-	contextMismatches []string
-	runIDs            map[string]struct{}
-	claimKey          string
-	claimSemantics    string
-	claimTarget       int
-	claimFallback     string
-	anyVerified       bool
-	completedRows     int
+	table               ThroughputTable
+	rows                map[int]*ThroughputRow
+	decodeShapes        map[string]struct{}
+	prefillShapes       map[string]struct{}
+	contextMismatches   []string
+	runIDs              map[string]struct{}
+	claimKey            string
+	claimSemantics      string
+	claimTarget         int
+	claimFallback       string
+	anyVerified         bool
+	completedRows       int
+	completedUnverified int
 }
 
 func Build(path string, doc report.SQLiteReportDocument) Document {
@@ -291,6 +292,9 @@ func applyRow(builder *tableBuilder, source report.SQLiteReportThroughputRow, de
 	}
 	if strings.EqualFold(strings.TrimSpace(source.Status), "completed") {
 		builder.completedRows++
+		if !source.ContextVerified && !source.ContextMismatch {
+			builder.completedUnverified++
+		}
 	}
 	builder.runIDs[source.RunID] = struct{}{}
 	if detail := cellDetail(source.Detail); detail.Available {
@@ -335,7 +339,7 @@ func finishTable(builder *tableBuilder) {
 	}
 	builder.table.DecodeShape = shapeSummary(builder.decodeShapes)
 	builder.table.PrefillShape = shapeSummary(builder.prefillShapes)
-	builder.table.ContextLabel = report.ClaimTitle(builder.claimSemantics, builder.claimTarget, builder.anyVerified, builder.claimFallback)
+	builder.table.ContextLabel = report.ClaimTitle(builder.claimSemantics, builder.claimTarget, builder.anyVerified && builder.completedUnverified == 0, builder.claimFallback)
 	builder.table.ContextStatus, builder.table.ContextStatusLabel = tableContextStatus(builder)
 	builder.table.Warning = tableWarning(builder.table.ContextStatus, builder.completedRows, builder.contextMismatches)
 	for _, row := range builder.rows {
@@ -357,7 +361,10 @@ func tableContextStatus(builder *tableBuilder) (string, string) {
 	case len(builder.contextMismatches) > 0:
 		return "context_mismatch", "Context mismatch"
 	case builder.claimSemantics == "active" && builder.claimTarget > 0:
-		if builder.anyVerified {
+		// Verified requires every completed row to verify: one completed
+		// row without confirmed token counts must not hide under a
+		// verified label.
+		if builder.anyVerified && builder.completedUnverified == 0 {
 			return "active_verified", "Active verified"
 		}
 		return "unverified", "Unverified"

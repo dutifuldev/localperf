@@ -329,7 +329,6 @@ func phaseRank(phase string) int {
 	return bench.PhaseRank(phase)
 }
 
-
 func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 	rows := make([]ReportRow, 0, len(rawRows))
 	for _, raw := range rawRows {

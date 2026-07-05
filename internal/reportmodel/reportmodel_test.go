@@ -214,3 +214,29 @@ func TestPhaseMetricsCarryDisplayStrings(t *testing.T) {
 		t.Fatalf("ttft display = %q, want unit-promoted 1m42s", metrics.TTFTMeanDisplay)
 	}
 }
+
+func TestCompletedUnverifiedRowDemotesTable(t *testing.T) {
+	verified := throughputRow("run-1", "16k", "16k active context", 16384, 1)
+	verified.ContextTarget = 16384
+	verified.ContextSemantics = "active"
+	verified.ContextVerified = true
+	verified.Status = "completed"
+	unverified := throughputRow("run-1", "16k", "unverified (declared 16k active)", 16384, 4)
+	unverified.ContextTarget = 16384
+	unverified.ContextSemantics = "active"
+	unverified.Status = "completed"
+	doc := report.SQLiteReportDocument{
+		GeneratedAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		ThroughputRows: []report.SQLiteReportThroughputRow{verified, unverified},
+	}
+	table := Build("/tmp/report.sqlite", doc).Throughput.Tables[0]
+	if table.ContextStatus != "unverified" {
+		t.Fatalf("status = %q, want unverified: a completed row without token counts must demote the table", table.ContextStatus)
+	}
+	if !strings.Contains(table.ContextLabel, "unverified") {
+		t.Fatalf("label = %q, want unverified label", table.ContextLabel)
+	}
+	if !strings.Contains(table.Warning, "not confirmed by completed token counts") {
+		t.Fatalf("warning = %q, want the completed-but-unverifiable warning", table.Warning)
+	}
+}
