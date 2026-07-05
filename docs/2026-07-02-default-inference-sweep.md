@@ -34,11 +34,15 @@ Run two benchmark families:
 - `max-throughput-reference`: minimum `4k` context, intentionally optimized for
   maximum aggregate token throughput even if the setting is not practically
   useful. These are capacity points (`context_semantics: "capacity"`).
-- `practical-context-sweep`: **active** context points `8k`, `16k`, `32k`,
-  and `64k`, with concurrency `1`, `4`, `8`, `16`, and `32` where the
+- `practical-context-sweep`: **active** context points `4k`, `8k`, `16k`,
+  `32k`, and `64k`, with concurrency `1`, `4`, `8`, `16`, and `32` where the
   hardware can safely run them. `128k` is opt-in and capped at `c4`; at that
   KV budget, higher concurrency is an hours-long stress exercise, not a
   default grid point.
+
+`4k-reference` is not a substitute for the active `4k` sweep point. A default
+sweep should include both: the reference row for toy/max-throughput comparison
+and active `4k` prefill/decode rows for the regular context ladder.
 
 The ladder points mean active context, not server capacity: a `32k` point must
 actually move ~32k tokens per request through the KV cache. Setting
@@ -77,7 +81,7 @@ Default sweeps must be generated with `localperf sweep plan`, for example:
 
 ```sh
 localperf sweep plan --model <model-id> \
-  --contexts 8k,16k,32k,64k --concurrency 1,4,8,16,32 \
+  --contexts 4k,8k,16k,32k,64k --concurrency 1,4,8,16,32 \
   --out spec.json
 ```
 

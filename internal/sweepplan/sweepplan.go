@@ -19,7 +19,7 @@ import (
 type PlanRequest struct {
 	// Model is the model identifier to benchmark (required).
 	Model string `json:"model"`
-	// Contexts is the active-context ladder in tokens, e.g. 8192..131072.
+	// Contexts is the active-context ladder in tokens, e.g. 4096..131072.
 	Contexts []int `json:"contexts,omitempty"`
 	// Concurrency levels per point, e.g. 1,4,8,16,32.
 	Concurrency []int `json:"concurrency,omitempty"`
@@ -235,9 +235,11 @@ func applyRuntimeIntent(spec *vllmbench.Spec, request PlanRequest) {
 		if request.GPUMemoryUtilization > 0 {
 			spec.Profiles[index].GPUMemoryUtilization = request.GPUMemoryUtilization
 		}
-		if request.KVCacheMemoryBytes > 0 {
+		// Qwen runtimes reject a fixed KV cache size; the same rule that
+		// strips the inherited engine flag applies to the intent flag.
+		if request.KVCacheMemoryBytes > 0 && !shouldOmitFixedKVCache(request.Model) {
 			spec.Profiles[index].Args = append(spec.Profiles[index].Args,
-				"--kv-cache-memory-bytes", strconv.FormatInt(request.KVCacheMemoryBytes, 10))
+				fixedKVCacheBytesFlag, strconv.FormatInt(request.KVCacheMemoryBytes, 10))
 		}
 	}
 }

@@ -48,7 +48,7 @@ the grid:
 ```sh
 localperf sweep plan \
   --model nvidia/diffusiongemma-26B-A4B-it-NVFP4 \
-  --contexts 8k,16k,32k --concurrency 1,4,8 \
+  --contexts 4k,8k,16k,32k --concurrency 1,4,8 \
   --out spec.json
 ```
 

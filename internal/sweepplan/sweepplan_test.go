@@ -98,6 +98,44 @@ func TestPlanGolden(t *testing.T) {
 	}
 }
 
+func TestPlanKeeps4KReferenceSeparateFromActive4K(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:            "example/model",
+		Contexts:         []int{4096},
+		Concurrency:      []int{1, 4},
+		IncludeReference: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := map[string]vllmbench.Profile{}
+	for _, profile := range spec.Profiles {
+		profiles[profile.Name] = profile
+	}
+	if _, ok := profiles["4k-reference"]; !ok {
+		t.Fatal("missing 4k-reference profile")
+	}
+	if _, ok := profiles["4k"]; !ok {
+		t.Fatal("missing active 4k profile")
+	}
+	workloads := map[string]vllmbench.Workload{}
+	for _, workload := range spec.Workloads {
+		workloads[workload.Name] = workload
+	}
+	reference := workloads["max-throughput-reference"]
+	if reference.ContextSemantics != vllmbench.ContextSemanticsCapacity || reference.Profiles[0] != "4k-reference" {
+		t.Fatalf("reference workload = %+v, want capacity workload on 4k-reference", reference)
+	}
+	prefill := workloads["prefill-4k"]
+	if prefill.ContextSemantics != vllmbench.ContextSemanticsActive || prefill.Phase != "prefill" || prefill.Profiles[0] != "4k" {
+		t.Fatalf("prefill-4k = %+v, want active prefill workload on 4k", prefill)
+	}
+	decode := workloads["decode-4k"]
+	if decode.ContextSemantics != vllmbench.ContextSemanticsActive || decode.Phase != "decode" || decode.Profiles[0] != "4k" {
+		t.Fatalf("decode-4k = %+v, want active decode workload on 4k", decode)
+	}
+}
+
 func TestPlanProfileArgsCanOmitUnsafeEngineFlags(t *testing.T) {
 	spec, err := Plan(PlanRequest{
 		Model:       "example/model",

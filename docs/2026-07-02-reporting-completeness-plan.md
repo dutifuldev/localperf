@@ -397,7 +397,7 @@ Pure generator, no I/O in the core:
 type PlanRequest struct {
     Model       string
     Engine      string // "vllm-managed" first
-    Contexts    []int  // active-context ladder, e.g. 8k..128k
+    Contexts    []int  // active-context ladder, e.g. 4k..128k
     Concurrency []int  // e.g. 1,4,8,16,32
     Repeats     int
 }
@@ -421,7 +421,7 @@ validator can never drift.
 
 CLI: a `sweep plan` subcommand in `internal/benchcli` (the dispatch that
 already routes `bench run` and `artifact check`), flags `--model`,
-`--engine`, `--contexts 8k,16k,...`, `--concurrency 1,4,...`,
+`--engine`, `--contexts 4k,8k,16k,...`, `--concurrency 1,4,...`,
 `--repeats`, `--out spec.json` (default stdout). Golden-file test: fixed
 request in, byte-stable spec out.
 

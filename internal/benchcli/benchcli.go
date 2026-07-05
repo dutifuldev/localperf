@@ -133,7 +133,7 @@ func runSweep(args []string) {
 func runSweepPlan(args []string) {
 	flags := flag.NewFlagSet("sweep plan", flag.ExitOnError)
 	model := flags.String("model", "", "model identifier to benchmark (required)")
-	contexts := flags.String("contexts", "8k,16k,32k,64k", "comma-separated active-context ladder (e.g. 8k,16k,32k); 128k and above are capped at c4")
+	contexts := flags.String("contexts", "4k,8k,16k,32k,64k", "comma-separated active-context ladder (e.g. 4k,8k,16k,32k); 128k and above are capped at c4")
 	concurrency := flags.String("concurrency", "1,4,8,16,32", "comma-separated concurrency levels")
 	repeats := flags.Int("repeats", 1, "repeats per measurement")
 	numPrompts := flags.Int("num-prompts", 0, "fixed prompts per measurement; default scales with concurrency")
@@ -256,7 +256,7 @@ func (flag *repeatedStringFlag) String() string {
 	return strings.Join(flag.values, ",")
 }
 
-// parseTokenList parses values such as "8k,16k,32768" into token counts.
+// parseTokenList parses values such as "4k,8k,32768" into token counts.
 func parseTokenList(value string) ([]int, error) {
 	var values []int
 	for _, part := range strings.Split(value, ",") {
@@ -845,7 +845,7 @@ func usageRoot() {
   localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]
   localperf artifact merge --into runs/models/model.sqlite src1.sqlite [src2.sqlite ...]
   localperf artifact rebuild --run-dir runs/example [--into runs/example.sqlite] [--spec spec.json]
-  localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--stress] [--vllm-command /path/to/vllm] [--gpu-memory-utilization 0.4] [--kv-cache-memory-bytes N] [--trim 64k=8:'reason'] [--out spec.json]
+  localperf sweep plan   --model model-id [--contexts 4k,8k,16k,32k,64k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--stress] [--vllm-command /path/to/vllm] [--gpu-memory-utilization 0.4] [--kv-cache-memory-bytes N] [--trim 64k=8:'reason'] [--out spec.json]
   localperf view runs/model.sqlite [runs/other.sqlite ...] [--addr 127.0.0.1:0] [--open]`)
 }
 
