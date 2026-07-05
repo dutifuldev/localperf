@@ -217,6 +217,10 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 func applyRuntimeIntent(spec *vllmbench.Spec, request PlanRequest) {
 	if strings.TrimSpace(request.VLLMCommand) != "" {
 		spec.Runner.VLLMCommand = request.VLLMCommand
+		// The bench loader must run from the same runtime, or the sweep
+		// would serve with the requested vLLM and benchmark with whatever
+		// is on PATH.
+		spec.Runner.VLLMBenchCommand = request.VLLMCommand
 	}
 	for index := range spec.Profiles {
 		if request.GPUMemoryUtilization > 0 {

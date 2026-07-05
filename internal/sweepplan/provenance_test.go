@@ -97,6 +97,9 @@ func TestRuntimeIntentReachesSpec(t *testing.T) {
 	if spec.Runner.VLLMCommand != "/opt/runtimes/vllm/bin/vllm" {
 		t.Fatalf("vllm command = %q, want intent runtime path", spec.Runner.VLLMCommand)
 	}
+	if spec.Runner.VLLMBenchCommand != "/opt/runtimes/vllm/bin/vllm" {
+		t.Fatalf("vllm bench command = %q, want the same runtime as serve", spec.Runner.VLLMBenchCommand)
+	}
 	for _, profile := range spec.Profiles {
 		if profile.GPUMemoryUtilization != 0.4 {
 			t.Fatalf("profile %s gpu mem = %v, want 0.4", profile.Name, profile.GPUMemoryUtilization)
