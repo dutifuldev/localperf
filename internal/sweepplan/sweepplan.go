@@ -8,7 +8,9 @@
 package sweepplan
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/dutifuldev/localperf/internal/vllmbench"
@@ -16,29 +18,41 @@ import (
 
 type PlanRequest struct {
 	// Model is the model identifier to benchmark (required).
-	Model string
+	Model string `json:"model"`
 	// Contexts is the active-context ladder in tokens, e.g. 8192..131072.
-	Contexts []int
+	Contexts []int `json:"contexts,omitempty"`
 	// Concurrency levels per point, e.g. 1,4,8,16,32.
-	Concurrency []int
+	Concurrency []int `json:"concurrency,omitempty"`
 	// Repeats per measurement; defaults to 1.
-	Repeats int
+	Repeats int `json:"repeats,omitempty"`
 	// NumPrompts fixes the request count per measurement; when 0, prompts
 	// scale with concurrency via PromptsPerUser instead.
-	NumPrompts int
+	NumPrompts int `json:"num_prompts,omitempty"`
 	// PromptsPerUser scales requests with concurrency
 	// (num_prompts = max(8, PromptsPerUser * concurrency)); defaults to 2.
-	PromptsPerUser int
+	PromptsPerUser int `json:"prompts_per_user,omitempty"`
 	// IncludeReference adds the 4k max-throughput-reference capacity family.
-	IncludeReference bool
+	IncludeReference bool `json:"include_reference,omitempty"`
 	// IncludeStress adds long-output decode spot checks (4096 tokens at
 	// 32k c4 and 64k c1/c4 when those contexts are in the ladder) and the
 	// 128k points at c1/c4.
-	IncludeStress bool
+	IncludeStress bool `json:"include_stress,omitempty"`
 	// MinMemAvailableGiB is the safety memory floor; defaults to 40.
-	MinMemAvailableGiB float64
+	MinMemAvailableGiB float64 `json:"min_mem_available_gib,omitempty"`
 	// BasePort is the first server port; defaults to 8100.
-	BasePort int
+	BasePort int `json:"base_port,omitempty"`
+	// VLLMCommand overrides the vllm executable for managed serves — the
+	// machine-specific runtime path that previously forced hand-editing.
+	VLLMCommand string `json:"vllm_command,omitempty"`
+	// GPUMemoryUtilization applies to every generated profile when set.
+	GPUMemoryUtilization float64 `json:"gpu_memory_utilization,omitempty"`
+	// KVCacheMemoryBytes pins vLLM's KV cache size on every profile via
+	// --kv-cache-memory-bytes when set.
+	KVCacheMemoryBytes int64 `json:"kv_cache_memory_bytes,omitempty"`
+	// Trims are declared author decisions to cap a context's concurrency
+	// ladder; each needs a reason and renders in reports like an adaptive
+	// skip, never as a silent hole.
+	Trims []vllmbench.LadderTrim `json:"trims,omitempty"`
 }
 
 const (
@@ -101,6 +115,14 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 	}
 	if len(request.Contexts) == 0 && !request.IncludeReference {
 		return vllmbench.Spec{}, fmt.Errorf("at least one context point or the reference family is required")
+	}
+	for index, trim := range request.Trims {
+		if trim.Context <= 0 || trim.MaxConcurrency <= 0 {
+			return vllmbench.Spec{}, fmt.Errorf("trims[%d]: context and max_concurrency must be positive", index)
+		}
+		if strings.TrimSpace(trim.Reason) == "" {
+			return vllmbench.Spec{}, fmt.Errorf("trims[%d]: a reason is required — declared trims render in reports", index)
+		}
 	}
 	if len(request.Concurrency) == 0 {
 		request.Concurrency = []int{1, 4, 8, 16, 32}
@@ -173,13 +195,65 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 		spec.Workloads = append(spec.Workloads, stressWorkloads(contexts, request)...)
 	}
 
+	applyRuntimeIntent(&spec, request)
+
 	// Emit the normalized spec: explicit defaults are stable to diff and
 	// leave nothing for a reader to guess.
 	vllmbench.ApplyDefaults(&spec)
 	if err := vllmbench.ValidateSpec(spec); err != nil {
 		return vllmbench.Spec{}, fmt.Errorf("generated spec failed validation (generator/validator drift): %w", err)
 	}
+	if err := stampSpec(&spec, request); err != nil {
+		return vllmbench.Spec{}, err
+	}
 	return spec, nil
+}
+
+// applyRuntimeIntent carries machine-specific runtime choices into the spec
+// so nothing forces hand-editing the generated file.
+func applyRuntimeIntent(spec *vllmbench.Spec, request PlanRequest) {
+	if strings.TrimSpace(request.VLLMCommand) != "" {
+		spec.Runner.VLLMCommand = request.VLLMCommand
+	}
+	for index := range spec.Profiles {
+		if request.GPUMemoryUtilization > 0 {
+			spec.Profiles[index].GPUMemoryUtilization = request.GPUMemoryUtilization
+		}
+		if request.KVCacheMemoryBytes > 0 {
+			spec.Profiles[index].Args = append(spec.Profiles[index].Args,
+				"--kv-cache-memory-bytes", strconv.FormatInt(request.KVCacheMemoryBytes, 10))
+		}
+	}
+}
+
+// generatorTool and generatorVersion identify the stamp format, not the
+// binary build: the content hash is what verification relies on.
+const (
+	generatorTool    = "localperf sweep plan"
+	generatorVersion = "1"
+)
+
+// stampSpec writes the provenance record: the intent that produced the
+// spec, declared ladder trims, and a content hash over the spec with the
+// stamp removed. `bench run` and reports verify the hash; any edit after
+// generation demotes the spec to a custom grid.
+func stampSpec(spec *vllmbench.Spec, request PlanRequest) error {
+	intent, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	spec.Generator = &vllmbench.GeneratorStamp{
+		Tool:        generatorTool,
+		Version:     generatorVersion,
+		Intent:      intent,
+		LadderTrims: append([]vllmbench.LadderTrim{}, request.Trims...),
+	}
+	hash, err := vllmbench.SpecContentHash(*spec)
+	if err != nil {
+		return err
+	}
+	spec.Generator.ContentHash = hash
+	return nil
 }
 
 func sweepProfile(name string, maxModelLen, port, maxNumSeqs int) vllmbench.Profile {
@@ -226,7 +300,7 @@ func stressWorkloads(contexts []int, request PlanRequest) []vllmbench.Workload {
 // ladder plus any stress spot checks attached to that context; a stress c4
 // point must not run against a server that only admits c1.
 func contextMaxSeqs(context int, request PlanRequest) int {
-	seqs := maxConcurrencyOf(pointConcurrency(context, request.Concurrency))
+	seqs := maxConcurrencyOf(pointConcurrency(context, request.Concurrency, request.Trims))
 	if request.IncludeStress {
 		for _, spot := range stressSpots {
 			if spot.context == context {
@@ -258,13 +332,22 @@ func containsInt(values []int, wanted int) bool {
 
 // pointConcurrency caps contexts >= 128k at c4; higher concurrency at those
 // KV budgets is stress territory, not the default grid.
-func pointConcurrency(context int, concurrency []int) []int {
-	if context < stressContext {
+func pointConcurrency(context int, concurrency []int, trims []vllmbench.LadderTrim) []int {
+	cap := 0
+	if context >= stressContext {
+		cap = highContextConcurrencyCap
+	}
+	for _, trim := range trims {
+		if trim.Context == context && (cap == 0 || trim.MaxConcurrency < cap) {
+			cap = trim.MaxConcurrency
+		}
+	}
+	if cap == 0 {
 		return append([]int{}, concurrency...)
 	}
 	capped := []int{}
 	for _, value := range concurrency {
-		if value <= highContextConcurrencyCap {
+		if value <= cap {
 			capped = append(capped, value)
 		}
 	}
@@ -294,7 +377,7 @@ func sweepWorkload(name, phase, profile string, target int, semantics string, in
 		},
 		NumPrompts:     request.NumPrompts,
 		PromptsPerUser: request.PromptsPerUser,
-		MaxConcurrency: pointConcurrency(target, request.Concurrency),
+		MaxConcurrency: pointConcurrency(target, request.Concurrency, request.Trims),
 		IgnoreEOS:      true,
 		Temperature:    &temperature,
 	}

@@ -2,6 +2,7 @@ package report
 
 import (
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -998,6 +999,86 @@ func TestCellDetailIncludesMetrics(t *testing.T) {
 	for _, want := range []string{"Requests ok/err", "Output tok/s", "Latency p50/p95/p99"} {
 		if !labels[want] {
 			t.Fatalf("detail metrics missing %q; got %v", want, labels)
+		}
+	}
+}
+
+func TestSpecProvenanceRendersInReport(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
+	createTestSQLiteHTMLArtifact(t, artifactPath, "Provenance")
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's original spec has no generator stamp.
+	found := false
+	for _, item := range doc.MetadataItems {
+		if item.Label == "Spec" {
+			found = true
+			if item.Value != "Custom grid (hand-authored)" {
+				t.Fatalf("spec provenance = %q, want custom grid for an unstamped spec", item.Value)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("metadata missing Spec provenance item")
+	}
+}
+
+func TestGeneratedSpecTrimsRenderAsRows(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
+	createTestSQLiteHTMLArtifact(t, artifactPath, "Trims")
+	base := map[string]any{"version": "1", "name": "stamped", "model": "example/model"}
+	baseJSON, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := artifact.CanonicalSpecHash(baseJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base["generator"] = artifact.GeneratorStamp{
+		Tool:        "localperf sweep plan",
+		Version:     "1",
+		Intent:      json.RawMessage(`{"concurrency":[1,4,8,16]}`),
+		LadderTrims: []artifact.LadderTrim{{Context: 65536, MaxConcurrency: 8, Reason: "12 GiB KV budget"}},
+		ContentHash: hash,
+	}
+	content, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE specs SET content = ? WHERE kind = 'original'`, string(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trimmed := []SQLiteReportThroughputRow{}
+	for _, row := range doc.ThroughputRows {
+		if row.FailureLabel == "trimmed" {
+			trimmed = append(trimmed, row)
+		}
+	}
+	// c16 above the trim cap, decode + prefill.
+	if len(trimmed) != 2 {
+		t.Fatalf("trimmed rows = %d, want 2 synthesized rows for c16", len(trimmed))
+	}
+	row := trimmed[0]
+	if row.Concurrency != 16 || row.ContextTarget != 65536 || !strings.Contains(row.FailureReason, "12 GiB KV budget") {
+		t.Fatalf("trimmed row = %+v, want c16 at 64k with the declared reason", row)
+	}
+	for _, item := range doc.MetadataItems {
+		if item.Label == "Spec" && !strings.Contains(item.Value, "Generated default sweep") {
+			t.Fatalf("spec provenance = %q, want generated", item.Value)
 		}
 	}
 }

@@ -1,0 +1,72 @@
+package artifact
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+)
+
+// GeneratorStamp is the provenance record `sweep plan` writes into generated
+// specs. ContentHash covers the canonical spec document with the "generator"
+// key removed, so any post-generation edit is detectable; see
+// docs/2026-07-05-report-integrity-plan.md.
+type GeneratorStamp struct {
+	Tool        string          `json:"tool"`
+	Version     string          `json:"version"`
+	Intent      json.RawMessage `json:"intent,omitempty"`
+	LadderTrims []LadderTrim    `json:"ladder_trims,omitempty"`
+	ContentHash string          `json:"content_hash"`
+}
+
+// LadderTrim declares an author decision to cap a context's concurrency
+// ladder, with the reason rendered in reports so trimmed points never look
+// like silent holes.
+type LadderTrim struct {
+	Context        int    `json:"context"`
+	MaxConcurrency int    `json:"max_concurrency"`
+	Reason         string `json:"reason"`
+}
+
+// Spec provenance statuses; reports label anything but a verified generated
+// spec as a custom grid.
+const (
+	SpecProvenanceGenerated = "generated"
+	SpecProvenanceEdited    = "edited"
+	SpecProvenanceCustom    = "custom"
+)
+
+// CanonicalSpecHash hashes a spec document with the "generator" key removed,
+// after canonicalizing through a generic JSON map (sorted keys), so the
+// generator and every verifier agree byte-for-byte regardless of struct
+// field order.
+func CanonicalSpecHash(raw []byte) (string, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return "", err
+	}
+	delete(doc, "generator")
+	canonical, err := json.Marshal(doc)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// VerifySpecProvenance checks raw spec bytes against their embedded
+// generator stamp: "generated" when the content hash matches, "edited" when
+// a stamp exists but the content changed, "custom" when there is no stamp
+// or the document does not parse.
+func VerifySpecProvenance(raw []byte) (string, *GeneratorStamp) {
+	var doc struct {
+		Generator *GeneratorStamp `json:"generator"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil || doc.Generator == nil {
+		return SpecProvenanceCustom, nil
+	}
+	hash, err := CanonicalSpecHash(raw)
+	if err != nil || hash != doc.Generator.ContentHash {
+		return SpecProvenanceEdited, doc.Generator
+	}
+	return SpecProvenanceGenerated, doc.Generator
+}

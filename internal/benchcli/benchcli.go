@@ -86,6 +86,11 @@ func runSweepPlan(args []string) {
 	reference := flags.Bool("reference", true, "include the 4k max-throughput-reference capacity family")
 	stress := flags.Bool("stress", false, "add long-output decode spot checks (4096 tokens at 32k c4, 64k c1/c4) and the 128k points")
 	memFloor := flags.Float64("min-mem-available-gib", 0, "safety memory floor in GiB (default 40)")
+	vllmCommand := flags.String("vllm-command", "", "vllm executable for managed serves (machine-specific runtime path)")
+	gpuMemUtil := flags.Float64("gpu-memory-utilization", 0, "gpu memory utilization applied to every profile")
+	kvCacheBytes := flags.Int64("kv-cache-memory-bytes", 0, "pin vLLM KV cache size on every profile")
+	var trims trimFlags
+	flags.Var(&trims, "trim", "cap a context's ladder with a reason, e.g. 64k=8:'12 GiB KV budget'; repeatable")
 	out := flags.String("out", "", "output spec path (default stdout)")
 	_ = flags.Parse(args)
 	contextValues, err := parseTokenList(*contexts)
@@ -99,15 +104,19 @@ func runSweepPlan(args []string) {
 		os.Exit(2)
 	}
 	spec, err := sweepplan.Plan(sweepplan.PlanRequest{
-		Model:              *model,
-		Contexts:           contextValues,
-		Concurrency:        concurrencyValues,
-		Repeats:            *repeats,
-		NumPrompts:         *numPrompts,
-		PromptsPerUser:     *promptsPerUser,
-		IncludeReference:   *reference,
-		IncludeStress:      *stress,
-		MinMemAvailableGiB: *memFloor,
+		Model:                *model,
+		Contexts:             contextValues,
+		Concurrency:          concurrencyValues,
+		Repeats:              *repeats,
+		NumPrompts:           *numPrompts,
+		PromptsPerUser:       *promptsPerUser,
+		IncludeReference:     *reference,
+		IncludeStress:        *stress,
+		MinMemAvailableGiB:   *memFloor,
+		VLLMCommand:          *vllmCommand,
+		GPUMemoryUtilization: *gpuMemUtil,
+		KVCacheMemoryBytes:   *kvCacheBytes,
+		Trims:                trims.values,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -128,6 +137,46 @@ func runSweepPlan(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("spec: %s\n", *out)
+}
+
+// trimFlags parses repeatable --trim values of the form
+// "<context>=<max-concurrency>:<reason>", e.g. 64k=8:'12 GiB KV budget'.
+type trimFlags struct {
+	values []vllmbench.LadderTrim
+}
+
+func (flags *trimFlags) String() string {
+	parts := make([]string, 0, len(flags.values))
+	for _, trim := range flags.values {
+		parts = append(parts, fmt.Sprintf("%d=%d:%s", trim.Context, trim.MaxConcurrency, trim.Reason))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (flags *trimFlags) Set(value string) error {
+	context, rest, ok := strings.Cut(value, "=")
+	if !ok {
+		return fmt.Errorf("trim %q: want <context>=<max-concurrency>:<reason>", value)
+	}
+	maxPart, reason, ok := strings.Cut(rest, ":")
+	if !ok || strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("trim %q: a reason after ':' is required", value)
+	}
+	contextValues, err := parseTokenList(context)
+	if err != nil || len(contextValues) != 1 {
+		return fmt.Errorf("trim %q: want one context like 64k or 65536", value)
+	}
+	contextTokens := contextValues[0]
+	maxConcurrency, err := strconv.Atoi(strings.TrimSpace(maxPart))
+	if err != nil || maxConcurrency <= 0 {
+		return fmt.Errorf("trim %q: max concurrency must be a positive integer", value)
+	}
+	flags.values = append(flags.values, vllmbench.LadderTrim{
+		Context:        contextTokens,
+		MaxConcurrency: maxConcurrency,
+		Reason:         strings.TrimSpace(reason),
+	})
+	return nil
 }
 
 // parseTokenList parses values such as "8k,16k,32768" into token counts.
@@ -260,6 +309,7 @@ func runBench(args []string) {
 	_ = flags.Parse(args)
 	spec := mustLoadSpec(*specPath, filterFlags.Filter())
 	applyOverrides(&spec, overrides)
+	fmt.Printf("spec provenance: %s\n", spec.Provenance)
 	ctx := context.Background()
 	cancel := func() {}
 	if *timeout > 0 {
@@ -717,7 +767,7 @@ func usageRoot() {
   localperf artifact check runs/example.sqlite
   localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]
   localperf artifact merge --into runs/models/model.sqlite src1.sqlite [src2.sqlite ...]
-  localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--stress] [--out spec.json]
+  localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--stress] [--vllm-command /path/to/vllm] [--gpu-memory-utilization 0.4] [--kv-cache-memory-bytes N] [--trim 64k=8:'reason'] [--out spec.json]
   localperf view runs/model.sqlite [runs/other.sqlite ...] [--addr 127.0.0.1:0] [--open]`)
 }
 

@@ -6,8 +6,8 @@ date: 2026-07-05
 
 # Report Integrity Plan
 
-Date: 2026-07-05. Status: PR 1 (streaming TTFT) and PR 2 (rendering +
-legacy cutover) implemented; PR 3 (provenance) in progress.
+Date: 2026-07-05. Status: implemented (PR 1 streaming TTFT, PR 2
+rendering + legacy cutover, PR 3 spec provenance).
 
 Fixes every problem found while inspecting the live viewer serving the
 4-model GB10 sweep of 2026-07-05, each verified against the code.

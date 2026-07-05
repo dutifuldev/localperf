@@ -168,5 +168,24 @@
       "ignore_eos": true,
       "temperature": 0
     }
-  ]
+  ],
+  "generator": {
+    "tool": "localperf sweep plan",
+    "version": "1",
+    "intent": {
+      "model": "example/model",
+      "contexts": [
+        8192
+      ],
+      "concurrency": [
+        1,
+        4
+      ],
+      "prompts_per_user": 2,
+      "include_reference": true,
+      "min_mem_available_gib": 40,
+      "base_port": 8100
+    },
+    "content_hash": "68a8c6112714a62f403867cd8e32344d83f2f52697e048deb5def9d7240d3bd3"
+  }
 }

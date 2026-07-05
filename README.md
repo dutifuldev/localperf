@@ -109,6 +109,16 @@ collides with different provenance is refused instead of silently replaced.
 The report lists every run and aggregates repeated points across runs with
 mean ± spread.
 
+## Spec Provenance
+
+Create specs with `sweep plan`; machine-specific runtime choices are flags
+(`--vllm-command`, `--gpu-memory-utilization`, `--kv-cache-memory-bytes`),
+and deliberate ladder caps are declared trims with reasons
+(`--trim 64k=8:'12 GiB KV budget'`) that render in reports like adaptive
+skips. Generated specs carry a verified `generator` stamp: reports label
+runs "Generated default sweep" only while the spec's content hash still
+matches, and anything hand-written or edited shows as "Custom grid".
+
 ## Context Semantics
 
 Every workload must declare what its context number means:

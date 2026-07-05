@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dutifuldev/localperf/internal/artifact"
+
 	"github.com/dutifuldev/localperf/internal/bench"
 	"github.com/dutifuldev/localperf/internal/collections"
 )
@@ -40,18 +42,58 @@ const (
 )
 
 type Spec struct {
-	Version     string            `json:"version"`
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	Model       string            `json:"model"`
-	OutputDir   string            `json:"output_dir,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Engines     []EngineConfig    `json:"engines,omitempty"`
-	Runner      RunnerConfig      `json:"runner"`
-	Safety      SafetyConfig      `json:"safety"`
-	Warmup      WarmupConfig      `json:"warmup,omitempty"`
-	Profiles    []Profile         `json:"profiles"`
-	Workloads   []Workload        `json:"workloads"`
+	Version     string                   `json:"version"`
+	Name        string                   `json:"name"`
+	Description string                   `json:"description,omitempty"`
+	Model       string                   `json:"model"`
+	OutputDir   string                   `json:"output_dir,omitempty"`
+	Env         map[string]string        `json:"env,omitempty"`
+	Engines     []EngineConfig           `json:"engines,omitempty"`
+	Runner      RunnerConfig             `json:"runner"`
+	Safety      SafetyConfig             `json:"safety"`
+	Warmup      WarmupConfig             `json:"warmup,omitempty"`
+	Profiles    []Profile                `json:"profiles"`
+	Workloads   []Workload               `json:"workloads"`
+	Generator   *artifact.GeneratorStamp `json:"generator,omitempty"`
+
+	// Provenance is computed at load time from the generator stamp; it is
+	// never serialized or taken on trust.
+	Provenance string `json:"-"`
+}
+
+// SpecContentHash hashes the canonical spec document with the generator
+// stamp removed; see artifact.CanonicalSpecHash.
+func SpecContentHash(spec Spec) (string, error) {
+	data, err := json.Marshal(spec)
+	if err != nil {
+		return "", err
+	}
+	return artifact.CanonicalSpecHash(data)
+}
+
+// Provenance types and statuses re-exported for callers of this package,
+// so higher layers do not need to import the artifact format directly.
+type (
+	GeneratorStamp = artifact.GeneratorStamp
+	LadderTrim     = artifact.LadderTrim
+)
+
+const (
+	SpecProvenanceGenerated = artifact.SpecProvenanceGenerated
+	SpecProvenanceEdited    = artifact.SpecProvenanceEdited
+	SpecProvenanceCustom    = artifact.SpecProvenanceCustom
+)
+
+// SpecProvenance verifies a spec's generator stamp: "generated" when the
+// content hash matches, "edited" when a stamp exists but the content
+// changed after generation, "custom" when there is no stamp.
+func SpecProvenance(spec Spec) string {
+	data, err := json.Marshal(spec)
+	if err != nil {
+		return artifact.SpecProvenanceCustom
+	}
+	status, _ := artifact.VerifySpecProvenance(data)
+	return status
 }
 
 type EngineConfig struct {
@@ -238,6 +280,9 @@ func LoadSpec(path string) (Spec, error) {
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return Spec{}, err
 	}
+	// Verify provenance against the raw bytes, before defaults mutate the
+	// spec away from what the generator hashed.
+	spec.Provenance = SpecProvenance(spec)
 	ApplyDefaults(&spec)
 	if err := ValidateSpec(spec); err != nil {
 		return Spec{}, err
@@ -681,10 +726,38 @@ func ValidateSpec(spec Spec) error {
 	issues = append(issues, validateEndpointBaseURLProfileUsage(spec)...)
 	issues = append(issues, validateWarmup(spec.Warmup)...)
 	issues = append(issues, validateWorkloads(spec.Workloads, profileNames, spec.Profiles)...)
+	issues = append(issues, validateGeneratorStamp(spec.Generator)...)
 	if len(issues) > 0 {
 		return errors.New(strings.Join(issues, "\n"))
 	}
 	return nil
+}
+
+// validateGeneratorStamp requires every declared ladder trim to carry its
+// reason: an unexplained trim is a silent hole waiting to render.
+func validateGeneratorStamp(stamp *artifact.GeneratorStamp) []string {
+	if stamp == nil {
+		return nil
+	}
+	var issues []string
+	for index, trim := range stamp.LadderTrims {
+		issues = append(issues, validateLadderTrim(index, trim)...)
+	}
+	return issues
+}
+
+func validateLadderTrim(index int, trim artifact.LadderTrim) []string {
+	var issues []string
+	if trim.Context <= 0 {
+		issues = append(issues, fmt.Sprintf("generator.ladder_trims[%d]: context must be positive", index))
+	}
+	if trim.MaxConcurrency <= 0 {
+		issues = append(issues, fmt.Sprintf("generator.ladder_trims[%d]: max_concurrency must be positive", index))
+	}
+	if strings.TrimSpace(trim.Reason) == "" {
+		issues = append(issues, fmt.Sprintf("generator.ladder_trims[%d]: reason is required", index))
+	}
+	return issues
 }
 
 func validateSpecBasics(spec Spec) []string {
