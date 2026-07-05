@@ -666,6 +666,9 @@ func TestLoadSQLiteReportFallsBackToAggregateOnlyArtifact(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM measurements ORDER BY id LIMIT 1`).Scan(&measurementID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`UPDATE measurements SET metadata_json = '{"ttft_source":"stream"}' WHERE id = ?`, measurementID); err != nil {
+		t.Fatal(err)
+	}
 	for _, metric := range []struct {
 		name  string
 		mean  float64

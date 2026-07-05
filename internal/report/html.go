@@ -193,6 +193,7 @@ type SQLiteReportMeasurement struct {
 	GoodputRPS            string
 	RepeatCount           int
 	ContextVerified       bool
+	TTFTSource            string
 	ErrorType             string
 	ErrorMessage          string
 }
@@ -807,6 +808,7 @@ func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 		COALESCE(json_extract(w.metadata_json, '$.context.semantics'), ''),
 		COALESCE(json_extract(w.metadata_json, '$.slo.ttft_p95_ms'), 0),
 		COALESCE(json_extract(w.metadata_json, '$.slo.e2el_p95_ms'), 0),
+		COALESCE(json_extract(m.metadata_json, '$.ttft_source'), ''),
 		m.repeat_index,
 		m.concurrency, m.samples_requested, m.status, m.started_at, m.completed_at,
 		m.wall_time_ms, m.completed_requests, m.failed_requests, m.prompt_tokens,
@@ -830,6 +832,7 @@ func loadSQLiteReportMeasurements(db *sql.DB, doc *SQLiteReportDocument) error {
 			&measurement.WorkloadID, &measurement.Workload, &measurement.Phase,
 			&measurement.ContextWindow, &measurement.ContextTarget, &measurement.ContextSemantics,
 			&measurement.SLOTTFTMillis, &measurement.SLOE2ELMillis,
+			&measurement.TTFTSource,
 			&measurement.RepeatIndex, &measurement.Concurrency,
 			&measurement.SamplesRequested, &measurement.Status, &startedAt, &completedAt,
 			&wallTime, &measurement.CompletedRequests, &measurement.FailedRequests,
@@ -958,12 +961,27 @@ func applySQLiteMeasurementDisplay(measurement *SQLiteReportMeasurement, metrics
 	measurement.LatencyP50MS = metricDisplayFirst(metrics, "P50", "latency")
 	measurement.LatencyP95MS = metricDisplayFirst(metrics, "P95", "latency")
 	measurement.LatencyP99MS = metricDisplayFirst(metrics, "P99", "latency")
+	applyTTFTDisplay(measurement, metrics)
+	measurement.TPOTMeanMS = metricDisplayFirst(metrics, "Mean", "request_tpot", "tpot")
+	measurement.ITLMeanMS = metricDisplay(metrics, "request_itl_mean", "Mean")
+}
+
+// applyTTFTDisplay renders TTFT only from measurements whose stats carry the
+// streamed-source marker. Anything else — including artifacts written before
+// streaming support existed — shows "-": those runs never measured first
+// token time, and an unmarked number would be end-to-end latency in disguise.
+func applyTTFTDisplay(measurement *SQLiteReportMeasurement, metrics map[string]SQLiteReportMetric) {
+	if measurement.TTFTSource != "stream" {
+		measurement.TTFTMeanMS = "-"
+		measurement.TTFTP50MS = "-"
+		measurement.TTFTP95MS = "-"
+		measurement.TTFTP99MS = "-"
+		return
+	}
 	measurement.TTFTMeanMS = metricDisplayFirst(metrics, "Mean", "request_ttft", "ttft")
 	measurement.TTFTP50MS = metricDisplayFirst(metrics, "P50", "request_ttft", "ttft")
 	measurement.TTFTP95MS = metricDisplayFirst(metrics, "P95", "request_ttft", "ttft")
 	measurement.TTFTP99MS = metricDisplayFirst(metrics, "P99", "request_ttft", "ttft")
-	measurement.TPOTMeanMS = metricDisplayFirst(metrics, "Mean", "request_tpot", "tpot")
-	measurement.ITLMeanMS = metricDisplay(metrics, "request_itl_mean", "Mean")
 }
 
 func loadSQLiteReportMetrics(db *sql.DB, doc *SQLiteReportDocument) error {

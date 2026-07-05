@@ -391,6 +391,7 @@ func runHTTPLoad(args []string) {
 	extraBody := flags.String("extra-body", "", "extra OpenAI request body JSON object")
 	ignoreEOS := flags.Bool("ignore-eos", false, "ask the engine to ignore EOS")
 	temperature := flags.String("temperature", "", "temperature")
+	noStream := flags.Bool("no-stream", false, "disable SSE streaming; the run then records no TTFT")
 	timeout := flags.Duration("timeout", 0, "optional timeout")
 	minMemAvailableGiB := flags.Float64("min-mem-available-gib", defaultHTTPLoadMinMemAvailableGiB, "memory floor")
 	logPath := flags.String("log", "", "log path")
@@ -400,7 +401,7 @@ func runHTTPLoad(args []string) {
 	if *minMemAvailableGiB <= 0 {
 		exitOnError(fmt.Errorf("--min-mem-available-gib must be positive"))
 	}
-	workload, err := httpLoadWorkload(*backend, *datasetName, *requestRate, *endpoint, *datasetPath, *extraBody, *temperature, *ignoreEOS, *numPrompts, *maxConcurrency, *randomInputLen, *randomOutputLen)
+	workload, err := httpLoadWorkload(*backend, *datasetName, *requestRate, *endpoint, *datasetPath, *extraBody, *temperature, *ignoreEOS, *noStream, *numPrompts, *maxConcurrency, *randomInputLen, *randomOutputLen)
 	exitOnError(err)
 	if strings.TrimSpace(*resultFilename) == "" {
 		exitOnError(fmt.Errorf("missing --result-filename"))
@@ -629,7 +630,7 @@ func timeoutSeconds(timeout time.Duration) int {
 	return seconds
 }
 
-func httpLoadWorkload(backend, datasetName, requestRate, endpoint, datasetPath, extraBody, temperature string, ignoreEOS bool, numPrompts, maxConcurrency, randomInputLen, randomOutputLen int) (vllmbench.Workload, error) {
+func httpLoadWorkload(backend, datasetName, requestRate, endpoint, datasetPath, extraBody, temperature string, ignoreEOS, noStream bool, numPrompts, maxConcurrency, randomInputLen, randomOutputLen int) (vllmbench.Workload, error) {
 	if numPrompts <= 0 {
 		return vllmbench.Workload{}, fmt.Errorf("--num-prompts must be positive")
 	}
@@ -683,6 +684,10 @@ func httpLoadWorkload(backend, datasetName, requestRate, endpoint, datasetPath, 
 		MaxConcurrency: []int{maxConcurrency},
 		Temperature:    temp,
 		IgnoreEOS:      ignoreEOS,
+	}
+	if noStream {
+		stream := false
+		workload.Stream = &stream
 	}
 	if strings.TrimSpace(datasetPath) != "" {
 		workload.Dataset.Prepared = vllmbench.DatasetMaterialization{

@@ -40,7 +40,7 @@ var ReportMetrics = []MetricDef{
 	},
 	{
 		Key: "ttft", Label: "TTFT", Unit: "ms", Weighting: "per-request",
-		Definition: "time to first token; mean, p50, p95, and p99 over completed requests.",
+		Definition: "time to first token; mean, p50, p95, and p99 over completed requests. Measured only on streamed responses: runs without streamed samples show \"-\" instead of a first-byte approximation.",
 	},
 	{
 		Key: "latency", Label: "latency", Unit: "ms", Weighting: "per-request",
@@ -402,6 +402,12 @@ func formatSLODisplays(measurement *SQLiteReportMeasurement) {
 	measurement.SLONote = sloNote(measurement.SLOTTFTMillis, measurement.SLOE2ELMillis)
 	measurement.SLOMetPct = "-"
 	measurement.GoodputRPS = "-"
+	// A TTFT target is only evaluable against streamed samples; without the
+	// marker the run has no TTFT to compare, not a 0% goodput.
+	if measurement.SLOTTFTMillis > 0 && measurement.TTFTSource != "stream" {
+		measurement.SLONote += " (ttft target requires streamed samples)"
+		return
+	}
 	if measurement.SLORequestCount > 0 {
 		measurement.SLOMetPct = fmt.Sprintf("%.0f%%", 100*float64(measurement.SLOMetCount)/float64(measurement.SLORequestCount))
 		if measurement.WallTimeMSKnown && measurement.WallTimeMSValue > 0 {
@@ -526,6 +532,7 @@ func combineRepeats(members []SQLiteReportMeasurement) SQLiteReportMeasurement {
 	for _, field := range fields {
 		field.set(&combined, meanSpreadDisplay(members, field.get))
 	}
+	combined.TTFTSource = combinedTTFTSource(members)
 	combined.InputTokSSpread = meanSpreadDisplay(members, func(m SQLiteReportMeasurement) string {
 		return inputThroughput(m)
 	})
@@ -624,6 +631,21 @@ func meanOverRepeats(members []SQLiteReportMeasurement, value func(SQLiteReportM
 // meanSpreadDisplay renders "mean ± stddev" (sample stddev, n-1) across the
 // repeats' displayed values; if any repeat has no value, the spread cannot
 // be computed honestly and "-" is rendered.
+// combinedTTFTSource keeps the streamed marker on an aggregate only when
+// every repeat carries it; one unstreamed repeat makes the combined TTFT
+// untrusted.
+func combinedTTFTSource(members []SQLiteReportMeasurement) string {
+	for _, member := range members {
+		if member.TTFTSource != "stream" {
+			return ""
+		}
+	}
+	if len(members) == 0 {
+		return ""
+	}
+	return "stream"
+}
+
 func meanSpreadDisplay(members []SQLiteReportMeasurement, value func(SQLiteReportMeasurement) string) string {
 	values := make([]float64, 0, len(members))
 	for _, member := range members {

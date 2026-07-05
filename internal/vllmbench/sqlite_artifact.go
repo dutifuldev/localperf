@@ -816,8 +816,9 @@ func insertMeasurement(tx *sql.Tx, insert measurementInsert) (int64, error) {
 		samples_requested, status, started_at, completed_at, wall_time_ms,
 		completed_requests, failed_requests, prompt_tokens, completion_tokens,
 		total_tokens, aggregate_output_tok_s, per_user_output_tok_s,
-		aggregate_total_tok_s, raw_result_artifact_id, error_type, error_message
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		aggregate_total_tok_s, raw_result_artifact_id, error_type, error_message,
+		metadata_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		insert.runID, dimensionID(insert.runID, insert.planned.Profile.Name), dimensionID(insert.runID, insert.planned.Workload.Name), zeroNullInt(insert.phaseID),
 		insert.planned.Repeat, insert.planned.Concurrency, insert.planned.Workload.NumPrompts, insert.status,
 		timePtrString(insert.startedAt), timePtrString(insert.completedAt), durationMillis(insert.startedAt, insert.completedAt),
@@ -826,11 +827,24 @@ func insertMeasurement(tx *sql.Tx, insert measurementInsert) (int64, error) {
 		knownFloatNull(insert.row.outputTokensPerSecKnown, insert.row.OutputTokensPerSec),
 		knownFloatNull(insert.row.perUserOutputTokSecKnown, insert.row.PerUserOutputTokSec),
 		knownFloatNull(insert.row.totalTokensPerSecKnown, insert.row.TotalTokensPerSec),
-		zeroNullInt(insert.rawID), nil, insert.errorText)
+		zeroNullInt(insert.rawID), nil, insert.errorText, measurementMetadataJSON(insert.row))
 	if err != nil {
 		return 0, err
 	}
 	return result.LastInsertId()
+}
+
+// measurementMetadataJSON records measurement-level provenance; today that
+// is only the TTFT source marker reports require to trust TTFT stats.
+func measurementMetadataJSON(row ReportRow) any {
+	if strings.TrimSpace(row.TTFTSource) == "" {
+		return nil
+	}
+	data, err := json.Marshal(map[string]string{"ttft_source": row.TTFTSource})
+	if err != nil {
+		return nil
+	}
+	return string(data)
 }
 
 func measurementRawArtifactID(row ReportRow, events []Event, planned PlannedRun, artifactIDs map[string]int64) int64 {
@@ -875,6 +889,8 @@ type aggregateMetricStat struct {
 	metric string
 	unit   string
 	mean   float64
+	p50    float64
+	p95    float64
 	p99    float64
 	count  int
 }
@@ -889,12 +905,19 @@ func insertAggregateMetricStats(tx *sql.Tx, measurementID int64, row ReportRow) 
 }
 
 func aggregateMetricStats(row ReportRow) []aggregateMetricStat {
-	return []aggregateMetricStat{
-		{"ttft", "ms", row.MeanTTFTMillis, row.P99TTFTMillis, row.Completed},
-		{"tpot", "ms", row.MeanTPOTMillis, 0, row.Completed},
-		{"output_throughput", "tok/s", row.OutputTokensPerSec, 0, 1},
-		{"total_throughput", "tok/s", row.TotalTokensPerSec, 0, 1},
+	stats := []aggregateMetricStat{
+		{"tpot", "ms", row.MeanTPOTMillis, 0, 0, 0, row.Completed},
+		{"output_throughput", "tok/s", row.OutputTokensPerSec, 0, 0, 0, 1},
+		{"total_throughput", "tok/s", row.TotalTokensPerSec, 0, 0, 0, 1},
 	}
+	// TTFT persists only with trusted provenance: a run without streamed
+	// samples has no TTFT, not a fallback approximation.
+	if row.TTFTSource == TTFTSourceStream {
+		stats = append(stats, aggregateMetricStat{
+			"ttft", "ms", row.MeanTTFTMillis, row.P50TTFTMillis, row.P95TTFTMillis, row.P99TTFTMillis, row.Completed,
+		})
+	}
+	return stats
 }
 
 func insertAggregateMetricStat(tx *sql.Tx, measurementID int64, stat aggregateMetricStat) error {
@@ -902,8 +925,9 @@ func insertAggregateMetricStat(tx *sql.Tx, measurementID int64, stat aggregateMe
 		return nil
 	}
 	_, err := tx.Exec(`INSERT INTO metric_stats (
-		measurement_id, metric, unit, mean, p99, count
-	) VALUES (?, ?, ?, ?, ?, ?)`, measurementID, stat.metric, stat.unit, stat.mean, floatNull(stat.p99), stat.count)
+		measurement_id, metric, unit, mean, p50, p95, p99, count
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, measurementID, stat.metric, stat.unit, stat.mean,
+		floatNull(stat.p50), floatNull(stat.p95), floatNull(stat.p99), stat.count)
 	return err
 }
 
@@ -931,7 +955,7 @@ func sampleMetricDistributions(samples []RequestSample) []sampleMetricDistributi
 		{"request_total_throughput", "tok/s", statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.TotalTokensPerSecond })},
 		{"latency", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.LatencyMillis })},
 		{"first_byte", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.FirstByteMillis })},
-		{"request_ttft", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.TTFTMillis })},
+		{"request_ttft", "ms", statsFromSamples(samples, false, streamedTTFT)},
 		{"request_tpot", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.TPOTMillis })},
 		{"request_itl_mean", "ms", statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.ITLMeanMillis })},
 	}
