@@ -49,6 +49,9 @@ type SQLiteReportDocument struct {
 	EventCounts        []SQLiteReportCount
 	NotableEvents      []SQLiteReportEvent
 	Commands           []SQLiteReportCommand
+	SpecProvenance     string
+	SpecGenerator      *artifact.GeneratorStamp
+	SpecConcurrency    []int
 	ExistingReports    []SQLiteReportExport
 	ArtifactSummaries  []SQLiteReportArtifactSummary
 	MeasurementMetrics map[int64]map[string]SQLiteReportMetric
@@ -449,6 +452,7 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 		loadSQLiteReportEventCounts,
 		loadSQLiteReportNotableEvents,
 		loadSQLiteReportCommands,
+		loadSQLiteReportSpecProvenance,
 		loadSQLiteReportExports,
 		loadSQLiteReportArtifactSummaries,
 	} {
@@ -459,7 +463,8 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 	doc.Measurements, doc.RepeatDetails = aggregateRepeatMeasurements(doc.Measurements)
 	doc.Legend = ReportMetrics
 	doc.MetadataItems = sqliteReportMetadataItems(doc)
-	doc.ThroughputRows = sqliteReportThroughputRows(doc)
+	realRows := sqliteReportThroughputRows(doc)
+	doc.ThroughputRows = append(realRows, trimmedThroughputRows(doc, realRows)...)
 	doc.ThroughputGroups = sqliteReportThroughputGroups(doc.ThroughputRows)
 	doc.PhaseSections = sqliteReportPhaseSections(doc.Measurements)
 	doc.Charts = sqliteReportCharts(doc.Measurements)
@@ -1346,8 +1351,116 @@ func sqliteReportCharts(measurements []SQLiteReportMeasurement) []SQLiteReportCh
 	return []SQLiteReportChart{{Title: "Aggregate Output Throughput", Unit: "tok/s", Height: 24 + len(bars)*28, Bars: bars}}
 }
 
+// loadSQLiteReportSpecProvenance verifies the latest run's original spec
+// against its generator stamp: generated, edited after generation, or
+// custom (no stamp). Verification happens here, from the stored bytes —
+// the label is never taken on trust from the runner.
+func loadSQLiteReportSpecProvenance(db *sql.DB, doc *SQLiteReportDocument) error {
+	var content string
+	err := db.QueryRow(`SELECT content FROM specs WHERE run_id = ? AND kind = 'original'`, doc.Run.ID).Scan(&content)
+	if err == sql.ErrNoRows {
+		doc.SpecProvenance = artifact.SpecProvenanceCustom
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	status, stamp := artifact.VerifySpecProvenance([]byte(content))
+	doc.SpecProvenance = status
+	doc.SpecGenerator = stamp
+	if status == artifact.SpecProvenanceGenerated && stamp != nil && len(stamp.Intent) > 0 {
+		var intent struct {
+			Concurrency []int `json:"concurrency"`
+		}
+		if err := json.Unmarshal(stamp.Intent, &intent); err == nil {
+			doc.SpecConcurrency = intent.Concurrency
+		}
+	}
+	return nil
+}
+
+func specProvenanceDisplay(doc SQLiteReportDocument) string {
+	switch doc.SpecProvenance {
+	case artifact.SpecProvenanceGenerated:
+		return "Generated default sweep (" + doc.SpecGenerator.Tool + ")"
+	case artifact.SpecProvenanceEdited:
+		return "Custom grid (edited after generation)"
+	default:
+		return "Custom grid (hand-authored)"
+	}
+}
+
+// trimmedThroughputRows synthesizes rows for author-trimmed ladder points so
+// declared trims render like adaptive skips, never as silent holes. Only
+// verified generated specs are trusted for this.
+func trimmedThroughputRows(doc SQLiteReportDocument, existing []SQLiteReportThroughputRow) []SQLiteReportThroughputRow {
+	if doc.SpecProvenance != artifact.SpecProvenanceGenerated || doc.SpecGenerator == nil {
+		return nil
+	}
+	ladder := doc.SpecConcurrency
+	if len(ladder) == 0 {
+		return nil
+	}
+	// A real measurement — from any run in a model-level artifact — always
+	// wins over a synthesized trim marker for the same point.
+	measured := map[string]struct{}{}
+	for _, row := range existing {
+		measured[fmt.Sprintf("%d/%s/%d", row.ContextTarget, row.Mode, row.Concurrency)] = struct{}{}
+	}
+	var rows []SQLiteReportThroughputRow
+	for _, trim := range doc.SpecGenerator.LadderTrims {
+		label := contextLabel(trim.Context)
+		for _, concurrency := range ladder {
+			if concurrency <= trim.MaxConcurrency {
+				continue
+			}
+			for _, mode := range []string{"decode", "prefill"} {
+				if _, ok := measured[fmt.Sprintf("%d/%s/%d", trim.Context, mode, concurrency)]; ok {
+					continue
+				}
+				rows = append(rows, SQLiteReportThroughputRow{
+					Phase:            bench.PhaseTitle(mode),
+					Mode:             mode,
+					RunID:            doc.Run.ID,
+					Profile:          label,
+					Model:            doc.Run.Name,
+					ContextWindow:    trim.Context,
+					ContextLabel:     "unverified (declared " + label + " active)",
+					ContextSortKey:   trim.Context,
+					ContextTarget:    trim.Context,
+					ContextSemantics: "active",
+					Concurrency:      concurrency,
+					Shape:            "-",
+					ThroughputTokS:   "trimmed",
+					PerUserTokS:      "trimmed",
+					TTFTMeanMS:       "-",
+					TTFTP99MS:        "-",
+					LatencyP95MS:     "-",
+					Status:           "skipped",
+					FailureLabel:     "trimmed",
+					FailureReason:    "trimmed by author: " + trim.Reason,
+					Detail: SQLiteReportCellDetail{
+						Available:     true,
+						Phase:         bench.PhaseTitle(mode),
+						Mode:          mode,
+						Status:        "skipped",
+						FailureLabel:  "trimmed",
+						FailureReason: "trimmed by author: " + trim.Reason,
+						Profile:       label,
+						ContextLabel:  "unverified (declared " + label + " active)",
+						ContextWindow: trim.Context,
+						Concurrency:   concurrency,
+					},
+				})
+			}
+		}
+	}
+	return rows
+}
+
 func sqliteReportMetadataItems(doc SQLiteReportDocument) []SQLiteReportMetadataItem {
 	items := []SQLiteReportMetadataItem{
+		{Label: "Spec", Value: specProvenanceDisplay(doc)},
 		{Label: "Engine", Value: joinUnique(engineSummaries(doc.Engines), ", ")},
 		{Label: "Runs", Value: fmt.Sprint(len(doc.Runs))},
 		{Label: "Hardware", Value: bench.FirstNonEmpty(doc.Run.Hardware, "-")},

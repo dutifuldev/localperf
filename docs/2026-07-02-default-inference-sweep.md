@@ -181,3 +181,32 @@ whose results already completed.
 
 Do not call a sweep complete until all completed, skipped, and failed cases are
 recorded with enough metadata to reproduce the run.
+
+## Spec Provenance
+
+Create sweep specs only through the generator; never hand-write or
+post-edit the JSON:
+
+```sh
+localperf sweep plan \
+  --model <model-id> \
+  --vllm-command /path/to/runtime/bin/vllm \
+  --gpu-memory-utilization 0.4 \
+  --kv-cache-memory-bytes 12884901888 \
+  --trim 64k=8:'12 GiB KV budget' \
+  --out spec.json
+```
+
+Machine-specific runtime choices (vllm path, GPU memory, KV budget, extra
+serve args) are generator flags, so nothing forces editing the output. A
+deliberate concurrency cap is a declared trim: `--trim <context>=<max>:<reason>`
+removes the higher points from the grid, records the decision in the spec,
+and reports render the trimmed points like adaptive skips — with the reason,
+never as silent holes.
+
+Generated specs carry a `generator` stamp (tool, intent, content hash).
+`bench run` verifies the hash and prints the provenance; reports and the
+viewer label the run "Generated default sweep" only when the hash still
+matches. A spec without a stamp, or edited after generation, runs fine but
+is labeled "Custom grid" — the label is verified from the stored spec bytes,
+never taken on trust.

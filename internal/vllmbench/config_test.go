@@ -3671,3 +3671,19 @@ func TestPrefixCachingResolvedFromArgs(t *testing.T) {
 		t.Fatalf("prefix caching = %v, want unknown without any signal", got)
 	}
 }
+
+func TestValidateLadderTrimBranches(t *testing.T) {
+	if issues := validateGeneratorStamp(nil); len(issues) != 0 {
+		t.Fatalf("nil stamp issues = %v, want none", issues)
+	}
+	stamp := &GeneratorStamp{LadderTrims: []LadderTrim{
+		{Context: 0, MaxConcurrency: 8, Reason: "r"},
+		{Context: 65536, MaxConcurrency: 0, Reason: "r"},
+		{Context: 65536, MaxConcurrency: 8, Reason: "  "},
+		{Context: 65536, MaxConcurrency: 8, Reason: "ok"},
+	}}
+	issues := validateGeneratorStamp(stamp)
+	if len(issues) != 3 {
+		t.Fatalf("issues = %v, want one per invalid trim", issues)
+	}
+}
