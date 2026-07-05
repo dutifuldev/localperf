@@ -141,7 +141,7 @@ func TestParseViewFlagsRejectsMissingPath(t *testing.T) {
 }
 
 func TestHTTPLoadWorkloadCarriesConcurrency(t *testing.T) {
-	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "", "", "0", true, 3, 4, 128, 16)
+	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "", "", "0", true, false, 3, 4, 128, 16)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestHTTPLoadWorkloadCarriesConcurrency(t *testing.T) {
 }
 
 func TestHTTPLoadWorkloadCarriesCanonicalDatasetPath(t *testing.T) {
-	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "/tmp/canonical.jsonl", `{"top_p":0.95}`, "", false, 3, 2, 0, 0)
+	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "/tmp/canonical.jsonl", `{"top_p":0.95}`, "", false, false, 3, 2, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestHTTPLoadWorkloadCarriesCanonicalDatasetPath(t *testing.T) {
 }
 
 func TestHTTPLoadWorkloadAbsolutizesRelativeDatasetPath(t *testing.T) {
-	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "canonical.jsonl", "", "", false, 1, 1, 0, 0)
+	workload, err := httpLoadWorkload("openai-chat", "random", "inf", "", "canonical.jsonl", "", "", false, false, 1, 1, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

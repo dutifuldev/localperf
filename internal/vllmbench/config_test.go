@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1769,12 +1770,66 @@ func TestExecuteHTTPRecordsRequestSamples(t *testing.T) {
 	if stddev <= 0 || count != 3 {
 		t.Fatalf("request_output_throughput stddev/count = %v/%d, want positive/3", stddev, count)
 	}
+	var ttftSource string
+	if err := db.QueryRow(`SELECT COALESCE(json_extract(metadata_json, '$.ttft_source'), '') FROM measurements LIMIT 1`).Scan(&ttftSource); err != nil {
+		t.Fatal(err)
+	}
+	if ttftSource != TTFTSourceStream {
+		t.Fatalf("measurement ttft_source = %q, want %q", ttftSource, TTFTSourceStream)
+	}
+	var ttftMean, ttftP50, ttftP95, ttftP99 float64
+	if err := db.QueryRow(`SELECT mean, COALESCE(p50, 0), COALESCE(p95, 0), COALESCE(p99, 0)
+		FROM metric_stats WHERE metric = 'ttft'`).Scan(&ttftMean, &ttftP50, &ttftP95, &ttftP99); err != nil {
+		t.Fatal(err)
+	}
+	if ttftMean <= 0 || ttftP50 <= 0 || ttftP95 <= 0 || ttftP99 <= 0 {
+		t.Fatalf("ttft stats = %.1f/%.1f/%.1f/%.1f, want all positive from streamed samples", ttftMean, ttftP50, ttftP95, ttftP99)
+	}
+}
+
+func TestExecuteHTTPNoStreamPersistsNoTTFT(t *testing.T) {
+	server, host, port := fakeOpenAIServer(t)
+	defer server.Close()
+	spec := httpTestSpec(t, host, port, "localperf-http-no-stream", 2, 1)
+	stream := false
+	for index := range spec.Workloads {
+		spec.Workloads[index].Stream = &stream
+	}
+	summary, err := Execute(context.Background(), spec, RunOptions{})
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	db, err := sql.Open("sqlite", summary.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var ttftRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM metric_stats WHERE metric IN ('ttft', 'request_ttft')`).Scan(&ttftRows); err != nil {
+		t.Fatal(err)
+	}
+	if ttftRows != 0 {
+		t.Fatalf("ttft metric rows = %d, want none for a non-streamed run", ttftRows)
+	}
+	var metadata sql.NullString
+	if err := db.QueryRow(`SELECT metadata_json FROM measurements LIMIT 1`).Scan(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Valid && strings.Contains(metadata.String, "ttft_source") {
+		t.Fatalf("measurement metadata = %q, want no ttft_source marker", metadata.String)
+	}
 }
 
 func TestExecuteHTTPPreservesZeroTokenArtifacts(t *testing.T) {
 	server, host, port := fakeOpenAIServerWithUsage(t, 12, 0, 12)
 	defer server.Close()
 	spec := httpTestSpec(t, host, port, "localperf-http-zero-tokens", 1, 1)
+	// A zero-completion-token response only exists on the non-streamed
+	// path: a stream with no content chunks is a shape failure.
+	stream := false
+	for index := range spec.Workloads {
+		spec.Workloads[index].Stream = &stream
+	}
 	summary, err := Execute(context.Background(), spec, RunOptions{})
 	if err != nil {
 		t.Fatalf("Execute error = %v", err)
@@ -3180,6 +3235,10 @@ func fakeOpenAIServerWithUsage(t *testing.T, promptTokens, completionTokens, tot
 		case "/v1/chat/completions":
 			call := calls.Add(1)
 			time.Sleep(time.Duration(call*10) * time.Millisecond)
+			if requestWantsStream(r) {
+				writeFakeSSEChatResponse(w, call, promptTokens, completionTokens, totalTokens)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprintf(w, `{"id":"cmpl-%d","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`, call, promptTokens, completionTokens, totalTokens)
 		default:
@@ -3188,6 +3247,43 @@ func fakeOpenAIServerWithUsage(t *testing.T, promptTokens, completionTokens, tot
 	}))
 	host, port := testServerHostPort(t, server)
 	return server, host, port
+}
+
+func requestWantsStream(r *http.Request) bool {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return false
+	}
+	var body struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return false
+	}
+	return body.Stream
+}
+
+// writeFakeSSEChatResponse emits an OpenAI-style chat completion stream:
+// content chunks (none when completionTokens is zero), a finish chunk, a
+// usage chunk, then [DONE].
+func writeFakeSSEChatResponse(w http.ResponseWriter, call int64, promptTokens, completionTokens, totalTokens int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	flusher, _ := w.(http.Flusher)
+	if completionTokens > 0 {
+		for i := 0; i < 2; i++ {
+			_, _ = fmt.Fprintf(w, "data: {\"id\":\"cmpl-%d\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n", call)
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	_, _ = fmt.Fprintf(w, "data: {\"id\":\"cmpl-%d\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n", call)
+	_, _ = fmt.Fprintf(w, "data: {\"id\":\"cmpl-%d\",\"choices\":[],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":%d,\"total_tokens\":%d}}\n\n", call, promptTokens, completionTokens, totalTokens)
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	if flusher != nil {
+		flusher.Flush()
+	}
 }
 
 func testServerHostPort(t *testing.T, server *httptest.Server) (string, int) {

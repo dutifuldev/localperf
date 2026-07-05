@@ -485,7 +485,7 @@ Recommended metric names:
 | Metric | Unit | Meaning |
 | --- | --- | --- |
 | `latency` | `ms` | End-to-end request latency. |
-| `ttft` | `ms` | Time to first token. |
+| `ttft` | `ms` | Time to first token. Written only when the measurement carries `{"ttft_source": "stream"}` in `measurements.metadata_json`; reports render TTFT solely from marked measurements, so a run without streamed samples has no TTFT rather than a first-byte approximation. |
 | `tpot` | `ms` | Time per output token. |
 | `itl` | `ms` | Inter-token latency. |
 | `output_throughput` | `tok/s` | Per-request output throughput distribution. |

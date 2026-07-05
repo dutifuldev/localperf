@@ -24,6 +24,11 @@ const (
 	LoadGeneratorHTTP      = "localperf_http"
 )
 
+// TTFTSourceStream marks TTFT stats measured from streamed responses. It is
+// the only trusted TTFT provenance: reports render TTFT solely when a
+// measurement carries this marker.
+const TTFTSourceStream = "stream"
+
 // Context semantics contract; see docs/2026-07-02-context-semantics.md.
 const (
 	ContextSemanticsActive   = "active"
@@ -156,6 +161,7 @@ type Workload struct {
 	MaxConcurrency          []int                  `json:"max_concurrency"`
 	Concurrency             []int                  `json:"concurrency,omitempty"`
 	Traffic                 BenchmarkTrafficConfig `json:"traffic,omitempty"`
+	Stream                  *bool                  `json:"stream,omitempty"`
 	IgnoreEOS               bool                   `json:"ignore_eos,omitempty"`
 	Temperature             *float64               `json:"temperature,omitempty"`
 	CapturePayloadArtifacts bool                   `json:"capture_payload_artifacts,omitempty"`
@@ -595,6 +601,12 @@ func applyLoadGeneratorDefault(workload *Workload) {
 	if workload.LoadGenerator == "" {
 		workload.LoadGenerator = LoadGeneratorVLLMBench
 	}
+}
+
+// workloadStreams reports whether http-load requests stream. Streaming is
+// the default: TTFT is only measurable on streamed responses.
+func workloadStreams(workload Workload) bool {
+	return workload.Stream == nil || *workload.Stream
 }
 
 func normalizeLoadGenerator(value string) string {

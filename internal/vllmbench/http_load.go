@@ -1,6 +1,7 @@
 package vllmbench
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -48,7 +49,10 @@ type HTTPBenchmarkResult struct {
 	RequestTotalThroughputMean    float64         `json:"request_total_throughput_mean,omitempty"`
 	RequestTotalThroughputStdDev  float64         `json:"request_total_throughput_stddev,omitempty"`
 	MeanTTFTMillis                float64         `json:"mean_ttft_ms,omitempty"`
+	P50TTFTMillis                 float64         `json:"p50_ttft_ms,omitempty"`
+	P95TTFTMillis                 float64         `json:"p95_ttft_ms,omitempty"`
 	P99TTFTMillis                 float64         `json:"p99_ttft_ms,omitempty"`
+	TTFTSource                    string          `json:"ttft_source,omitempty"`
 	MeanLatencyMillis             float64         `json:"mean_latency_ms,omitempty"`
 	StdLatencyMillis              float64         `json:"std_latency_ms,omitempty"`
 	P50LatencyMillis              float64         `json:"p50_latency_ms,omitempty"`
@@ -440,12 +444,24 @@ func (client openAIHTTPClient) Invoke(ctx context.Context, index int, request Ca
 	if err != nil {
 		return sample.withError("request_render", "", err.Error(), time.Now().UTC(), nil)
 	}
+	if client.streams() {
+		stream, failure := client.sendStreamingRequest(ctx, endpoint, payload)
+		if failure != nil {
+			return sample.withError(failure.errorType, failure.errorCode, failure.message, failure.completedAt, failure.firstByteAt)
+		}
+		sample.HTTPStatusCode = stream.statusCode
+		return stream.applyToSample(sample, request)
+	}
 	response, failure := client.sendRequest(ctx, endpoint, payload)
 	if failure != nil {
 		return sample.withError(failure.errorType, failure.errorCode, failure.message, failure.completedAt, failure.firstByteAt)
 	}
 	sample.HTTPStatusCode = response.statusCode
 	return response.applyToSample(sample, request)
+}
+
+func (client openAIHTTPClient) streams() bool {
+	return workloadStreams(client.workload)
 }
 
 func newRequestSample(index int, request CanonicalRequest) RequestSample {
@@ -520,6 +536,184 @@ func newHTTPLoadFailure(errorType, errorCode, message string, completedAt time.T
 	}
 }
 
+type httpStreamResult struct {
+	statusCode   int
+	firstTokenAt *time.Time
+	lastTokenAt  *time.Time
+	tokenChunks  int
+	content      strings.Builder
+	usage        openAIUsage
+	responseID   string
+	finishReason string
+	completedAt  time.Time
+	firstByteAt  *time.Time
+}
+
+type openAIStreamChunk struct {
+	ID      string               `json:"id,omitempty"`
+	Choices []openAIStreamChoice `json:"choices,omitempty"`
+	Usage   *openAIUsage         `json:"usage,omitempty"`
+	Error   *openAIError         `json:"error,omitempty"`
+}
+
+type openAIStreamChoice struct {
+	Delta        *openAIMessage `json:"delta,omitempty"`
+	Text         string         `json:"text,omitempty"`
+	FinishReason string         `json:"finish_reason,omitempty"`
+}
+
+func (client openAIHTTPClient) sendStreamingRequest(ctx context.Context, endpoint string, payload []byte) (*httpStreamResult, *httpLoadFailure) {
+	var firstByteAt *time.Time
+	trace := &httptrace.ClientTrace{GotFirstResponseByte: func() {
+		now := time.Now().UTC()
+		firstByteAt = &now
+	}}
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodPost, client.baseURL+endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, newHTTPLoadFailure("request_create", "", err.Error(), time.Now().UTC(), firstByteAt)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := client.client.Do(req)
+	if err != nil {
+		return nil, newHTTPLoadFailure("request_send", "", err.Error(), time.Now().UTC(), firstByteAt)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+		return nil, newHTTPLoadFailure("http_status", fmt.Sprint(resp.StatusCode), strings.TrimSpace(string(data)), time.Now().UTC(), firstByteAt)
+	}
+	stream := &httpStreamResult{statusCode: resp.StatusCode, firstByteAt: firstByteAt}
+	if failure := stream.consume(resp.Body); failure != nil {
+		failure.firstByteAt = firstByteAt
+		return nil, failure
+	}
+	stream.firstByteAt = firstByteAt
+	return stream, nil
+}
+
+func (stream *httpStreamResult) consume(body io.Reader) *httpLoadFailure {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	terminated := false
+	for scanner.Scan() {
+		data, ok := ssePayload(scanner.Text())
+		if !ok {
+			continue
+		}
+		if data == "[DONE]" {
+			terminated = true
+			break
+		}
+		if failure := stream.applyChunk(data); failure != nil {
+			return failure
+		}
+	}
+	stream.completedAt = time.Now().UTC()
+	if err := scanner.Err(); err != nil {
+		return newHTTPLoadFailure("response_read", "", err.Error(), stream.completedAt, nil)
+	}
+	// EOF before [DONE] is a truncated stream: recording it as completed
+	// would silently keep partial output and fallback token counts.
+	if !terminated {
+		return newHTTPLoadFailure("response_read", "", "stream ended before [DONE] terminator", stream.completedAt, nil)
+	}
+	if stream.firstTokenAt == nil {
+		return newHTTPLoadFailure("response_shape", "", "stream produced no completion content", stream.completedAt, nil)
+	}
+	return nil
+}
+
+func ssePayload(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "data:") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(line, "data:")), true
+}
+
+func (stream *httpStreamResult) applyChunk(data string) *httpLoadFailure {
+	var chunk openAIStreamChunk
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return newHTTPLoadFailure("response_decode", "", err.Error(), time.Now().UTC(), nil)
+	}
+	if chunk.Error != nil {
+		return newHTTPLoadFailure(firstNonEmpty(chunk.Error.Type, "api_error"), fmt.Sprint(chunk.Error.Code), chunk.Error.Message, time.Now().UTC(), nil)
+	}
+	if chunk.ID != "" {
+		stream.responseID = chunk.ID
+	}
+	if chunk.Usage != nil {
+		stream.usage = *chunk.Usage
+	}
+	for _, choice := range chunk.Choices {
+		stream.applyChoice(choice)
+	}
+	return nil
+}
+
+func (stream *httpStreamResult) applyChoice(choice openAIStreamChoice) {
+	if choice.FinishReason != "" {
+		stream.finishReason = choice.FinishReason
+	}
+	text := streamChoiceText(choice)
+	if text == "" {
+		return
+	}
+	now := time.Now().UTC()
+	if stream.firstTokenAt == nil {
+		stream.firstTokenAt = &now
+	}
+	stream.lastTokenAt = &now
+	stream.tokenChunks++
+	stream.content.WriteString(text)
+}
+
+// streamChoiceText extracts the token text of one stream choice: chat chunks
+// carry a delta message, completions chunks carry plain text.
+func streamChoiceText(choice openAIStreamChoice) string {
+	if choice.Delta != nil && choice.Delta.Content != "" {
+		return choice.Delta.Content
+	}
+	return choice.Text
+}
+
+func (stream *httpStreamResult) applyToSample(sample RequestSample, request CanonicalRequest) RequestSample {
+	sample.Status = "completed"
+	sample.Streamed = true
+	sample.CompletedAt = &stream.completedAt
+	sample.FirstByteAt = stream.firstByteAt
+	sample.LatencyMillis = stream.completedAt.Sub(sample.StartedAt).Seconds() * 1000
+	if stream.firstByteAt != nil {
+		sample.FirstByteMillis = stream.firstByteAt.Sub(sample.StartedAt).Seconds() * 1000
+	}
+	sample.TTFTMillis = stream.firstTokenAt.Sub(sample.StartedAt).Seconds() * 1000
+	sample.PromptTokens = usageInt(stream.usage.PromptTokens, request.InputTokensExpected)
+	sample.CompletionTokens = usageInt(stream.usage.CompletionTokens, request.OutputTokensExpected)
+	sample.TotalTokens = usageInt(stream.usage.TotalTokens, sample.PromptTokens+sample.CompletionTokens)
+	if sample.CompletionTokens > 1 {
+		sample.TPOTMillis = stream.completedAt.Sub(*stream.firstTokenAt).Seconds() * 1000 / float64(sample.CompletionTokens-1)
+	}
+	if stream.tokenChunks > 1 {
+		sample.ITLMeanMillis = stream.lastTokenAt.Sub(*stream.firstTokenAt).Seconds() * 1000 / float64(stream.tokenChunks-1)
+	}
+	sample.ResponseSHA256 = sha256Hex([]byte(stream.content.String()))
+	sample.ResponseMetadata = streamResponseMetadata(stream)
+	sample.deriveThroughput()
+	return sample
+}
+
+func streamResponseMetadata(stream *httpStreamResult) map[string]any {
+	out := map[string]any{"stream_chunks": stream.tokenChunks}
+	if stream.responseID != "" {
+		out["id"] = stream.responseID
+	}
+	if stream.finishReason != "" {
+		out["finish_reason"] = stream.finishReason
+	}
+	return out
+}
+
 func (response httpLoadResponse) applyToSample(sample RequestSample, request CanonicalRequest) RequestSample {
 	var decoded openAIResponse
 	if failure := response.decode(&decoded); failure != nil {
@@ -562,10 +756,28 @@ func (client openAIHTTPClient) requestBody(request CanonicalRequest) (map[string
 	if err != nil {
 		return nil, "", err
 	}
+	build := client.chatRequestBody
 	if backend == "openai" {
-		return client.completionRequestBody(body, request)
+		build = client.completionRequestBody
 	}
-	return client.chatRequestBody(body, request)
+	built, endpoint, err := build(body, request)
+	if err != nil {
+		return nil, "", err
+	}
+	client.enforceStreamOptions(built)
+	return built, endpoint, nil
+}
+
+// enforceStreamOptions keeps the workload's stream setting authoritative:
+// extra_body must not silently flip streaming, because TTFT is only
+// measurable on streamed responses.
+func (client openAIHTTPClient) enforceStreamOptions(body map[string]any) {
+	body["stream"] = client.streams()
+	if client.streams() {
+		body["stream_options"] = map[string]any{"include_usage": true}
+	} else {
+		delete(body, "stream_options")
+	}
 }
 
 func (client openAIHTTPClient) baseRequestBody(request CanonicalRequest) (map[string]any, error) {
@@ -576,7 +788,10 @@ func (client openAIHTTPClient) baseRequestBody(request CanonicalRequest) (map[st
 	body := map[string]any{
 		"model":      client.profile.Model,
 		"max_tokens": maxTokens,
-		"stream":     false,
+		"stream":     client.streams(),
+	}
+	if client.streams() {
+		body["stream_options"] = map[string]any{"include_usage": true}
 	}
 	client.applyRequestOptions(body, request)
 	return body, nil
@@ -770,14 +985,9 @@ func applyRequestStats(result *HTTPBenchmarkResult, samples []RequestSample) {
 	outputStats := statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.OutputTokensPerSecond })
 	totalStats := statsFromSamples(samples, true, func(sample RequestSample) float64 { return sample.TotalTokensPerSecond })
 	latencyStats := statsFromSamples(samples, false, func(sample RequestSample) float64 { return sample.LatencyMillis })
-	// Non-streaming requests have no inter-token TTFT; the first byte is
-	// when the response (and so the first token) arrived.
-	ttftStats := statsFromSamples(samples, false, func(sample RequestSample) float64 {
-		if sample.TTFTMillis > 0 {
-			return sample.TTFTMillis
-		}
-		return sample.FirstByteMillis
-	})
+	// TTFT exists only on streamed responses. Non-streamed samples carry no
+	// TTFT at all: first-byte time is full-response arrival, not first token.
+	ttftStats := statsFromSamples(samples, false, streamedTTFT)
 	result.RequestOutputThroughputMean = outputStats.Mean
 	result.RequestOutputThroughputStdDev = outputStats.StdDev
 	result.RequestOutputThroughputMin = outputStats.Min
@@ -788,12 +998,26 @@ func applyRequestStats(result *HTTPBenchmarkResult, samples []RequestSample) {
 	result.RequestTotalThroughputMean = totalStats.Mean
 	result.RequestTotalThroughputStdDev = totalStats.StdDev
 	result.MeanTTFTMillis = ttftStats.Mean
+	result.P50TTFTMillis = ttftStats.P50
+	result.P95TTFTMillis = ttftStats.P95
 	result.P99TTFTMillis = ttftStats.P99
+	if ttftStats.Count > 0 {
+		result.TTFTSource = TTFTSourceStream
+	}
 	result.MeanLatencyMillis = latencyStats.Mean
 	result.StdLatencyMillis = latencyStats.StdDev
 	result.P50LatencyMillis = latencyStats.P50
 	result.P95LatencyMillis = latencyStats.P95
 	result.P99LatencyMillis = latencyStats.P99
+}
+
+// streamedTTFT admits TTFT only from streamed samples, where the first
+// token's arrival was actually observed.
+func streamedTTFT(sample RequestSample) float64 {
+	if !sample.Streamed {
+		return 0
+	}
+	return sample.TTFTMillis
 }
 
 func statsFromSamples(samples []RequestSample, includeZero bool, value func(RequestSample) float64) numericStats {

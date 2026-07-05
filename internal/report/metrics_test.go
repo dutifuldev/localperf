@@ -142,6 +142,54 @@ func TestRepeatAggregationRendersSpreadAndRepeatRows(t *testing.T) {
 	}
 }
 
+func TestTTFTHiddenWithoutStreamedSource(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
+	// The fixture seeds request_ttft stats but no ttft_source marker —
+	// exactly the shape of artifacts written before streaming support.
+	createTestSQLiteHTMLArtifact(t, artifactPath, "TTFTGate")
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	measurement := doc.Measurements[0]
+	for label, got := range map[string]string{
+		"mean": measurement.TTFTMeanMS,
+		"p50":  measurement.TTFTP50MS,
+		"p95":  measurement.TTFTP95MS,
+		"p99":  measurement.TTFTP99MS,
+	} {
+		if got != "-" {
+			t.Fatalf("TTFT %s = %q, want \"-\" without the streamed-source marker", label, got)
+		}
+	}
+}
+
+func TestSLOTTFTTargetRequiresStreamedSource(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
+	createTestSQLiteHTMLArtifact(t, artifactPath, "SLOGate")
+	db, err := sql.Open("sqlite", artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE workloads SET metadata_json = '{"slo":{"ttft_p95_ms":500}}' WHERE id = 'workload-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := LoadSQLiteReport(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	measurement := doc.Measurements[0]
+	if measurement.SLOMetPct != "-" || measurement.GoodputRPS != "-" {
+		t.Fatalf("SLO met/goodput = %q/%q, want unmeasurable without streamed TTFT", measurement.SLOMetPct, measurement.GoodputRPS)
+	}
+	if !strings.Contains(measurement.SLONote, "requires streamed samples") {
+		t.Fatalf("SLO note = %q, want streamed-samples caveat", measurement.SLONote)
+	}
+}
+
 func TestSLOGoodputDerivation(t *testing.T) {
 	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
 	createTestSQLiteHTMLArtifact(t, artifactPath, "SLO")
@@ -151,6 +199,9 @@ func TestSLOGoodputDerivation(t *testing.T) {
 	}
 	defer db.Close()
 	if _, err := db.Exec(`UPDATE workloads SET metadata_json = '{"slo":{"ttft_p95_ms":500}}' WHERE id = 'workload-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE measurements SET metadata_json = '{"ttft_source":"stream"}' WHERE id = 1`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`DELETE FROM requests`); err != nil {

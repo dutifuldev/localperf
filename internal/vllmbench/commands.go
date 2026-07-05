@@ -165,6 +165,9 @@ func appendHTTPOptionalArgs(builder *argBuilder, workload Workload) {
 	if workload.Temperature != nil {
 		*builder = append(*builder, "--temperature", trimFloat(*workload.Temperature))
 	}
+	if !workloadStreams(workload) {
+		*builder = append(*builder, "--no-stream")
+	}
 }
 
 func WarmupCommand(spec Spec, profile Profile, runDir string) CommandSpec {

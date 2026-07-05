@@ -57,7 +57,10 @@ type ReportRow struct {
 	OutputTokSecStdDev  float64 `json:"output_tokens_per_second_stddev,omitempty"`
 	TotalTokSecStdDev   float64 `json:"total_tokens_per_second_stddev,omitempty"`
 	MeanTTFTMillis      float64 `json:"mean_ttft_ms,omitempty"`
+	P50TTFTMillis       float64 `json:"p50_ttft_ms,omitempty"`
+	P95TTFTMillis       float64 `json:"p95_ttft_ms,omitempty"`
 	P99TTFTMillis       float64 `json:"p99_ttft_ms,omitempty"`
+	TTFTSource          string  `json:"ttft_source,omitempty"`
 	MeanTPOTMillis      float64 `json:"mean_tpot_ms,omitempty"`
 	MeanLatencyMillis   float64 `json:"mean_latency_ms,omitempty"`
 	StdLatencyMillis    float64 `json:"std_latency_ms,omitempty"`
@@ -255,6 +258,7 @@ func enrichRowFromWorkload(row *ReportRow, event Event, spec *Spec) {
 }
 
 func applyWorkloadFields(row *ReportRow, workload Workload) {
+	stampVLLMBenchTTFTSource(row, workload)
 	if phase := normalizeWorkloadPhase(workload.Phase); phase != "" && (row.Phase == "" || row.Phase == "mixed") {
 		row.Phase = workload.Phase
 	}
@@ -267,6 +271,15 @@ func applyWorkloadFields(row *ReportRow, workload Workload) {
 	}
 	row.InputLen = firstNonZeroInt(row.InputLen, trafficInputLen(workload.BenchmarkTrafficConfig), structuredInputLen(workload))
 	row.OutputLen = firstNonZeroInt(row.OutputLen, trafficOutputLen(workload.BenchmarkTrafficConfig), structuredOutputLen(workload))
+}
+
+// stampVLLMBenchTTFTSource marks vllm bench serve TTFT as streamed: that
+// generator always streams, so its TTFT numbers are first-token
+// measurements even though the raw result cannot declare provenance.
+func stampVLLMBenchTTFTSource(row *ReportRow, workload Workload) {
+	if row.TTFTSource == "" && workload.LoadGenerator == LoadGeneratorVLLMBench && row.MeanTTFTMillis > 0 {
+		row.TTFTSource = TTFTSourceStream
+	}
 }
 
 func structuredInputLen(workload Workload) int {
@@ -495,7 +508,10 @@ func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {
 			OutputTokSecStdDev: firstFloat(raw, "request_output_throughput_stddev", "output_tokens_per_second_stddev"),
 			TotalTokSecStdDev:  firstFloat(raw, "request_total_throughput_stddev", "total_tokens_per_second_stddev"),
 			MeanTTFTMillis:     firstFloat(raw, "mean_ttft_ms"),
+			P50TTFTMillis:      firstFloat(raw, "p50_ttft_ms"),
+			P95TTFTMillis:      firstFloat(raw, "p95_ttft_ms"),
 			P99TTFTMillis:      firstFloat(raw, "p99_ttft_ms"),
+			TTFTSource:         stringValue(raw, "ttft_source"),
 			MeanTPOTMillis:     firstFloat(raw, "mean_tpot_ms"),
 			MeanLatencyMillis:  firstFloat(raw, "mean_latency_ms"),
 			StdLatencyMillis:   firstFloat(raw, "std_latency_ms"),
