@@ -41,6 +41,9 @@ Problems, ranked:
    `bench report`) with pre-contract labeling, and the artifact ingests
    them as `normalized_report` attachments. They contradict the HTML
    report and would keep publishing the fake TTFT values.
+9. Numbers render with fixed excess precision: "10.022 tok/s",
+   "102175.763" ms. Three decimals on a six-digit millisecond value is
+   noise, and precision never adapts to magnitude or unit.
 
 Design principle throughout, same contract as
 [Context Semantics](2026-07-02-context-semantics.md): declared, then
@@ -115,6 +118,21 @@ The measurement fix; everything else is presentation or provenance.
   referencing the deleted files. Coordinate with the viewer-mode branch:
   its rebuild-from-run-dir path must key off events/results/summary.json,
   never the deleted exports.
+- Display precision: one shared formatter (server-side, in the report
+  model, so the Go templates, SPA, and detail views all receive the same
+  pre-formatted strings) targeting roughly three significant digits.
+  - Rates (tok/s, req/s): >= 100 -> no decimals (879); 10-100 -> one
+    decimal (36.0); < 10 -> two decimals (8.24).
+  - Durations: promote units instead of stacking digits. < 100 ms -> one
+    decimal (42.3 ms); 100 ms to 10 s -> whole milliseconds (321 ms,
+    9,188 ms); >= 10 s -> seconds with one decimal (102.2 s); >= 120 s ->
+    minutes and seconds (4m 37s). Thousands separators on 4+ digit
+    millisecond values.
+  - Aggregates and spreads (mean +/- stddev) use the precision of their
+    magnitude, both parts formatted by the same rule.
+  - Raw unrounded values stay in the artifact and JSON payloads
+    (formatted strings ride alongside, e.g. `tok_s` + `tok_s_display`);
+    rounding is display-only.
 - Rebuild `web/dist` (npm build) and re-embed.
 
 ## PR 3: spec provenance and intent compilation
