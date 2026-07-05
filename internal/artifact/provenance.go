@@ -35,16 +35,20 @@ const (
 	SpecProvenanceCustom    = "custom"
 )
 
-// CanonicalSpecHash hashes a spec document with the "generator" key removed,
-// after canonicalizing through a generic JSON map (sorted keys), so the
-// generator and every verifier agree byte-for-byte regardless of struct
-// field order.
+// CanonicalSpecHash hashes a spec document with only the self-referential
+// generator.content_hash removed, after canonicalizing through a generic
+// JSON map (sorted keys), so the generator and every verifier agree
+// byte-for-byte regardless of struct field order. The rest of the stamp —
+// intent and ladder trims — is covered by the hash: reports trust those
+// fields, so editing them must demote the spec.
 func CanonicalSpecHash(raw []byte) (string, error) {
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return "", err
 	}
-	delete(doc, "generator")
+	if generator, ok := doc["generator"].(map[string]any); ok {
+		delete(generator, "content_hash")
+	}
 	canonical, err := json.Marshal(doc)
 	if err != nil {
 		return "", err

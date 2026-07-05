@@ -1029,21 +1029,25 @@ func TestGeneratedSpecTrimsRenderAsRows(t *testing.T) {
 	artifactPath := filepath.Join(t.TempDir(), "run.sqlite")
 	createTestSQLiteHTMLArtifact(t, artifactPath, "Trims")
 	base := map[string]any{"version": "1", "name": "stamped", "model": "example/model"}
-	baseJSON, err := json.Marshal(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash, err := artifact.CanonicalSpecHash(baseJSON)
-	if err != nil {
-		t.Fatal(err)
-	}
-	base["generator"] = artifact.GeneratorStamp{
+	stamp := artifact.GeneratorStamp{
 		Tool:        "localperf sweep plan",
 		Version:     "1",
 		Intent:      json.RawMessage(`{"concurrency":[1,4,8,16]}`),
 		LadderTrims: []artifact.LadderTrim{{Context: 65536, MaxConcurrency: 8, Reason: "12 GiB KV budget"}},
-		ContentHash: hash,
 	}
+	base["generator"] = stamp
+	unhashed, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The hash covers the stamp's trusted fields; only content_hash itself
+	// is excluded.
+	hash, err := artifact.CanonicalSpecHash(unhashed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp.ContentHash = hash
+	base["generator"] = stamp
 	content, err := json.Marshal(base)
 	if err != nil {
 		t.Fatal(err)

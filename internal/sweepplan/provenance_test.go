@@ -25,6 +25,20 @@ func TestPlanStampsVerifiableProvenance(t *testing.T) {
 	if got := vllmbench.SpecProvenance(spec); got != vllmbench.SpecProvenanceEdited {
 		t.Fatalf("provenance = %q, want edited after mutation", got)
 	}
+	// The stamp's trusted fields are covered by the hash: reports rely on
+	// declared trims, so editing them must demote the spec too.
+	fresh, err := Plan(PlanRequest{
+		Model:    "example/model",
+		Contexts: []int{8192, 65536},
+		Trims:    []vllmbench.LadderTrim{{Context: 65536, MaxConcurrency: 8, Reason: "12 GiB KV budget"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh.Generator.LadderTrims = append(fresh.Generator.LadderTrims, vllmbench.LadderTrim{Context: 8192, MaxConcurrency: 1, Reason: "invented"})
+	if got := vllmbench.SpecProvenance(fresh); got != vllmbench.SpecProvenanceEdited {
+		t.Fatalf("provenance = %q, want edited after tampering with declared trims", got)
+	}
 	spec.Generator = nil
 	if got := vllmbench.SpecProvenance(spec); got != vllmbench.SpecProvenanceCustom {
 		t.Fatalf("provenance = %q, want custom without a stamp", got)

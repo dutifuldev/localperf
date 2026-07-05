@@ -463,7 +463,8 @@ func LoadSQLiteReport(path string) (SQLiteReportDocument, error) {
 	doc.Measurements, doc.RepeatDetails = aggregateRepeatMeasurements(doc.Measurements)
 	doc.Legend = ReportMetrics
 	doc.MetadataItems = sqliteReportMetadataItems(doc)
-	doc.ThroughputRows = append(sqliteReportThroughputRows(doc), trimmedThroughputRows(doc)...)
+	realRows := sqliteReportThroughputRows(doc)
+	doc.ThroughputRows = append(realRows, trimmedThroughputRows(doc, realRows)...)
 	doc.ThroughputGroups = sqliteReportThroughputGroups(doc.ThroughputRows)
 	doc.PhaseSections = sqliteReportPhaseSections(doc.Measurements)
 	doc.Charts = sqliteReportCharts(doc.Measurements)
@@ -1392,13 +1393,19 @@ func specProvenanceDisplay(doc SQLiteReportDocument) string {
 // trimmedThroughputRows synthesizes rows for author-trimmed ladder points so
 // declared trims render like adaptive skips, never as silent holes. Only
 // verified generated specs are trusted for this.
-func trimmedThroughputRows(doc SQLiteReportDocument) []SQLiteReportThroughputRow {
+func trimmedThroughputRows(doc SQLiteReportDocument, existing []SQLiteReportThroughputRow) []SQLiteReportThroughputRow {
 	if doc.SpecProvenance != artifact.SpecProvenanceGenerated || doc.SpecGenerator == nil {
 		return nil
 	}
 	ladder := doc.SpecConcurrency
 	if len(ladder) == 0 {
 		return nil
+	}
+	// A real measurement — from any run in a model-level artifact — always
+	// wins over a synthesized trim marker for the same point.
+	measured := map[string]struct{}{}
+	for _, row := range existing {
+		measured[fmt.Sprintf("%d/%s/%d", row.ContextTarget, row.Mode, row.Concurrency)] = struct{}{}
 	}
 	var rows []SQLiteReportThroughputRow
 	for _, trim := range doc.SpecGenerator.LadderTrims {
@@ -1408,6 +1415,9 @@ func trimmedThroughputRows(doc SQLiteReportDocument) []SQLiteReportThroughputRow
 				continue
 			}
 			for _, mode := range []string{"decode", "prefill"} {
+				if _, ok := measured[fmt.Sprintf("%d/%s/%d", trim.Context, mode, concurrency)]; ok {
+					continue
+				}
 				rows = append(rows, SQLiteReportThroughputRow{
 					Phase:            bench.PhaseTitle(mode),
 					Mode:             mode,

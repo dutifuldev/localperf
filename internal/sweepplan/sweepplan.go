@@ -123,6 +123,9 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 		if strings.TrimSpace(trim.Reason) == "" {
 			return vllmbench.Spec{}, fmt.Errorf("trims[%d]: a reason is required — declared trims render in reports", index)
 		}
+		if !containsInt(request.Contexts, trim.Context) && !(request.IncludeStress && trim.Context == stressContext) {
+			return vllmbench.Spec{}, fmt.Errorf("trims[%d]: context %d is not in the generated ladder", index, trim.Context)
+		}
 	}
 	if len(request.Concurrency) == 0 {
 		request.Concurrency = []int{1, 4, 8, 16, 32}

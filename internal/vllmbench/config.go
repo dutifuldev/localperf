@@ -280,9 +280,10 @@ func LoadSpec(path string) (Spec, error) {
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return Spec{}, err
 	}
-	// Verify provenance against the raw bytes, before defaults mutate the
-	// spec away from what the generator hashed.
-	spec.Provenance = SpecProvenance(spec)
+	// Verify provenance against the raw file bytes, before unmarshalling
+	// drops unknown fields and defaults mutate the spec: the runner's label
+	// must match what reports later verify from the stored bytes.
+	spec.Provenance, _ = artifact.VerifySpecProvenance(data)
 	ApplyDefaults(&spec)
 	if err := ValidateSpec(spec); err != nil {
 		return Spec{}, err
