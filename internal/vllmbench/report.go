@@ -2,8 +2,6 @@ package vllmbench
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -290,59 +288,6 @@ func structuredOutputLen(workload Workload) int {
 	return firstNonZeroInt(workload.Request.MaxOutputTokens, workload.Dataset.OutputTokens)
 }
 
-func RenderMarkdown(report Report) string {
-	var out strings.Builder
-	out.WriteString("# vLLM Benchmark Report\n\n")
-	out.WriteString(fmt.Sprintf("Run directory: `%s`\n\n", report.RunDir))
-	out.WriteString(fmt.Sprintf("Generated: `%s`\n\n", report.Generated.Format(time.RFC3339)))
-	if len(report.Events.ByType) > 0 {
-		out.WriteString("## Event Summary\n\n")
-		out.WriteString("| Event | Count |\n")
-		out.WriteString("| --- | ---: |\n")
-		for _, key := range collections.SortedKeys(report.Events.ByType) {
-			out.WriteString(fmt.Sprintf("| `%s` | %d |\n", key, report.Events.ByType[key]))
-		}
-		out.WriteString("\n")
-	}
-	out.WriteString("## Throughput\n\n")
-	if len(report.Rows) == 0 {
-		out.WriteString("No parseable benchmark result rows were found.\n")
-		return out.String()
-	}
-	for _, phase := range reportPhases(report.Rows) {
-		out.WriteString(fmt.Sprintf("### %s\n\n", phaseTitle(phase)))
-		renderThroughputTable(&out, report.RunDir, rowsForPhase(report.Rows, phase))
-		out.WriteString("\n")
-	}
-	return out.String()
-}
-
-func renderThroughputTable(out *strings.Builder, runDir string, rows []ReportRow) {
-	out.WriteString("| Profile | Workload | Dataset | Context | Concurrency | Input | Output | Completed | Failed | Output tok/s | Output tok/s sd | Per-user tok/s | Total tok/s | Latency mean ms | TTFT mean ms | Result |\n")
-	out.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n")
-	for _, row := range rows {
-		out.WriteString(fmt.Sprintf(
-			"| %s | %s | %s | %s | %s | %s | %s | %d | %d | %s | %s | %s | %s | %s | %s | `%s` |\n",
-			cell(row.Profile),
-			cell(row.Workload),
-			cell(row.DatasetName),
-			intCell(row.Context),
-			intCell(row.Concurrency),
-			intCell(row.DisplayInputLen()),
-			intCell(row.DisplayOutputLen()),
-			row.Completed,
-			row.Failed,
-			floatCell(row.OutputTokensPerSec),
-			floatCell(row.OutputTokSecStdDev),
-			floatCell(row.PerUserOutputTokSec),
-			floatCell(row.TotalTokensPerSec),
-			floatCell(row.MeanLatencyMillis),
-			floatCell(row.MeanTTFTMillis),
-			fileCell(runDir, row.ResultFile),
-		))
-	}
-}
-
 func reportPhases(rows []ReportRow) []string {
 	seen := map[string]bool{}
 	for _, row := range rows {
@@ -382,103 +327,6 @@ func normalizeReportPhase(phase string) string {
 
 func phaseRank(phase string) int {
 	return bench.PhaseRank(phase)
-}
-
-func phaseTitle(phase string) string {
-	return bench.PhaseTitle(phase)
-}
-
-func WriteReportFiles(report Report, outputPath string) error {
-	if ext := filepath.Ext(outputPath); strings.EqualFold(ext, ".json") || strings.EqualFold(ext, ".csv") {
-		return fmt.Errorf("markdown report output path must not end in .json or .csv: %s", outputPath)
-	}
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(outputPath, []byte(RenderMarkdown(report)), 0o644); err != nil {
-		return err
-	}
-	jsonPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".json"
-	if err := writeJSONFile(jsonPath, report); err != nil {
-		return err
-	}
-	csvPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".csv"
-	return os.WriteFile(csvPath, []byte(RenderCSV(report)), 0o644)
-}
-
-func RenderCSV(report Report) string {
-	var buffer bytes.Buffer
-	writer := csv.NewWriter(&buffer)
-	_ = writer.Write([]string{
-		"profile",
-		"workload",
-		"phase",
-		"dataset_name",
-		"context",
-		"server_max_num_seqs",
-		"concurrency",
-		"repeat",
-		"input_len",
-		"output_len",
-		"random_input_len",
-		"random_output_len",
-		"completed",
-		"failed",
-		"prompt_tokens",
-		"completion_tokens",
-		"total_tokens",
-		"duration_seconds",
-		"output_tokens_per_second",
-		"output_tokens_per_second_stddev",
-		"total_tokens_per_second",
-		"total_tokens_per_second_stddev",
-		"per_user_output_tokens_per_second",
-		"mean_ttft_ms",
-		"p99_ttft_ms",
-		"mean_tpot_ms",
-		"mean_latency_ms",
-		"std_latency_ms",
-		"p95_latency_ms",
-		"p99_latency_ms",
-		"result_file",
-	})
-	for _, row := range report.Rows {
-		_ = writer.Write([]string{
-			row.Profile,
-			row.Workload,
-			reportRowPhase(row),
-			row.DatasetName,
-			intCSV(row.Context),
-			intCSV(row.ServerMaxNumSeqs),
-			intCSV(row.Concurrency),
-			intCSV(row.Repeat),
-			intCSV(row.DisplayInputLen()),
-			intCSV(row.DisplayOutputLen()),
-			intCSV(row.RandomInputLen),
-			intCSV(row.RandomOutputLen),
-			fmt.Sprint(row.Completed),
-			fmt.Sprint(row.Failed),
-			intCSV(row.PromptTokens),
-			intCSV(row.CompletionTokens),
-			intCSV(row.TotalTokens),
-			floatCSV(row.DurationSeconds),
-			floatCSV(row.OutputTokensPerSec),
-			floatCSV(row.OutputTokSecStdDev),
-			floatCSV(row.TotalTokensPerSec),
-			floatCSV(row.TotalTokSecStdDev),
-			floatCSV(row.PerUserOutputTokSec),
-			floatCSV(row.MeanTTFTMillis),
-			floatCSV(row.P99TTFTMillis),
-			floatCSV(row.MeanTPOTMillis),
-			floatCSV(row.MeanLatencyMillis),
-			floatCSV(row.StdLatencyMillis),
-			floatCSV(row.P95LatencyMillis),
-			floatCSV(row.P99LatencyMillis),
-			fileCell(report.RunDir, row.ResultFile),
-		})
-	}
-	writer.Flush()
-	return buffer.String()
 }
 
 func rowsFromRaw(rawRows []map[string]any, path string) []ReportRow {

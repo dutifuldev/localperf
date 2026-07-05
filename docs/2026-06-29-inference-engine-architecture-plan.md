@@ -47,7 +47,7 @@ The user-facing shape should stay simple:
 ```sh
 localperf bench plan --spec examples/diffusiongemma/spec.json
 localperf bench run --spec examples/diffusiongemma/spec.json --timeout 8h
-localperf bench report --run-dir runs/<run-id>
+localperf artifact render runs/<run-id>.sqlite
 ```
 
 Short aliases can come later. The important part is that `bench` is not named

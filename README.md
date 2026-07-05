@@ -143,10 +143,12 @@ Each run writes:
 - the SQLite artifact (`--artifact` path, or `runs/<run-id>.sqlite`): the
   canonical record — specs, engine/profile/workload definitions, measurements,
   per-request rows, metric stats, GPU telemetry, hardware inventory, engine
-  identity probes, events, commands, and logs.
-- `runs/<run-id>/events.jsonl`, `results/*.json`, `logs/*.log`: raw run data.
-- `runs/<run-id>/report.md`, `report.json`, `report.csv`: legacy exports; the
-  HTML report rendered from the artifact is the authoritative view.
+  identity probes, events, commands, and logs. It is also the
+  machine-readable export.
+- `runs/<run-id>/events.jsonl`, `results/*.json`, `logs/*.log`,
+  `summary.json`: raw run data.
+- the HTML report (`artifact render`) and the viewer (`view`) are the only
+  rendered views.
 
 Example inspection:
 

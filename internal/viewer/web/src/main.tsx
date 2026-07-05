@@ -30,6 +30,7 @@ type ReportSummary = {
   latest_run_status: string;
   run_count: number;
   measurement_count: number;
+  engine?: string;
 };
 
 type Summary = {
@@ -83,10 +84,15 @@ type PhaseMetrics = {
   tok_s?: string;
   per_user_tok_s?: string;
   ttft_mean_ms?: string;
-  ttft_p95_ms?: string;
+  ttft_p99_ms?: string;
+  tok_s_display?: string;
+  per_user_tok_s_display?: string;
+  ttft_mean_display?: string;
+  ttft_p99_display?: string;
   ok: number;
   err: number;
   failure_label?: string;
+  failure_reason?: string;
 };
 
 type CellDetail = {
@@ -107,6 +113,7 @@ type CellDetail = {
   samples_requested?: number;
   shape?: string;
   profile_config?: MetadataItem[];
+  metrics?: MetadataItem[];
   serve_command?: string;
   benchmark_command?: string;
   engine_args?: string;
@@ -164,6 +171,7 @@ function App() {
           <strong>{selectedReport.latest_run_name || selectedReport.label}</strong>
         </div>
       </header>
+      <EngineMismatchNote reports={manifest.value.reports} />
       <Tabs.Root value={selectedReport.id} onValueChange={setSelected} className="tabs-root">
         <Tabs.List className="tabs-list" aria-label="Report artifacts">
           {manifest.value.reports.map((report) => (
@@ -180,6 +188,18 @@ function App() {
         ))}
       </Tabs.Root>
     </main>
+  );
+}
+
+function EngineMismatchNote({ reports }: { reports: ReportSummary[] }) {
+  const engines = Array.from(new Set(reports.map((report) => report.engine).filter(Boolean)));
+  if (engines.length < 2) {
+    return null;
+  }
+  return (
+    <div className="warning compact">
+      Engines differ across loaded reports ({engines.join(", ")}); compare tabs with care.
+    </div>
   );
 }
 
@@ -243,11 +263,11 @@ function ThroughputTableView({ table, reportID }: { table: ThroughputTable; repo
       phaseColumn(reportID, "decode", "tokS", "Decode tok/s"),
       phaseColumn(reportID, "decode", "perUser", "Decode/user"),
       phaseColumn(reportID, "decode", "ttftAvg", "Decode TTFT avg"),
-      phaseColumn(reportID, "decode", "ttftP95", "Decode TTFT p95"),
+      phaseColumn(reportID, "decode", "ttftP99", "Decode TTFT p99"),
       phaseColumn(reportID, "prefill", "tokS", "Prefill tok/s"),
       phaseColumn(reportID, "prefill", "perUser", "Prefill/user"),
       phaseColumn(reportID, "prefill", "ttftAvg", "Prefill TTFT avg"),
-      phaseColumn(reportID, "prefill", "ttftP95", "Prefill TTFT p95"),
+      phaseColumn(reportID, "prefill", "ttftP99", "Prefill TTFT p99"),
       { accessorKey: "result", header: "OK / Err", cell: (info) => <span className="num">{info.row.original.result}</span> },
     ];
     if (showSLO) {
@@ -305,7 +325,7 @@ type HeatRow = ThroughputRow & {
 };
 
 type Phase = "decode" | "prefill";
-type PhaseMetric = "tokS" | "perUser" | "ttftAvg" | "ttftP95";
+type PhaseMetric = "tokS" | "perUser" | "ttftAvg" | "ttftP99";
 
 function phaseColumn(reportID: string, phase: Phase, metric: PhaseMetric, header: string): ColumnDef<HeatRow> {
   return {
@@ -313,7 +333,7 @@ function phaseColumn(reportID: string, phase: Phase, metric: PhaseMetric, header
     header,
     cell: (info) => {
       const row = info.row.original;
-      const value = metricValue(row[phase], metric);
+      const value = displayValue(row[phase], metric);
       const heat = row.heat[`${phase}-${metric}`] ?? "heat-neutral";
       return (
         <MetricCell
@@ -400,6 +420,7 @@ function MetricCell({ reportID, metric, value, heat }: { reportID: string; metri
           setPinned((current) => !current);
           setOpen(true);
         }}
+        title={metric.failure_reason || undefined}
       >
         {value || "-"}
       </button>
@@ -448,7 +469,17 @@ function DetailBody({ detail, metric }: { detail: LoadState<CellDetail> | null; 
           </React.Fragment>
         ))}
       </div>
-      {value.failure_reason && <CodeBlock label="Failure" value={value.failure_reason} />}
+      {value.metrics && value.metrics.length > 0 && (
+        <div className="detail-grid">
+          {value.metrics.map((item) => (
+            <React.Fragment key={item.label}>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+      {(value.failure_reason || metric.failure_reason) && <CodeBlock label="Failure" value={value.failure_reason || metric.failure_reason || ""} />}
       {value.serve_command && <CodeBlock label="vLLM serve" value={value.serve_command} />}
       {value.benchmark_command && <CodeBlock label="Benchmark" value={value.benchmark_command} />}
       {value.engine_args && <CodeBlock label="Engine args" value={value.engine_args} />}
@@ -485,8 +516,26 @@ function metricValue(metric: PhaseMetrics, field: PhaseMetric): string {
       return metric.per_user_tok_s || "-";
     case "ttftAvg":
       return metric.ttft_mean_ms || "-";
-    case "ttftP95":
-      return metric.ttft_p95_ms || "-";
+    case "ttftP99":
+      return metric.ttft_p99_ms || "-";
+  }
+}
+
+// displayValue prefers the server-formatted string; the raw value stays in
+// the payload for heatmaps.
+function displayValue(metric: PhaseMetrics, field: PhaseMetric): string {
+  if (!metric.available) {
+    return "-";
+  }
+  switch (field) {
+    case "tokS":
+      return metric.tok_s_display || metric.tok_s || "-";
+    case "perUser":
+      return metric.per_user_tok_s_display || metric.per_user_tok_s || "-";
+    case "ttftAvg":
+      return metric.ttft_mean_display || metric.ttft_mean_ms || "-";
+    case "ttftP99":
+      return metric.ttft_p99_display || metric.ttft_p99_ms || "-";
   }
 }
 
@@ -496,7 +545,7 @@ function withHeat(rows: ThroughputRow[]): HeatRow[] {
     applyHeat(out, phase, "tokS", true);
     applyHeat(out, phase, "perUser", true);
     applyHeat(out, phase, "ttftAvg", false);
-    applyHeat(out, phase, "ttftP95", false);
+    applyHeat(out, phase, "ttftP99", false);
   }
   return out;
 }

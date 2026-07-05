@@ -218,6 +218,9 @@ type SQLiteReportThroughputRow struct {
 	ContextSortKey    int
 	ContextMismatch   bool
 	MismatchNote      string
+	ContextTarget     int
+	ContextSemantics  string
+	ContextVerified   bool
 	ActiveRange       string
 	Concurrency       int
 	Shape             string
@@ -228,7 +231,7 @@ type SQLiteReportThroughputRow struct {
 	ThroughputTokS    string
 	PerUserTokS       string
 	TTFTMeanMS        string
-	TTFTP95MS         string
+	TTFTP99MS         string
 	LatencyP95MS      string
 	SLODisplay        string
 	CompletedRequests int
@@ -319,6 +322,7 @@ type SQLiteReportCellDetail struct {
 	SamplesRequested int
 	Shape            string
 	ProfileConfig    []SQLiteReportMetadataItem
+	Metrics          []SQLiteReportMetadataItem
 	ServeCommand     string
 	BenchmarkCommand string
 	EngineArgs       string
@@ -490,8 +494,8 @@ var reportTemplates = sync.OnceValue(func() *template.Template {
 	return template.Must(template.New("report").Funcs(template.FuncMap{
 		"statusClass":  reportStatusClass,
 		"contextLabel": contextLabel,
-		"tokps":        tokenThroughputMetric,
-		"seconds":      compactMilliseconds,
+		"tokps":        FormatRateDisplay,
+		"seconds":      FormatDurationDisplay,
 	}).ParseFS(reportTemplateFS, "templates/report.gohtml", "templates/report.css"))
 })
 
@@ -1451,6 +1455,9 @@ func sqliteReportThroughputRows(doc SQLiteReportDocument) []SQLiteReportThroughp
 			ContextSortKey:    measurement.ContextSortKey,
 			ContextMismatch:   measurement.ContextMismatch,
 			MismatchNote:      measurement.ContextMismatchNote,
+			ContextTarget:     measurement.ContextTarget,
+			ContextSemantics:  measurement.ContextSemantics,
+			ContextVerified:   measurement.ContextVerified,
 			ActiveRange:       measurement.ActiveRange,
 			Concurrency:       measurement.Concurrency,
 			Shape:             throughputRowShape(measurement),
@@ -1461,7 +1468,7 @@ func sqliteReportThroughputRows(doc SQLiteReportDocument) []SQLiteReportThroughp
 			ThroughputTokS:    throughputTokS,
 			PerUserTokS:       perUserTokS,
 			TTFTMeanMS:        measurement.TTFTMeanMS,
-			TTFTP95MS:         measurement.TTFTP95MS,
+			TTFTP99MS:         measurement.TTFTP99MS,
 			LatencyP95MS:      measurement.LatencyP95MS,
 			SLODisplay:        sloRowDisplay(measurement),
 			CompletedRequests: measurement.CompletedRequests,
@@ -1540,8 +1547,11 @@ func compactFailureLabel(status, reason string) string {
 	}
 }
 
+// displayFailureMetric shows the outcome, not a residual number: a failed
+// or skipped point renders its failure label ("failed", "skipped",
+// "mem floor") in metric cells instead of a misleading "0.000".
 func displayFailureMetric(value, failureLabel string) string {
-	if strings.TrimSpace(value) == "" || strings.TrimSpace(value) == "-" {
+	if strings.TrimSpace(failureLabel) != "" {
 		return failureLabel
 	}
 	return value
@@ -1587,7 +1597,57 @@ func sqliteReportCellDetail(doc SQLiteReportDocument, measurement SQLiteReportMe
 		{Label: "Prefix cache", Value: dashIfEmpty(profile.PrefixCaching)},
 		{Label: "Sleep", Value: fmt.Sprint(profile.EnableSleepMode)},
 	}
+	detail.Metrics = cellDetailMetrics(measurement)
 	return detail
+}
+
+// cellDetailMetrics carries the measurement's numbers into the detail view:
+// the artifact records them, so the detail must show them, formatted by the
+// shared display rules. Empty or unmeasured values are dropped, not dashed.
+func cellDetailMetrics(measurement SQLiteReportMeasurement) []SQLiteReportMetadataItem {
+	items := []SQLiteReportMetadataItem{
+		{Label: "Requests ok/err", Value: fmt.Sprintf("%d / %d", measurement.CompletedRequests, measurement.FailedRequests)},
+		{Label: "Wall time", Value: FormatDurationDisplay(measurement.WallTimeMS)},
+		{Label: "RPS", Value: FormatRateDisplay(measurement.RPS)},
+		{Label: "Output tok/s", Value: FormatRateDisplay(measurement.OutputTokS)},
+		{Label: "Out/user tok/s", Value: FormatRateDisplay(measurement.PerUserOutputTokS)},
+		{Label: "Total tok/s", Value: FormatRateDisplay(measurement.TotalTokS)},
+		{Label: "Prompt tokens", Value: measurement.PromptTokens},
+		{Label: "Completion tokens", Value: measurement.CompletionTokens},
+		{Label: "TTFT mean/p50/p95/p99", Value: durationSeries(measurement.TTFTMeanMS, measurement.TTFTP50MS, measurement.TTFTP95MS, measurement.TTFTP99MS)},
+		{Label: "Latency p50/p95/p99", Value: durationSeries(measurement.LatencyP50MS, measurement.LatencyP95MS, measurement.LatencyP99MS)},
+		{Label: "TPOT mean", Value: FormatDurationDisplay(measurement.TPOTMeanMS)},
+		{Label: "ITL tok-wt", Value: FormatDurationDisplay(measurement.ITLTokenWeightedMS)},
+		{Label: "Achieved users", Value: measurement.AchievedConcurrency},
+		{Label: "Failures", Value: measurement.FailureBreakdown},
+		{Label: "GPU util", Value: measurement.GPUUtil},
+		{Label: "GPU mem peak", Value: measurement.GPUMemPeak},
+	}
+	if measurement.SLONote != "" {
+		items = append(items,
+			SQLiteReportMetadataItem{Label: "SLO (" + measurement.SLONote + ")", Value: measurement.SLOMetPct},
+			SQLiteReportMetadataItem{Label: "Goodput req/s", Value: FormatRateDisplay(measurement.GoodputRPS)},
+		)
+	}
+	out := items[:0]
+	for _, item := range items {
+		value := strings.TrimSpace(item.Value)
+		if value == "" || value == "-" || value == "- / - / -" || value == "- / - / - / -" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// durationSeries renders a compact percentile series like
+// "1.2s / 1.4s / 2.1s", keeping "-" for unmeasured entries.
+func durationSeries(values ...string) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, FormatDurationDisplay(value))
+	}
+	return strings.Join(parts, " / ")
 }
 
 func findReportProfile(profiles []SQLiteReportProfile, id, name string) SQLiteReportProfile {
@@ -1716,6 +1776,35 @@ type throughputGroupKey struct {
 	contextLabel string
 }
 
+// ClaimKey groups throughput rows by their declared context claim, not
+// their outcome label: a skipped or failed point stays in its declared
+// context's table as a row instead of fragmenting into a second
+// "unverified" table. Undeclared rows fall back to their measured label.
+func (row SQLiteReportThroughputRow) ClaimKey() string {
+	if row.ContextTarget > 0 && (row.ContextSemantics == "active" || row.ContextSemantics == "capacity") {
+		return fmt.Sprintf("%s:%d", row.ContextSemantics, row.ContextTarget)
+	}
+	return "label:" + row.ContextLabel
+}
+
+// ClaimTitle labels a table by its declared claim and the verification state
+// of its completed rows: verified active claims earn the active-context
+// label, unverified ones say so, capacity claims are labeled by limit, and
+// undeclared rows keep their measured-shape label.
+func ClaimTitle(semantics string, target int, anyVerified bool, fallback string) string {
+	switch {
+	case semantics == "active" && target > 0:
+		if anyVerified {
+			return contextLabel(target) + " active context"
+		}
+		return "unverified (declared " + contextLabel(target) + " active)"
+	case semantics == "capacity" && target > 0:
+		return contextLabel(target) + " capacity"
+	default:
+		return fallback
+	}
+}
+
 type throughputAxisVisibility struct {
 	profile bool
 }
@@ -1726,23 +1815,31 @@ func sqliteReportThroughputGroups(rows []SQLiteReportThroughputRow) []SQLiteRepo
 	groupIndexes := map[throughputGroupKey]int{}
 	rowIndexes := []map[int]int{}
 	mismatchNotes := make([]string, 0)
+	claims := []throughputGroupClaim{}
 	for _, row := range rows {
 		key := throughputGroupKey{
 			profile:      row.Profile,
-			contextLabel: row.ContextLabel,
+			contextLabel: row.ClaimKey(),
 		}
 		index, ok := groupIndexes[key]
 		if !ok {
 			index = len(groups)
 			groupIndexes[key] = index
 			groups = append(groups, SQLiteReportThroughputGroup{
-				Title:          key.contextLabel,
+				Title:          row.ContextLabel,
 				Profile:        key.profile,
 				ContextSortKey: row.ContextSortKey,
 				ServerLimit:    row.ContextWindow,
 			})
 			rowIndexes = append(rowIndexes, map[int]int{})
 			mismatchNotes = append(mismatchNotes, "")
+			claims = append(claims, throughputGroupClaim{semantics: row.ContextSemantics, target: row.ContextTarget, fallback: row.ContextLabel})
+		}
+		if row.ContextVerified {
+			claims[index].anyVerified = true
+		}
+		if strings.EqualFold(strings.TrimSpace(row.Status), "completed") && !row.ContextVerified && !row.ContextMismatch {
+			claims[index].completedUnverified++
 		}
 		if row.ContextMismatch && row.MismatchNote != "" {
 			mismatchNotes[index] = row.MismatchNote
@@ -1756,6 +1853,7 @@ func sqliteReportThroughputGroups(rows []SQLiteReportThroughputRow) []SQLiteRepo
 		applyThroughputComparisonSource(&groups[index].Rows[rowIndex], row)
 	}
 	for index := range groups {
+		groups[index].Title = ClaimTitle(claims[index].semantics, claims[index].target, claims[index].verified(), claims[index].fallback)
 		sort.SliceStable(groups[index].Rows, func(i, j int) bool {
 			return groups[index].Rows[i].Concurrency < groups[index].Rows[j].Concurrency
 		})
@@ -1768,6 +1866,20 @@ func sqliteReportThroughputGroups(rows []SQLiteReportThroughputRow) []SQLiteRepo
 		return left < right
 	})
 	return groups
+}
+
+type throughputGroupClaim struct {
+	semantics           string
+	target              int
+	fallback            string
+	anyVerified         bool
+	completedUnverified int
+}
+
+// verified requires every completed row to verify the claim; one completed
+// row without confirmed token counts demotes the whole table.
+func (claim throughputGroupClaim) verified() bool {
+	return claim.anyVerified && claim.completedUnverified == 0
 }
 
 func emptyThroughputComparisonRow(concurrency int) SQLiteReportThroughputComparisonRow {
@@ -1808,7 +1920,7 @@ func applyThroughputComparisonSource(target *SQLiteReportThroughputComparisonRow
 		target.PrefillTokS = source.ThroughputTokS
 		target.PrefillPerUserTokS = source.PerUserTokS
 		target.PrefillTTFTMeanMS = displayFailureMetric(source.TTFTMeanMS, source.FailureLabel)
-		target.PrefillTTFTMS = displayFailureMetric(source.TTFTP95MS, source.FailureLabel)
+		target.PrefillTTFTMS = displayFailureMetric(source.TTFTP99MS, source.FailureLabel)
 		target.PrefillLatencyMS = source.LatencyP95MS
 		target.PrefillOK = source.CompletedRequests
 		target.PrefillErr = source.FailedRequests
@@ -1818,7 +1930,7 @@ func applyThroughputComparisonSource(target *SQLiteReportThroughputComparisonRow
 		target.DecodeTokS = source.ThroughputTokS
 		target.DecodePerUserTokS = source.PerUserTokS
 		target.DecodeTTFTMeanMS = displayFailureMetric(source.TTFTMeanMS, source.FailureLabel)
-		target.DecodeTTFTMS = displayFailureMetric(source.TTFTP95MS, source.FailureLabel)
+		target.DecodeTTFTMS = displayFailureMetric(source.TTFTP99MS, source.FailureLabel)
 		target.DecodeLatencyMS = source.LatencyP95MS
 		target.DecodeOK = source.CompletedRequests
 		target.DecodeErr = source.FailedRequests
@@ -1828,7 +1940,7 @@ func applyThroughputComparisonSource(target *SQLiteReportThroughputComparisonRow
 		target.DecodeTokS = source.ThroughputTokS
 		target.DecodePerUserTokS = source.PerUserTokS
 		target.DecodeTTFTMeanMS = displayFailureMetric(source.TTFTMeanMS, source.FailureLabel)
-		target.DecodeTTFTMS = displayFailureMetric(source.TTFTP95MS, source.FailureLabel)
+		target.DecodeTTFTMS = displayFailureMetric(source.TTFTP99MS, source.FailureLabel)
 		target.DecodeLatencyMS = source.LatencyP95MS
 		target.DecodeOK = source.CompletedRequests
 		target.DecodeErr = source.FailedRequests
@@ -2454,16 +2566,45 @@ func displayFloat(value float64) string {
 	return fmt.Sprintf("%.3f", value)
 }
 
+// FormatRateDisplay renders a rate (tok/s, req/s) at roughly three
+// significant digits: >= 100 no decimals, 10-100 one decimal, < 10 two
+// decimals. Handles "mean ± spread" composites; non-numeric strings
+// (failure labels, "-") pass through untouched.
+func FormatRateDisplay(value string) string {
+	return formatDisplayParts(value, tokenThroughputMetric)
+}
+
+// FormatDurationDisplay renders a millisecond quantity with unit promotion:
+// "321ms", "9.2s", "102s", "4m37s". Handles "mean ± spread"
+// composites; non-numeric strings pass through untouched.
+func FormatDurationDisplay(value string) string {
+	return formatDisplayParts(value, compactMilliseconds)
+}
+
+// formatDisplayParts applies a numeric formatter to each part of a
+// "mean ± spread" composite, or to the whole value when it is plain.
+func formatDisplayParts(value string, format func(string) string) string {
+	parts := strings.Split(value, "±")
+	for index, part := range parts {
+		parts[index] = format(strings.TrimSpace(part))
+	}
+	return strings.Join(parts, " ± ")
+}
+
 func tokenThroughputMetric(value string) string {
 	parsed, ok := parseDisplayedFloat(value)
 	if !ok {
 		return value
 	}
-	rounded := math.Round(parsed*10) / 10
-	if math.Abs(rounded) >= 100 {
-		return fmt.Sprintf("%.0f", rounded)
+	abs := math.Abs(parsed)
+	switch {
+	case math.Round(abs*10)/10 >= 100:
+		return fmt.Sprintf("%.0f", parsed)
+	case math.Round(abs*100)/100 >= 10:
+		return fmt.Sprintf("%.1f", parsed)
+	default:
+		return fmt.Sprintf("%.2f", parsed)
 	}
-	return fmt.Sprintf("%.1f", rounded)
 }
 
 func compactMilliseconds(value string) string {

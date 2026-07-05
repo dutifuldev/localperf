@@ -54,6 +54,7 @@ type ReportSummary struct {
 	LatestRunStatus  string `json:"latest_run_status"`
 	RunCount         int    `json:"run_count"`
 	MeasurementCount int    `json:"measurement_count"`
+	Engine           string `json:"engine,omitempty"`
 }
 
 type Handler struct {
@@ -221,7 +222,19 @@ func summarizeReport(index int, path string, doc report.SQLiteReportDocument) Re
 		LatestRunStatus:  doc.Run.Status,
 		RunCount:         len(doc.Runs),
 		MeasurementCount: len(doc.Measurements),
+		Engine:           reportEngine(doc),
 	}
+}
+
+// reportEngine summarizes the artifact's engine identity so the app can
+// flag cross-report engine differences before anyone compares tabs.
+func reportEngine(doc report.SQLiteReportDocument) string {
+	for _, item := range doc.MetadataItems {
+		if item.Label == "Engine" {
+			return item.Value
+		}
+	}
+	return ""
 }
 
 func reportID(index int, path string) string {

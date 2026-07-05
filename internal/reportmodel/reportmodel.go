@@ -96,19 +96,24 @@ type ThroughputRow struct {
 }
 
 type PhaseMetrics struct {
-	Available     bool   `json:"available"`
-	MeasurementID int64  `json:"measurement_id,omitempty"`
-	Workload      string `json:"workload,omitempty"`
-	Shape         string `json:"shape,omitempty"`
-	Status        string `json:"status,omitempty"`
-	TokS          string `json:"tok_s,omitempty"`
-	PerUserTokS   string `json:"per_user_tok_s,omitempty"`
-	TTFTMeanMS    string `json:"ttft_mean_ms,omitempty"`
-	TTFTP95MS     string `json:"ttft_p95_ms,omitempty"`
-	OK            int    `json:"ok"`
-	Err           int    `json:"err"`
-	FailureLabel  string `json:"failure_label,omitempty"`
-	DetailURL     string `json:"detail_url,omitempty"`
+	Available          bool   `json:"available"`
+	MeasurementID      int64  `json:"measurement_id,omitempty"`
+	Workload           string `json:"workload,omitempty"`
+	Shape              string `json:"shape,omitempty"`
+	Status             string `json:"status,omitempty"`
+	TokS               string `json:"tok_s,omitempty"`
+	PerUserTokS        string `json:"per_user_tok_s,omitempty"`
+	TTFTMeanMS         string `json:"ttft_mean_ms,omitempty"`
+	TTFTP99MS          string `json:"ttft_p99_ms,omitempty"`
+	TokSDisplay        string `json:"tok_s_display,omitempty"`
+	PerUserTokSDisplay string `json:"per_user_tok_s_display,omitempty"`
+	TTFTMeanDisplay    string `json:"ttft_mean_display,omitempty"`
+	TTFTP99Display     string `json:"ttft_p99_display,omitempty"`
+	OK                 int    `json:"ok"`
+	Err                int    `json:"err"`
+	FailureLabel       string `json:"failure_label,omitempty"`
+	FailureReason      string `json:"failure_reason,omitempty"`
+	DetailURL          string `json:"detail_url,omitempty"`
 }
 
 type CellDetail struct {
@@ -130,6 +135,7 @@ type CellDetail struct {
 	SamplesRequested int            `json:"samples_requested,omitempty"`
 	Shape            string         `json:"shape,omitempty"`
 	ProfileConfig    []MetadataItem `json:"profile_config,omitempty"`
+	Metrics          []MetadataItem `json:"metrics,omitempty"`
 	ServeCommand     string         `json:"serve_command,omitempty"`
 	BenchmarkCommand string         `json:"benchmark_command,omitempty"`
 	EngineArgs       string         `json:"engine_args,omitempty"`
@@ -138,13 +144,19 @@ type CellDetail struct {
 }
 
 type tableBuilder struct {
-	table             ThroughputTable
-	rows              map[int]*ThroughputRow
-	decodeShapes      map[string]struct{}
-	prefillShapes     map[string]struct{}
-	contextSemantics  map[string]struct{}
-	contextMismatches []string
-	runIDs            map[string]struct{}
+	table               ThroughputTable
+	rows                map[int]*ThroughputRow
+	decodeShapes        map[string]struct{}
+	prefillShapes       map[string]struct{}
+	contextMismatches   []string
+	runIDs              map[string]struct{}
+	claimKey            string
+	claimSemantics      string
+	claimTarget         int
+	claimFallback       string
+	anyVerified         bool
+	completedRows       int
+	completedUnverified int
 }
 
 func Build(path string, doc report.SQLiteReportDocument) Document {
@@ -200,7 +212,7 @@ func compatibleBuilder(builders []*tableBuilder, row report.SQLiteReportThroughp
 		if builder.table.Profile != row.Profile ||
 			builder.table.Model != row.Model ||
 			builder.table.ServerLimit != row.ContextWindow ||
-			builder.table.ContextLabel != contextGroupLabel(row) {
+			builder.claimKey != row.ClaimKey() {
 			continue
 		}
 		existing := builder.rows[row.Concurrency]
@@ -219,7 +231,6 @@ func newTableBuilder(row report.SQLiteReportThroughputRow, ordinal int) *tableBu
 	if title == "" {
 		title = contextLabel(row.ContextWindow)
 	}
-	contextDisplay := contextGroupLabel(row)
 	return &tableBuilder{
 		table: ThroughputTable{
 			ID:               fmt.Sprintf("%02d-%s", ordinal, slug(title)),
@@ -230,13 +241,16 @@ func newTableBuilder(row report.SQLiteReportThroughputRow, ordinal int) *tableBu
 			Model:            row.Model,
 			ServerLimit:      row.ContextWindow,
 			ServerLimitLabel: contextLabel(row.ContextWindow),
-			ContextLabel:     contextDisplay,
+			ContextLabel:     contextGroupLabel(row),
 		},
-		rows:             map[int]*ThroughputRow{},
-		decodeShapes:     map[string]struct{}{},
-		prefillShapes:    map[string]struct{}{},
-		contextSemantics: map[string]struct{}{},
-		runIDs:           map[string]struct{}{row.RunID: {}},
+		rows:           map[int]*ThroughputRow{},
+		decodeShapes:   map[string]struct{}{},
+		prefillShapes:  map[string]struct{}{},
+		runIDs:         map[string]struct{}{row.RunID: {}},
+		claimKey:       row.ClaimKey(),
+		claimSemantics: row.ContextSemantics,
+		claimTarget:    row.ContextTarget,
+		claimFallback:  contextGroupLabel(row),
 	}
 }
 
@@ -272,13 +286,19 @@ func applyRow(builder *tableBuilder, source report.SQLiteReportThroughputRow, de
 	target.SLO = phaseSLO(source, target.SLO)
 	if source.ContextMismatch && source.MismatchNote != "" {
 		builder.contextMismatches = append(builder.contextMismatches, source.MismatchNote)
-		builder.contextSemantics["context_mismatch"] = struct{}{}
+	}
+	if source.ContextVerified {
+		builder.anyVerified = true
+	}
+	if strings.EqualFold(strings.TrimSpace(source.Status), "completed") {
+		builder.completedRows++
+		if !source.ContextVerified && !source.ContextMismatch {
+			builder.completedUnverified++
+		}
 	}
 	builder.runIDs[source.RunID] = struct{}{}
 	if detail := cellDetail(source.Detail); detail.Available {
 		details[source.MeasurementID] = detail
-		semantics := contextSemantics(detail.ContextLabel)
-		builder.contextSemantics[semantics] = struct{}{}
 	}
 }
 
@@ -291,19 +311,24 @@ func phaseSlot(row *ThroughputRow, mode string) PhaseMetrics {
 
 func phaseMetrics(source report.SQLiteReportThroughputRow) PhaseMetrics {
 	return PhaseMetrics{
-		Available:     true,
-		MeasurementID: source.MeasurementID,
-		Workload:      source.Workload,
-		Shape:         source.Shape,
-		Status:        source.Status,
-		TokS:          source.ThroughputTokS,
-		PerUserTokS:   source.PerUserTokS,
-		TTFTMeanMS:    source.TTFTMeanMS,
-		TTFTP95MS:     source.TTFTP95MS,
-		OK:            source.CompletedRequests,
-		Err:           source.FailedRequests,
-		FailureLabel:  source.FailureLabel,
-		DetailURL:     fmt.Sprintf("measurements/%d", source.MeasurementID),
+		Available:          true,
+		MeasurementID:      source.MeasurementID,
+		Workload:           source.Workload,
+		Shape:              source.Shape,
+		Status:             source.Status,
+		TokS:               source.ThroughputTokS,
+		PerUserTokS:        source.PerUserTokS,
+		TTFTMeanMS:         source.TTFTMeanMS,
+		TTFTP99MS:          source.TTFTP99MS,
+		TokSDisplay:        report.FormatRateDisplay(source.ThroughputTokS),
+		PerUserTokSDisplay: report.FormatRateDisplay(source.PerUserTokS),
+		TTFTMeanDisplay:    report.FormatDurationDisplay(source.TTFTMeanMS),
+		TTFTP99Display:     report.FormatDurationDisplay(source.TTFTP99MS),
+		OK:                 source.CompletedRequests,
+		Err:                source.FailedRequests,
+		FailureLabel:       source.FailureLabel,
+		FailureReason:      source.FailureReason,
+		DetailURL:          fmt.Sprintf("measurements/%d", source.MeasurementID),
 	}
 }
 
@@ -314,8 +339,9 @@ func finishTable(builder *tableBuilder) {
 	}
 	builder.table.DecodeShape = shapeSummary(builder.decodeShapes)
 	builder.table.PrefillShape = shapeSummary(builder.prefillShapes)
-	builder.table.ContextStatus, builder.table.ContextStatusLabel = tableContextStatus(builder.contextSemantics)
-	builder.table.Warning = tableWarning(builder.table.ContextStatus, builder.contextMismatches)
+	builder.table.ContextLabel = report.ClaimTitle(builder.claimSemantics, builder.claimTarget, builder.anyVerified && builder.completedUnverified == 0, builder.claimFallback)
+	builder.table.ContextStatus, builder.table.ContextStatusLabel = tableContextStatus(builder)
+	builder.table.Warning = tableWarning(builder.table.ContextStatus, builder.completedRows, builder.contextMismatches)
 	for _, row := range builder.rows {
 		builder.table.Rows = append(builder.table.Rows, *row)
 	}
@@ -327,29 +353,26 @@ func finishTable(builder *tableBuilder) {
 	}
 }
 
-func tableContextStatus(semantics map[string]struct{}) (string, string) {
-	delete(semantics, "")
-	if len(semantics) == 0 {
-		return "legacy_unverified", "Legacy/unverified"
-	}
-	if _, ok := semantics["context_mismatch"]; ok {
+// tableContextStatus derives a table's status from its declared claim and
+// what the completed rows verified — a skipped or failed row never changes
+// the claim, it just renders as a row-level outcome.
+func tableContextStatus(builder *tableBuilder) (string, string) {
+	switch {
+	case len(builder.contextMismatches) > 0:
 		return "context_mismatch", "Context mismatch"
-	}
-	if _, ok := semantics["legacy_unverified"]; ok {
-		return "legacy_unverified", "Legacy/unverified"
-	}
-	if len(semantics) == 1 {
-		if _, ok := semantics["active_verified"]; ok {
+	case builder.claimSemantics == "active" && builder.claimTarget > 0:
+		// Verified requires every completed row to verify: one completed
+		// row without confirmed token counts must not hide under a
+		// verified label.
+		if builder.anyVerified && builder.completedUnverified == 0 {
 			return "active_verified", "Active verified"
 		}
-		if _, ok := semantics["capacity"]; ok {
-			return "capacity", "Capacity"
-		}
-		if _, ok := semantics["unverified"]; ok {
-			return "unverified", "Unverified"
-		}
+		return "unverified", "Unverified"
+	case builder.claimSemantics == "capacity" && builder.claimTarget > 0:
+		return "capacity", "Capacity"
+	default:
+		return "legacy_unverified", "Legacy/unverified"
 	}
-	return "mixed", "Mixed context semantics"
 }
 
 func contextSemantics(label string) string {
@@ -368,7 +391,7 @@ func contextSemantics(label string) string {
 	}
 }
 
-func tableWarning(status string, mismatches []string) string {
+func tableWarning(status string, completedRows int, mismatches []string) string {
 	if len(mismatches) > 0 {
 		return "Context mismatch: " + strings.Join(uniqueStrings(mismatches), "; ")
 	}
@@ -378,11 +401,10 @@ func tableWarning(status string, mismatches []string) string {
 	case "capacity":
 		return "Capacity point: this table is labeled by server limit, not by active request context."
 	case "unverified":
+		if completedRows == 0 {
+			return "Not run: every point in this table was skipped or failed before it measured anything."
+		}
 		return "Unverified: declared active context was not confirmed by completed token counts."
-	case "context_mismatch":
-		return "Context mismatch: declared active context does not match measured token counts."
-	case "mixed":
-		return "Mixed context semantics: inspect cell details before comparing rows."
 	default:
 		return ""
 	}
@@ -441,6 +463,7 @@ func cellDetail(detail report.SQLiteReportCellDetail) CellDetail {
 		SamplesRequested: detail.SamplesRequested,
 		Shape:            detail.Shape,
 		ProfileConfig:    metadataItems(detail.ProfileConfig),
+		Metrics:          metadataItems(detail.Metrics),
 		ServeCommand:     detail.ServeCommand,
 		BenchmarkCommand: detail.BenchmarkCommand,
 		EngineArgs:       detail.EngineArgs,
