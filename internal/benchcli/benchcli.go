@@ -34,9 +34,63 @@ var rootHandlers = commandHandlers{
 }
 
 var artifactHandlers = commandHandlers{
-	"check":  runArtifactCheck,
-	"render": runArtifactRender,
-	"merge":  runArtifactMerge,
+	"check":   runArtifactCheck,
+	"render":  runArtifactRender,
+	"merge":   runArtifactMerge,
+	"rebuild": runArtifactRebuild,
+}
+
+// runArtifactRebuild reconstructs a SQLite artifact from a run directory's
+// raw data (events, results, summary.json) — the recovery path when a run
+// finished without an artifact or the artifact was lost.
+func runArtifactRebuild(args []string) {
+	flags := flag.NewFlagSet("artifact rebuild", flag.ExitOnError)
+	runDir := flags.String("run-dir", "", "run directory with events.jsonl, results, and summary.json")
+	into := flags.String("into", "", "SQLite artifact path to rebuild/append; defaults to <run-dir>.sqlite")
+	specPath := flags.String("spec", "", "optional original spec path for provenance; defaults to <run-dir>/spec.normalized.json")
+	_ = flags.Parse(args)
+	if strings.TrimSpace(*runDir) == "" {
+		fmt.Fprintln(os.Stderr, "missing --run-dir")
+		os.Exit(2)
+	}
+	artifactPath := artifact.Path(*runDir, *into)
+	if err := rebuildArtifactFromRunDir(*runDir, artifactPath, *specPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("artifact: %s\n", artifactPath)
+}
+
+func rebuildArtifactFromRunDir(runDir, artifactPath, originalSpecPath string) error {
+	// Reconstruction always follows the normalized spec the run actually
+	// executed (filters applied); --spec supplies only the original file
+	// for provenance.
+	spec, err := vllmbench.LoadSpec(filepath.Join(runDir, "spec.normalized.json"))
+	if err != nil {
+		return err
+	}
+	summary, err := loadRunSummary(runDir)
+	if err != nil {
+		return err
+	}
+	summary.RunDir = runDir
+	summary.ArtifactPath = artifactPath
+	if strings.TrimSpace(summary.SpecPath) == "" {
+		summary.SpecPath = filepath.Join(runDir, "spec.normalized.json")
+	}
+	return vllmbench.WriteSQLiteArtifact(runDir, artifactPath, spec, summary, vllmbench.BuildPlan(spec, runDir), originalSpecPath)
+}
+
+func loadRunSummary(runDir string) (vllmbench.RunSummary, error) {
+	data, err := os.ReadFile(filepath.Join(runDir, "summary.json"))
+	if err != nil {
+		return vllmbench.RunSummary{}, err
+	}
+	var summary vllmbench.RunSummary
+	if err := json.Unmarshal(data, &summary); err != nil {
+		return vllmbench.RunSummary{}, err
+	}
+	return summary, nil
 }
 
 // runArtifactMerge combines run artifacts into one model-level SQLite file;
@@ -78,7 +132,7 @@ func runSweep(args []string) {
 func runSweepPlan(args []string) {
 	flags := flag.NewFlagSet("sweep plan", flag.ExitOnError)
 	model := flags.String("model", "", "model identifier to benchmark (required)")
-	contexts := flags.String("contexts", "8k,16k,32k,64k", "comma-separated active-context ladder (e.g. 8k,16k,32k); 128k and above are capped at c4")
+	contexts := flags.String("contexts", "4k,8k,16k,32k,64k", "comma-separated active-context ladder (e.g. 4k,8k,16k,32k); 128k and above are capped at c4")
 	concurrency := flags.String("concurrency", "1,4,8,16,32", "comma-separated concurrency levels")
 	repeats := flags.Int("repeats", 1, "repeats per measurement")
 	numPrompts := flags.Int("num-prompts", 0, "fixed prompts per measurement; default scales with concurrency")
@@ -92,6 +146,12 @@ func runSweepPlan(args []string) {
 	var trims trimFlags
 	flags.Var(&trims, "trim", "cap a context's ladder with a reason, e.g. 64k=8:'12 GiB KV budget'; repeatable")
 	out := flags.String("out", "", "output spec path (default stdout)")
+	var profileArgs repeatedStringFlag
+	var profileEngineArgs repeatedStringFlag
+	var omitProfileEngineFlags repeatedStringFlag
+	flags.Var(&profileArgs, "profile-arg", "extra generated profile arg; repeat once per arg")
+	flags.Var(&profileEngineArgs, "profile-engine-arg", "extra generated profile engine arg; repeat once per arg")
+	flags.Var(&omitProfileEngineFlags, "omit-profile-engine-flag", "engine flag to remove from generated profile engine args; repeatable")
 	_ = flags.Parse(args)
 	contextValues, err := parseTokenList(*contexts)
 	if err != nil {
@@ -104,19 +164,22 @@ func runSweepPlan(args []string) {
 		os.Exit(2)
 	}
 	spec, err := sweepplan.Plan(sweepplan.PlanRequest{
-		Model:                *model,
-		Contexts:             contextValues,
-		Concurrency:          concurrencyValues,
-		Repeats:              *repeats,
-		NumPrompts:           *numPrompts,
-		PromptsPerUser:       *promptsPerUser,
-		IncludeReference:     *reference,
-		IncludeStress:        *stress,
-		MinMemAvailableGiB:   *memFloor,
-		VLLMCommand:          *vllmCommand,
-		GPUMemoryUtilization: *gpuMemUtil,
-		KVCacheMemoryBytes:   *kvCacheBytes,
-		Trims:                trims.values,
+		Model:                  *model,
+		Contexts:               contextValues,
+		Concurrency:            concurrencyValues,
+		Repeats:                *repeats,
+		NumPrompts:             *numPrompts,
+		PromptsPerUser:         *promptsPerUser,
+		IncludeReference:       *reference,
+		IncludeStress:          *stress,
+		ProfileArgs:            profileArgs.values,
+		ProfileEngineArgs:      profileEngineArgs.values,
+		OmitProfileEngineFlags: omitProfileEngineFlags.values,
+		MinMemAvailableGiB:     *memFloor,
+		VLLMCommand:            *vllmCommand,
+		GPUMemoryUtilization:   *gpuMemUtil,
+		KVCacheMemoryBytes:     *kvCacheBytes,
+		Trims:                  trims.values,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -179,7 +242,20 @@ func (flags *trimFlags) Set(value string) error {
 	return nil
 }
 
-// parseTokenList parses values such as "8k,16k,32768" into token counts.
+type repeatedStringFlag struct {
+	values []string
+}
+
+func (flag *repeatedStringFlag) Set(value string) error {
+	flag.values = append(flag.values, value)
+	return nil
+}
+
+func (flag *repeatedStringFlag) String() string {
+	return strings.Join(flag.values, ",")
+}
+
+// parseTokenList parses values such as "4k,8k,32768" into token counts.
 func parseTokenList(value string) ([]int, error) {
 	var values []int
 	for _, part := range strings.Split(value, ",") {
@@ -767,7 +843,8 @@ func usageRoot() {
   localperf artifact check runs/example.sqlite
   localperf artifact render runs/example.sqlite [--output runs/example.html] [--store]
   localperf artifact merge --into runs/models/model.sqlite src1.sqlite [src2.sqlite ...]
-  localperf sweep plan   --model model-id [--contexts 8k,16k,32k,64k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--stress] [--vllm-command /path/to/vllm] [--gpu-memory-utilization 0.4] [--kv-cache-memory-bytes N] [--trim 64k=8:'reason'] [--out spec.json]
+  localperf artifact rebuild --run-dir runs/example [--into runs/example.sqlite] [--spec spec.json]
+  localperf sweep plan   --model model-id [--contexts 4k,8k,16k,32k,64k] [--concurrency 1,4,8,16,32] [--repeats 1] [--reference] [--stress] [--vllm-command /path/to/vllm] [--gpu-memory-utilization 0.4] [--kv-cache-memory-bytes N] [--trim 64k=8:'reason'] [--out spec.json]
   localperf view runs/model.sqlite [runs/other.sqlite ...] [--addr 127.0.0.1:0] [--open]`)
 }
 

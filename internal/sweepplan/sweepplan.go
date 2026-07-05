@@ -19,7 +19,7 @@ import (
 type PlanRequest struct {
 	// Model is the model identifier to benchmark (required).
 	Model string `json:"model"`
-	// Contexts is the active-context ladder in tokens, e.g. 8192..131072.
+	// Contexts is the active-context ladder in tokens, e.g. 4096..131072.
 	Contexts []int `json:"contexts,omitempty"`
 	// Concurrency levels per point, e.g. 1,4,8,16,32.
 	Concurrency []int `json:"concurrency,omitempty"`
@@ -37,6 +37,14 @@ type PlanRequest struct {
 	// 32k c4 and 64k c1/c4 when those contexts are in the ladder) and the
 	// 128k points at c1/c4.
 	IncludeStress bool `json:"include_stress,omitempty"`
+	// ProfileArgs are appended to every generated profile as serve CLI args.
+	ProfileArgs []string `json:"profile_args,omitempty"`
+	// ProfileEngineArgs are appended to every generated profile as engine
+	// CLI args. Use OmitProfileEngineFlags to remove unsafe inherited flags.
+	ProfileEngineArgs []string `json:"profile_engine_args,omitempty"`
+	// OmitProfileEngineFlags removes matching "--flag value" and
+	// "--flag=value" entries from ProfileEngineArgs before emitting profiles.
+	OmitProfileEngineFlags []string `json:"omit_profile_engine_flags,omitempty"`
 	// MinMemAvailableGiB is the safety memory floor; defaults to 40.
 	MinMemAvailableGiB float64 `json:"min_mem_available_gib,omitempty"`
 	// BasePort is the first server port; defaults to 8100.
@@ -68,6 +76,7 @@ const (
 	// that the KV budget makes higher concurrency an hours-long stress
 	// exercise, which belongs in --stress, not the default grid.
 	highContextConcurrencyCap = 4
+	fixedKVCacheBytesFlag     = "--kv-cache-memory-bytes"
 )
 
 // headroom absorbs chat template and tokenizer drift between requested and
@@ -168,7 +177,7 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 	maxNumSeqs := maxConcurrencyOf(request.Concurrency)
 	port := request.BasePort
 	if request.IncludeReference {
-		spec.Profiles = append(spec.Profiles, sweepProfile("4k-reference", referenceContext, port, maxNumSeqs))
+		spec.Profiles = append(spec.Profiles, sweepProfile("4k-reference", referenceContext, port, maxNumSeqs, request))
 		port++
 		spec.Workloads = append(spec.Workloads, sweepWorkload(
 			"max-throughput-reference", "decode", "4k-reference",
@@ -181,7 +190,7 @@ func Plan(request PlanRequest) (vllmbench.Spec, error) {
 	}
 	for _, context := range contexts {
 		label := vllmbench.TokenCountLabel(context)
-		spec.Profiles = append(spec.Profiles, sweepProfile(label, context, port, contextMaxSeqs(context, request)))
+		spec.Profiles = append(spec.Profiles, sweepProfile(label, context, port, contextMaxSeqs(context, request), request))
 		port++
 		prefillInput, prefillOutput := PrefillShape(context)
 		spec.Workloads = append(spec.Workloads, sweepWorkload(
@@ -226,9 +235,11 @@ func applyRuntimeIntent(spec *vllmbench.Spec, request PlanRequest) {
 		if request.GPUMemoryUtilization > 0 {
 			spec.Profiles[index].GPUMemoryUtilization = request.GPUMemoryUtilization
 		}
-		if request.KVCacheMemoryBytes > 0 {
+		// Qwen runtimes reject a fixed KV cache size; the same rule that
+		// strips the inherited engine flag applies to the intent flag.
+		if request.KVCacheMemoryBytes > 0 && !shouldOmitFixedKVCache(request.Model) {
 			spec.Profiles[index].Args = append(spec.Profiles[index].Args,
-				"--kv-cache-memory-bytes", strconv.FormatInt(request.KVCacheMemoryBytes, 10))
+				fixedKVCacheBytesFlag, strconv.FormatInt(request.KVCacheMemoryBytes, 10))
 		}
 	}
 }
@@ -263,7 +274,11 @@ func stampSpec(spec *vllmbench.Spec, request PlanRequest) error {
 	return nil
 }
 
-func sweepProfile(name string, maxModelLen, port, maxNumSeqs int) vllmbench.Profile {
+func sweepProfile(name string, maxModelLen, port, maxNumSeqs int, request PlanRequest) vllmbench.Profile {
+	omittedEngineFlags := append([]string{}, request.OmitProfileEngineFlags...)
+	if shouldOmitFixedKVCache(request.Model) {
+		omittedEngineFlags = append(omittedEngineFlags, fixedKVCacheBytesFlag)
+	}
 	return vllmbench.Profile{
 		Name:        name,
 		Host:        "127.0.0.1",
@@ -271,7 +286,52 @@ func sweepProfile(name string, maxModelLen, port, maxNumSeqs int) vllmbench.Prof
 		Managed:     true,
 		MaxModelLen: maxModelLen,
 		MaxNumSeqs:  maxNumSeqs,
+		Args:        append([]string{}, request.ProfileArgs...),
+		EngineArgs:  omittedFlagValues(request.ProfileEngineArgs, omittedEngineFlags),
 	}
+}
+
+func shouldOmitFixedKVCache(model string) bool {
+	normalized := strings.ToLower(model)
+	return strings.Contains(normalized, "qwen")
+}
+
+func omittedFlagValues(args, omittedFlags []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	if len(omittedFlags) == 0 {
+		return append([]string{}, args...)
+	}
+	omitted := map[string]struct{}{}
+	for _, flag := range omittedFlags {
+		if strings.TrimSpace(flag) != "" {
+			omitted[flag] = struct{}{}
+		}
+	}
+	filtered := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if _, ok := omitted[arg]; ok {
+			// Skip a separate value ("--flag value") but never a following
+			// flag: boolean flags carry no value token.
+			if index+1 < len(args) && !strings.HasPrefix(args[index+1], "--") {
+				index++
+			}
+			continue
+		}
+		skip := false
+		for flag := range omitted {
+			if strings.HasPrefix(arg, flag+"=") {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			filtered = append(filtered, arg)
+		}
+	}
+	return filtered
 }
 
 // stressWorkloads adds long-output decode spot checks for ladder contexts

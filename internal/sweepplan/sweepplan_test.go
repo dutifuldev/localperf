@@ -98,6 +98,117 @@ func TestPlanGolden(t *testing.T) {
 	}
 }
 
+func TestPlanKeeps4KReferenceSeparateFromActive4K(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:            "example/model",
+		Contexts:         []int{4096},
+		Concurrency:      []int{1, 4},
+		IncludeReference: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := map[string]vllmbench.Profile{}
+	for _, profile := range spec.Profiles {
+		profiles[profile.Name] = profile
+	}
+	if _, ok := profiles["4k-reference"]; !ok {
+		t.Fatal("missing 4k-reference profile")
+	}
+	if _, ok := profiles["4k"]; !ok {
+		t.Fatal("missing active 4k profile")
+	}
+	workloads := map[string]vllmbench.Workload{}
+	for _, workload := range spec.Workloads {
+		workloads[workload.Name] = workload
+	}
+	reference := workloads["max-throughput-reference"]
+	if reference.ContextSemantics != vllmbench.ContextSemanticsCapacity || reference.Profiles[0] != "4k-reference" {
+		t.Fatalf("reference workload = %+v, want capacity workload on 4k-reference", reference)
+	}
+	prefill := workloads["prefill-4k"]
+	if prefill.ContextSemantics != vllmbench.ContextSemanticsActive || prefill.Phase != "prefill" || prefill.Profiles[0] != "4k" {
+		t.Fatalf("prefill-4k = %+v, want active prefill workload on 4k", prefill)
+	}
+	decode := workloads["decode-4k"]
+	if decode.ContextSemantics != vllmbench.ContextSemanticsActive || decode.Phase != "decode" || decode.Profiles[0] != "4k" {
+		t.Fatalf("decode-4k = %+v, want active decode workload on 4k", decode)
+	}
+}
+
+func TestPlanProfileArgsCanOmitUnsafeEngineFlags(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:       "example/model",
+		Contexts:    []int{8192},
+		Concurrency: []int{1},
+		ProfileArgs: []string{"--trust-remote-code"},
+		ProfileEngineArgs: []string{
+			"--kv-cache-memory-bytes", "21474836480",
+			"--attention-backend", "flashinfer",
+			"--unsafe-flag=1",
+		},
+		OmitProfileEngineFlags: []string{"--kv-cache-memory-bytes", "--unsafe-flag"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Profiles) != 1 {
+		t.Fatalf("profiles = %d, want 1", len(spec.Profiles))
+	}
+	profile := spec.Profiles[0]
+	if strings.Join(profile.Args, " ") != "--trust-remote-code" {
+		t.Fatalf("args = %v, want trust remote code", profile.Args)
+	}
+	got := strings.Join(profile.EngineArgs, " ")
+	if strings.Contains(got, "kv-cache-memory-bytes") || strings.Contains(got, "unsafe-flag") {
+		t.Fatalf("engine args = %v, want omitted flags removed", profile.EngineArgs)
+	}
+	if got != "--attention-backend flashinfer" {
+		t.Fatalf("engine args = %q, want retained safe args", got)
+	}
+}
+
+func TestPlanDropsFixedKVCacheForQwenModels(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:       "nvidia/Qwen3.6-27B-NVFP4",
+		Contexts:    []int{8192},
+		Concurrency: []int{1},
+		ProfileEngineArgs: []string{
+			"--kv-cache-memory-bytes", "21474836480",
+			"--attention-backend", "flashinfer",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(spec.Profiles[0].EngineArgs, " ")
+	if strings.Contains(got, "kv-cache-memory-bytes") || strings.Contains(got, "21474836480") {
+		t.Fatalf("engine args = %q, want fixed KV cache omitted for Qwen", got)
+	}
+	if got != "--attention-backend flashinfer" {
+		t.Fatalf("engine args = %q, want retained non-KV args", got)
+	}
+}
+
+func TestPlanKeepsFixedKVCacheForNonQwenModels(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:       "google/gemma-4-26b-it",
+		Contexts:    []int{8192},
+		Concurrency: []int{1},
+		ProfileEngineArgs: []string{
+			"--kv-cache-memory-bytes", "12884901888",
+			"--attention-backend", "flashinfer",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(spec.Profiles[0].EngineArgs, " ")
+	if !strings.Contains(got, "--kv-cache-memory-bytes 12884901888") {
+		t.Fatalf("engine args = %q, want fixed KV cache retained for non-Qwen", got)
+	}
+}
+
 func TestStressProfilesAdmitSpotCheckConcurrency(t *testing.T) {
 	spec, err := Plan(PlanRequest{
 		Model:         "example/model",
@@ -202,5 +313,16 @@ func TestDefaultGridUsesShortDecodeAndScaledPrompts(t *testing.T) {
 	}
 	if prompts[1] != 8 || prompts[4] != 8 || prompts[16] != 32 {
 		t.Fatalf("resolved prompts = %v, want map[1:8 4:8 16:32]", prompts)
+	}
+}
+
+func TestOmittedFlagValuesKeepsFollowingFlags(t *testing.T) {
+	got := omittedFlagValues(
+		[]string{"--disable-log-requests", "--attention-backend", "flashinfer", "--kv-cache-memory-bytes", "123"},
+		[]string{"--disable-log-requests", "--kv-cache-memory-bytes"},
+	)
+	want := []string{"--attention-backend", "flashinfer"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("omitted args = %v, want %v: a boolean flag must not swallow the next flag", got, want)
 	}
 }

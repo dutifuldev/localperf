@@ -36,9 +36,9 @@ remove guardrails to make a run pass.
 
 When the user asks for a default context/concurrency sweep, follow
 `docs/2026-07-02-default-inference-sweep.md`. Use the documented `4k`
-max-throughput reference plus the practical `8k`, `16k`, `32k`, `64k`, `128k`
-context ladder with concurrency `1`, `4`, `8`, `16`, and `32`, extending by
-powers of two only when the hardware can safely take it.
+max-throughput reference plus the regular active-context `4k`, `8k`, `16k`,
+`32k`, `64k`, `128k` ladder with concurrency `1`, `4`, `8`, `16`, and `32`,
+extending by powers of two only when the hardware can safely take it.
 
 For repeated benchmark runs of the same model, keep results in one model-level
 SQLite artifact and render 1 HTML report per model. Do not split retry runs,

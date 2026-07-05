@@ -47,8 +47,15 @@ func Create(path, schema string) (*sql.DB, error) {
 // The existing file must be a valid artifact of the supported format;
 // anything else is an error rather than something to silently overwrite.
 func CreateOrAppend(path, schema string) (*sql.DB, error) {
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		return Create(path, schema)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("%s is a directory", path)
+	}
+	if info.Size() == 0 {
+		return openWithSchema(path, schema)
 	}
 	db, err := OpenWritable(path)
 	if err != nil {
