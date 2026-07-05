@@ -76,6 +76,7 @@ const (
 	// that the KV budget makes higher concurrency an hours-long stress
 	// exercise, which belongs in --stress, not the default grid.
 	highContextConcurrencyCap = 4
+	fixedKVCacheBytesFlag     = "--kv-cache-memory-bytes"
 )
 
 // headroom absorbs chat template and tokenizer drift between requested and
@@ -272,6 +273,10 @@ func stampSpec(spec *vllmbench.Spec, request PlanRequest) error {
 }
 
 func sweepProfile(name string, maxModelLen, port, maxNumSeqs int, request PlanRequest) vllmbench.Profile {
+	omittedEngineFlags := append([]string{}, request.OmitProfileEngineFlags...)
+	if shouldOmitFixedKVCache(request.Model) {
+		omittedEngineFlags = append(omittedEngineFlags, fixedKVCacheBytesFlag)
+	}
 	return vllmbench.Profile{
 		Name:        name,
 		Host:        "127.0.0.1",
@@ -280,8 +285,13 @@ func sweepProfile(name string, maxModelLen, port, maxNumSeqs int, request PlanRe
 		MaxModelLen: maxModelLen,
 		MaxNumSeqs:  maxNumSeqs,
 		Args:        append([]string{}, request.ProfileArgs...),
-		EngineArgs:  omittedFlagValues(request.ProfileEngineArgs, request.OmitProfileEngineFlags),
+		EngineArgs:  omittedFlagValues(request.ProfileEngineArgs, omittedEngineFlags),
 	}
+}
+
+func shouldOmitFixedKVCache(model string) bool {
+	normalized := strings.ToLower(model)
+	return strings.Contains(normalized, "qwen")
 }
 
 func omittedFlagValues(args, omittedFlags []string) []string {

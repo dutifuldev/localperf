@@ -130,6 +130,47 @@ func TestPlanProfileArgsCanOmitUnsafeEngineFlags(t *testing.T) {
 	}
 }
 
+func TestPlanDropsFixedKVCacheForQwenModels(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:       "nvidia/Qwen3.6-27B-NVFP4",
+		Contexts:    []int{8192},
+		Concurrency: []int{1},
+		ProfileEngineArgs: []string{
+			"--kv-cache-memory-bytes", "21474836480",
+			"--attention-backend", "flashinfer",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(spec.Profiles[0].EngineArgs, " ")
+	if strings.Contains(got, "kv-cache-memory-bytes") || strings.Contains(got, "21474836480") {
+		t.Fatalf("engine args = %q, want fixed KV cache omitted for Qwen", got)
+	}
+	if got != "--attention-backend flashinfer" {
+		t.Fatalf("engine args = %q, want retained non-KV args", got)
+	}
+}
+
+func TestPlanKeepsFixedKVCacheForNonQwenModels(t *testing.T) {
+	spec, err := Plan(PlanRequest{
+		Model:       "google/gemma-4-26b-it",
+		Contexts:    []int{8192},
+		Concurrency: []int{1},
+		ProfileEngineArgs: []string{
+			"--kv-cache-memory-bytes", "12884901888",
+			"--attention-backend", "flashinfer",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(spec.Profiles[0].EngineArgs, " ")
+	if !strings.Contains(got, "--kv-cache-memory-bytes 12884901888") {
+		t.Fatalf("engine args = %q, want fixed KV cache retained for non-Qwen", got)
+	}
+}
+
 func TestStressProfilesAdmitSpotCheckConcurrency(t *testing.T) {
 	spec, err := Plan(PlanRequest{
 		Model:         "example/model",
