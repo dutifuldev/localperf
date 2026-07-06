@@ -151,6 +151,8 @@ p {
 
 .tab-content {
   padding: 10px;
+  max-width: 1440px;
+  margin-inline: auto;
 }
 
 .report-view,
@@ -224,6 +226,8 @@ p {
 }
 
 .warning {
+  width: fit-content;
+  max-width: 100%;
   margin-bottom: 10px;
   padding: 8px 10px;
   border: 1px solid #dec777;
@@ -302,12 +306,19 @@ tbody tr:hover {
   color: var(--muted);
 }
 
+/* Heat cells fill their whole table cell: the td contributes no padding, and
+   the colored trigger carries the text inset itself, so adjacent colored
+   cells are contiguous instead of floating with white gaps around them. */
+td:has(.metric-trigger) {
+  padding: 0;
+}
+
 .metric-trigger {
   all: unset;
-  display: inline-block;
-  min-width: 100%;
-  padding: 1px 3px;
-  border-radius: 4px;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px 8px;
   cursor: help;
 }
 
