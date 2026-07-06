@@ -163,6 +163,42 @@ func TestStreamWithNeitherTokenNorFinishFailsShape(t *testing.T) {
 	}
 }
 
+func TestStreamWithoutUsageDoesNotFabricateTokens(t *testing.T) {
+	// A backend that ignores stream_options.include_usage: content streams
+	// but no usage chunk arrives. Completion tokens must reflect observed
+	// chunks, never the requested output length (which would inflate
+	// throughput). Empty-but-finished streams must land at zero.
+	makeServer := func(contentChunks int) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fl := w.(http.Flusher)
+			for i := 0; i < contentChunks; i++ {
+				fmt.Fprintf(w, "data: {\"id\":\"u\",\"choices\":[{\"delta\":{\"content\":\"t\"}}]}\n\n")
+			}
+			fmt.Fprint(w, "data: {\"id\":\"u\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			fl.Flush()
+		}))
+	}
+	// request.OutputTokensExpected is 8 (RandomOutputLen); assert we never see it.
+	for _, tc := range []struct{ chunks, wantTokens int }{{0, 0}, {3, 3}} {
+		srv := makeServer(tc.chunks)
+		result, err := runHTTPBenchmark(context.Background(), streamTestPlannedRun(srv.URL, nil))
+		srv.Close()
+		if err != nil {
+			t.Fatalf("chunks=%d: %v", tc.chunks, err)
+		}
+		if result.Completed != 2 {
+			t.Fatalf("chunks=%d: completed=%d, want 2", tc.chunks, result.Completed)
+		}
+		for _, s := range result.RequestSamples {
+			if s.CompletionTokens != tc.wantTokens {
+				t.Fatalf("chunks=%d: completion_tokens=%d, want %d (observed chunks, not the requested 8)", tc.chunks, s.CompletionTokens, tc.wantTokens)
+			}
+		}
+	}
+}
+
 func TestExtraBodyCannotFlipStreaming(t *testing.T) {
 	client := openAIHTTPClient{
 		profile: Profile{Model: "m"},

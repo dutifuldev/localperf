@@ -703,7 +703,10 @@ func (stream *httpStreamResult) applyToSample(sample RequestSample, request Cano
 		sample.FirstByteMillis = stream.firstByteAt.Sub(sample.StartedAt).Seconds() * 1000
 	}
 	sample.PromptTokens = usageInt(stream.usage.PromptTokens, request.InputTokensExpected)
-	sample.CompletionTokens = usageInt(stream.usage.CompletionTokens, request.OutputTokensExpected)
+	// Completion tokens fall back to the observed streamed-chunk count, never
+	// to the requested output length: a backend that omits usage on an empty
+	// stream must not be credited phantom output tokens.
+	sample.CompletionTokens = usageInt(stream.usage.CompletionTokens, stream.tokenChunks)
 	sample.TotalTokens = usageInt(stream.usage.TotalTokens, sample.PromptTokens+sample.CompletionTokens)
 	// firstTokenAt is nil only for a clean finish that streamed no token
 	// (accepted above); such a point contributes no TTFT/TPOT/ITL, which is
