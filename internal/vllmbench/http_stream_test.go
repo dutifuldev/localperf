@@ -97,6 +97,9 @@ func TestStreamingBenchmarkMeasuresTTFT(t *testing.T) {
 		if sample.ITLMeanMillis <= 0 {
 			t.Fatalf("sample ITL = %.3f, want positive from chunk gaps", sample.ITLMeanMillis)
 		}
+		if sample.TPOTMillis <= 0 {
+			t.Fatalf("sample TPOT = %.3f, want positive for a multi-token completion", sample.TPOTMillis)
+		}
 		if sample.PromptTokens != 32 || sample.CompletionTokens != 4 {
 			t.Fatalf("sample tokens = %d/%d, want 32/4 from stream usage", sample.PromptTokens, sample.CompletionTokens)
 		}
@@ -136,18 +139,63 @@ func TestNonStreamingBenchmarkRecordsNoTTFT(t *testing.T) {
 	}
 }
 
-func TestStreamWithNoContentFailsShape(t *testing.T) {
-	server := sseTestServer(t, 0, 0, 0)
+func TestStreamWithNeitherTokenNorFinishFailsShape(t *testing.T) {
+	// A stream that ends ([DONE]) having emitted neither a token nor a
+	// finish_reason is genuinely malformed and must fail. (A clean finish
+	// with zero content is valid — see TestStreamingFinishWithNoContentCompletes.)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"x\",\"choices\":[{\"delta\":{}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		fl.Flush()
+	}))
 	defer server.Close()
 	result, err := runHTTPBenchmark(context.Background(), streamTestPlannedRun(server.URL, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Failed != 2 {
-		t.Fatalf("failed = %d, want 2 for empty streams", result.Failed)
+		t.Fatalf("failed = %d, want 2 for streams with no token and no finish reason", result.Failed)
 	}
 	if result.RequestSamples[0].ErrorType != "response_shape" {
 		t.Fatalf("error type = %q, want response_shape", result.RequestSamples[0].ErrorType)
+	}
+}
+
+func TestStreamWithoutUsageDoesNotFabricateTokens(t *testing.T) {
+	// A backend that ignores stream_options.include_usage: content streams
+	// but no usage chunk arrives. Completion tokens must reflect observed
+	// chunks, never the requested output length (which would inflate
+	// throughput). Empty-but-finished streams must land at zero.
+	makeServer := func(contentChunks int) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fl := w.(http.Flusher)
+			for i := 0; i < contentChunks; i++ {
+				fmt.Fprintf(w, "data: {\"id\":\"u\",\"choices\":[{\"delta\":{\"content\":\"t\"}}]}\n\n")
+			}
+			fmt.Fprint(w, "data: {\"id\":\"u\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			fl.Flush()
+		}))
+	}
+	// request.OutputTokensExpected is 8 (RandomOutputLen); assert we never see it.
+	for _, tc := range []struct{ chunks, wantTokens int }{{0, 0}, {3, 3}} {
+		srv := makeServer(tc.chunks)
+		result, err := runHTTPBenchmark(context.Background(), streamTestPlannedRun(srv.URL, nil))
+		srv.Close()
+		if err != nil {
+			t.Fatalf("chunks=%d: %v", tc.chunks, err)
+		}
+		if result.Completed != 2 {
+			t.Fatalf("chunks=%d: completed=%d, want 2", tc.chunks, result.Completed)
+		}
+		for _, s := range result.RequestSamples {
+			if s.CompletionTokens != tc.wantTokens {
+				t.Fatalf("chunks=%d: completion_tokens=%d, want %d (observed chunks, not the requested 8)", tc.chunks, s.CompletionTokens, tc.wantTokens)
+			}
+		}
 	}
 }
 
@@ -292,5 +340,75 @@ func TestStreamErrorChunkFailsRequest(t *testing.T) {
 	sample := result.RequestSamples[0]
 	if sample.ErrorType != "server_error" || !strings.Contains(sample.ErrorMessage, "boom") {
 		t.Fatalf("error = %q/%q, want server_error/boom", sample.ErrorType, sample.ErrorMessage)
+	}
+}
+
+func TestStreamingReasoningContentCountsForTTFT(t *testing.T) {
+	// A reasoning model streams its first tokens as reasoning_content, then
+	// a normal content token, then finishes. TTFT must be observed from the
+	// first reasoning token, not lost.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		time.Sleep(20 * time.Millisecond)
+		fmt.Fprint(w, "data: {\"id\":\"r1\",\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n")
+		fl.Flush()
+		time.Sleep(5 * time.Millisecond)
+		fmt.Fprint(w, "data: {\"id\":\"r1\",\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n")
+		fl.Flush()
+		fmt.Fprint(w, "data: {\"id\":\"r1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"r1\",\"choices\":[],\"usage\":{\"prompt_tokens\":32,\"completion_tokens\":2,\"total_tokens\":34}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		fl.Flush()
+	}))
+	defer server.Close()
+	result, err := runHTTPBenchmark(context.Background(), streamTestPlannedRun(server.URL, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Completed != 2 || result.TTFTSource != TTFTSourceStream {
+		t.Fatalf("completed=%d ttft_source=%q, want 2 / stream", result.Completed, result.TTFTSource)
+	}
+	for _, s := range result.RequestSamples {
+		if s.TTFTMillis <= 0 {
+			t.Fatalf("TTFT=%.1f, want reasoning_content to seed TTFT", s.TTFTMillis)
+		}
+		if s.ITLMeanMillis <= 0 {
+			t.Fatalf("ITL=%.3f, want gap between reasoning and content tokens", s.ITLMeanMillis)
+		}
+	}
+}
+
+func TestStreamingFinishWithNoContentCompletes(t *testing.T) {
+	// A 1-token prefill / empty-generation stream that finishes cleanly with
+	// zero streamed tokens must complete, not fail response_shape. It carries
+	// no TTFT (honest), and the request still counts as completed.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"p1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n")
+		fl.Flush()
+		fmt.Fprint(w, "data: {\"id\":\"p1\",\"choices\":[],\"usage\":{\"prompt_tokens\":16000,\"completion_tokens\":1,\"total_tokens\":16001}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		fl.Flush()
+	}))
+	defer server.Close()
+	result, err := runHTTPBenchmark(context.Background(), streamTestPlannedRun(server.URL, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Completed != 2 || result.Failed != 0 {
+		t.Fatalf("completed/failed=%d/%d, want 2/0: a clean finish with no content is valid", result.Completed, result.Failed)
+	}
+	for _, s := range result.RequestSamples {
+		if s.Status != "completed" || !s.Streamed {
+			t.Fatalf("sample status/streamed=%s/%v, want completed/true", s.Status, s.Streamed)
+		}
+		if s.TTFTMillis != 0 {
+			t.Fatalf("TTFT=%.1f, want 0 (no token was streamed)", s.TTFTMillis)
+		}
+	}
+	if result.TTFTSource != "" {
+		t.Fatalf("ttft_source=%q, want empty when no point produced a streamed token", result.TTFTSource)
 	}
 }

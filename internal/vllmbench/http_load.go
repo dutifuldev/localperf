@@ -114,8 +114,9 @@ type openAIChoice struct {
 }
 
 type openAIMessage struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role             string `json:"role,omitempty"`
+	Content          string `json:"content,omitempty"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type openAIUsage struct {
@@ -610,18 +611,25 @@ func (stream *httpStreamResult) consume(body io.Reader) *httpLoadFailure {
 		}
 	}
 	stream.completedAt = time.Now().UTC()
-	if err := scanner.Err(); err != nil {
-		return newHTTPLoadFailure("response_read", "", err.Error(), stream.completedAt, nil)
-	}
-	// EOF before [DONE] is a truncated stream: recording it as completed
-	// would silently keep partial output and fallback token counts.
-	if !terminated {
+	return stream.finalize(terminated, scanner.Err())
+}
+
+// finalize validates a fully-read stream. EOF before [DONE] is a truncated
+// stream (recording it would keep partial output). A stream that finished
+// cleanly is valid even with zero streamed tokens — a 1-token prefill point
+// or a reasoning model that emitted only a final message; only a stream with
+// neither any token nor a finish reason is malformed.
+func (stream *httpStreamResult) finalize(terminated bool, scanErr error) *httpLoadFailure {
+	switch {
+	case scanErr != nil:
+		return newHTTPLoadFailure("response_read", "", scanErr.Error(), stream.completedAt, nil)
+	case !terminated:
 		return newHTTPLoadFailure("response_read", "", "stream ended before [DONE] terminator", stream.completedAt, nil)
+	case stream.firstTokenAt == nil && stream.finishReason == "":
+		return newHTTPLoadFailure("response_shape", "", "stream produced neither tokens nor a finish reason", stream.completedAt, nil)
+	default:
+		return nil
 	}
-	if stream.firstTokenAt == nil {
-		return newHTTPLoadFailure("response_shape", "", "stream produced no completion content", stream.completedAt, nil)
-	}
-	return nil
 }
 
 func ssePayload(line string) (string, bool) {
@@ -669,11 +677,18 @@ func (stream *httpStreamResult) applyChoice(choice openAIStreamChoice) {
 	stream.content.WriteString(text)
 }
 
-// streamChoiceText extracts the token text of one stream choice: chat chunks
-// carry a delta message, completions chunks carry plain text.
+// streamChoiceText extracts the token text of one stream choice. Chat chunks
+// carry a delta message; reasoning models stream their first tokens as
+// reasoning_content before any content, so both count for TTFT/ITL timing.
+// Completions chunks carry plain text.
 func streamChoiceText(choice openAIStreamChoice) string {
-	if choice.Delta != nil && choice.Delta.Content != "" {
-		return choice.Delta.Content
+	if choice.Delta != nil {
+		if choice.Delta.Content != "" {
+			return choice.Delta.Content
+		}
+		if choice.Delta.ReasoningContent != "" {
+			return choice.Delta.ReasoningContent
+		}
 	}
 	return choice.Text
 }
@@ -687,15 +702,24 @@ func (stream *httpStreamResult) applyToSample(sample RequestSample, request Cano
 	if stream.firstByteAt != nil {
 		sample.FirstByteMillis = stream.firstByteAt.Sub(sample.StartedAt).Seconds() * 1000
 	}
-	sample.TTFTMillis = stream.firstTokenAt.Sub(sample.StartedAt).Seconds() * 1000
 	sample.PromptTokens = usageInt(stream.usage.PromptTokens, request.InputTokensExpected)
-	sample.CompletionTokens = usageInt(stream.usage.CompletionTokens, request.OutputTokensExpected)
+	// Completion tokens fall back to the observed streamed-chunk count, never
+	// to the requested output length: a backend that omits usage on an empty
+	// stream must not be credited phantom output tokens.
+	sample.CompletionTokens = usageInt(stream.usage.CompletionTokens, stream.tokenChunks)
 	sample.TotalTokens = usageInt(stream.usage.TotalTokens, sample.PromptTokens+sample.CompletionTokens)
-	if sample.CompletionTokens > 1 {
-		sample.TPOTMillis = stream.completedAt.Sub(*stream.firstTokenAt).Seconds() * 1000 / float64(sample.CompletionTokens-1)
-	}
-	if stream.tokenChunks > 1 {
-		sample.ITLMeanMillis = stream.lastTokenAt.Sub(*stream.firstTokenAt).Seconds() * 1000 / float64(stream.tokenChunks-1)
+	// firstTokenAt is nil only for a clean finish that streamed no token
+	// (accepted above); such a point contributes no TTFT/TPOT/ITL, which is
+	// honest rather than a fabricated zero. Token counts are assigned first
+	// so TPOT sees the real completion-token count.
+	if stream.firstTokenAt != nil {
+		sample.TTFTMillis = stream.firstTokenAt.Sub(sample.StartedAt).Seconds() * 1000
+		if sample.CompletionTokens > 1 {
+			sample.TPOTMillis = stream.completedAt.Sub(*stream.firstTokenAt).Seconds() * 1000 / float64(sample.CompletionTokens-1)
+		}
+		if stream.tokenChunks > 1 {
+			sample.ITLMeanMillis = stream.lastTokenAt.Sub(*stream.firstTokenAt).Seconds() * 1000 / float64(stream.tokenChunks-1)
+		}
 	}
 	sample.ResponseSHA256 = sha256Hex([]byte(stream.content.String()))
 	sample.ResponseMetadata = streamResponseMetadata(stream)
