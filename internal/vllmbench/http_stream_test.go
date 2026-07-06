@@ -97,6 +97,9 @@ func TestStreamingBenchmarkMeasuresTTFT(t *testing.T) {
 		if sample.ITLMeanMillis <= 0 {
 			t.Fatalf("sample ITL = %.3f, want positive from chunk gaps", sample.ITLMeanMillis)
 		}
+		if sample.TPOTMillis <= 0 {
+			t.Fatalf("sample TPOT = %.3f, want positive for a multi-token completion", sample.TPOTMillis)
+		}
 		if sample.PromptTokens != 32 || sample.CompletionTokens != 4 {
 			t.Fatalf("sample tokens = %d/%d, want 32/4 from stream usage", sample.PromptTokens, sample.CompletionTokens)
 		}

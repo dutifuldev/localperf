@@ -702,9 +702,13 @@ func (stream *httpStreamResult) applyToSample(sample RequestSample, request Cano
 	if stream.firstByteAt != nil {
 		sample.FirstByteMillis = stream.firstByteAt.Sub(sample.StartedAt).Seconds() * 1000
 	}
+	sample.PromptTokens = usageInt(stream.usage.PromptTokens, request.InputTokensExpected)
+	sample.CompletionTokens = usageInt(stream.usage.CompletionTokens, request.OutputTokensExpected)
+	sample.TotalTokens = usageInt(stream.usage.TotalTokens, sample.PromptTokens+sample.CompletionTokens)
 	// firstTokenAt is nil only for a clean finish that streamed no token
-	// (accepted above); such a point contributes no TTFT/ITL, which is
-	// honest rather than a fabricated zero.
+	// (accepted above); such a point contributes no TTFT/TPOT/ITL, which is
+	// honest rather than a fabricated zero. Token counts are assigned first
+	// so TPOT sees the real completion-token count.
 	if stream.firstTokenAt != nil {
 		sample.TTFTMillis = stream.firstTokenAt.Sub(sample.StartedAt).Seconds() * 1000
 		if sample.CompletionTokens > 1 {
@@ -714,9 +718,6 @@ func (stream *httpStreamResult) applyToSample(sample RequestSample, request Cano
 			sample.ITLMeanMillis = stream.lastTokenAt.Sub(*stream.firstTokenAt).Seconds() * 1000 / float64(stream.tokenChunks-1)
 		}
 	}
-	sample.PromptTokens = usageInt(stream.usage.PromptTokens, request.InputTokensExpected)
-	sample.CompletionTokens = usageInt(stream.usage.CompletionTokens, request.OutputTokensExpected)
-	sample.TotalTokens = usageInt(stream.usage.TotalTokens, sample.PromptTokens+sample.CompletionTokens)
 	sample.ResponseSHA256 = sha256Hex([]byte(stream.content.String()))
 	sample.ResponseMetadata = streamResponseMetadata(stream)
 	sample.deriveThroughput()
