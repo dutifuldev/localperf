@@ -30,8 +30,8 @@ button {
 
 .app {
   min-height: 100vh;
-  display: grid;
-  grid-template-rows: auto 1fr;
+  display: flex;
+  flex-direction: column;
 }
 
 .app-head {
@@ -94,6 +94,7 @@ p {
 }
 
 .tabs-root {
+  flex: 1;
   min-width: 0;
 }
 
