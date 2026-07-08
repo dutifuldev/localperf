@@ -6,3 +6,4 @@ __pycache__/
 venv/
 runs/diffusiongemma-vllm-standard-*/
 cufile.log
+tmp/

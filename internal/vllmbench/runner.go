@@ -764,6 +764,7 @@ func (waiter *readinessWaiter) probeReady() bool {
 	if err != nil {
 		return false
 	}
+	openAIHTTPClient{profile: waiter.profile}.applyAuthHeader(req)
 	resp, err := waiter.client.Do(req)
 	if err != nil {
 		return false
@@ -796,7 +797,7 @@ type engineIdentity struct {
 
 func probeEngineIdentity(ctx context.Context, client *http.Client, profile Profile) (engineIdentity, bool) {
 	identity := engineIdentity{}
-	if body, ok := fetchIdentityJSON(ctx, client, baseURL(profile)+"/version"); ok {
+	if body, ok := fetchIdentityJSON(ctx, client, profile, baseURL(profile)+"/version"); ok {
 		var payload struct {
 			Version string `json:"version"`
 		}
@@ -804,7 +805,7 @@ func probeEngineIdentity(ctx context.Context, client *http.Client, profile Profi
 			identity.Version = payload.Version
 		}
 	}
-	if body, ok := fetchIdentityJSON(ctx, client, baseURL(profile)+"/v1/models"); ok {
+	if body, ok := fetchIdentityJSON(ctx, client, profile, baseURL(profile)+"/v1/models"); ok {
 		identity.Models = body
 	}
 	return identity, identity.Version != "" || len(identity.Models) > 0
@@ -812,13 +813,14 @@ func probeEngineIdentity(ctx context.Context, client *http.Client, profile Profi
 
 const engineIdentityBodyLimit = 64 * 1024
 
-func fetchIdentityJSON(ctx context.Context, client *http.Client, url string) (json.RawMessage, bool) {
+func fetchIdentityJSON(ctx context.Context, client *http.Client, profile Profile, url string) (json.RawMessage, bool) {
 	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, false
 	}
+	openAIHTTPClient{profile: profile}.applyAuthHeader(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, false

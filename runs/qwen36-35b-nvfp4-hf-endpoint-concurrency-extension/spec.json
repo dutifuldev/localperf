@@ -1,0 +1,146 @@
+{
+  "version": "1",
+  "name": "qwen36-35b-nvfp4-hf-endpoint-concurrency-extension",
+  "description": "Higher-concurrency decode extension against the deployed Hugging Face Inference Endpoint for nvidia/Qwen3.6-35B-A3B-NVFP4.",
+  "model": "/repository",
+  "engines": [
+    {
+      "name": "hf-inference-endpoint",
+      "type": "openai-compatible",
+      "endpoint_base_url": "https://ugmgglehlpy403um.us-east-2.aws.endpoints.huggingface.cloud",
+      "managed": false
+    }
+  ],
+  "runner": {
+    "vllm_command": "vllm",
+    "vllm_bench_command": "vllm",
+    "one_awake_profile": true,
+    "stop_managed_on_exit": false,
+    "append_timestamp_to_run": true,
+    "adaptive": {
+      "min_throughput_gain_pct": 10,
+      "max_concurrency_factor": 2
+    },
+    "preboot_profiles": false
+  },
+  "safety": {
+    "min_mem_available_gib": 1,
+    "poll_interval_millis": 1000,
+    "startup_timeout_sec": 300,
+    "workload_timeout_sec": 14400,
+    "http_timeout_sec": 300
+  },
+  "warmup": {
+    "enabled": false
+  },
+  "profiles": [
+    {
+      "name": "hf-qwen36-64k",
+      "engine": "hf-inference-endpoint",
+      "model": "/repository",
+      "endpoint_base_url": "https://ugmgglehlpy403um.us-east-2.aws.endpoints.huggingface.cloud",
+      "managed": false,
+      "health_path": "/health",
+      "max_model_len": 65536,
+      "max_num_seqs": 16,
+      "max_num_batched_tokens": 8192,
+      "kv_cache_dtype": "fp8",
+      "enable_prefix_caching": true
+    }
+  ],
+  "workloads": [
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 31232,
+      "random_output_len": 1024,
+      "random_range_ratio": "0",
+      "name": "decode-32k",
+      "phase": "decode",
+      "context_target": 32768,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        64,
+        128,
+        256
+      ],
+      "traffic": {},
+      "ignore_eos": true,
+      "temperature": 0,
+      "stream": true,
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}"
+    },
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 63488,
+      "random_output_len": 1024,
+      "random_range_ratio": "0",
+      "name": "decode-64k",
+      "phase": "decode",
+      "context_target": 65536,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        64,
+        128,
+        256
+      ],
+      "traffic": {},
+      "ignore_eos": true,
+      "temperature": 0,
+      "stream": true,
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}"
+    }
+  ],
+  "generator": {
+    "tool": "localperf sweep plan",
+    "version": "1",
+    "intent": {
+      "model": "/repository",
+      "contexts": [
+        32768,
+        65536
+      ],
+      "concurrency": [
+        64,
+        128,
+        256
+      ],
+      "repeats": 1,
+      "prompts_per_user": 2,
+      "min_mem_available_gib": 1,
+      "base_port": 8100
+    },
+    "content_hash": "161ba6c0ddbcf6a1d6a35c916c369d4fcb32b6bb941743c7fccd93db62a660f8"
+  }
+}

@@ -3,6 +3,8 @@ package vllmbench
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -102,6 +104,46 @@ func TestRandomHTTPRequestsUseWorkloadBackend(t *testing.T) {
 	}
 	if body["prompt"] == nil || body["messages"] != nil {
 		t.Fatalf("body = %+v, want completion body", body)
+	}
+}
+
+func TestHTTPClientSendsBearerAuth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer secret" {
+			t.Errorf("authorization header = %q, want Bearer secret", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cmpl-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`))
+	}))
+	defer server.Close()
+
+	client := openAIHTTPClient{
+		baseURL: server.URL,
+		profile: Profile{
+			Model: "model",
+			Env:   map[string]string{"OPENAI_API_KEY": "Bearer secret"},
+		},
+		workload: Workload{BenchmarkTrafficConfig: BenchmarkTrafficConfig{
+			Backend:  "openai-chat",
+			Endpoint: "/v1/chat/completions",
+		}},
+		client: server.Client(),
+	}
+	payload, endpoint, err := client.requestPayload(CanonicalRequest{
+		ID:              "one",
+		Messages:        []Message{{Role: "user", Content: "hello"}},
+		MaxOutputTokens: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, failure := client.sendRequest(context.Background(), endpoint, payload)
+	if failure != nil {
+		t.Fatalf("sendRequest failure = %+v", failure)
+	}
+	sample := response.applyToSample(newRequestSample(0, CanonicalRequest{ID: "one"}), CanonicalRequest{ID: "one"})
+	if sample.Status != "completed" {
+		t.Fatalf("sample = %+v, want completed", sample)
 	}
 }
 

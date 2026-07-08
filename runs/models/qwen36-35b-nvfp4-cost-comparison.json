@@ -1,0 +1,143 @@
+{
+  "model": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+  "checked_at": "2026-07-07T16:00:15+00:00",
+  "dedicated_endpoint": {
+    "product": "Hugging Face Inference Endpoint",
+    "endpoint_name": "qwen36-35b-nvfp4",
+    "vendor": "aws",
+    "region": "us-east-2",
+    "compute_id": "aws-us-east-2-nvidia-rtx-pro-6000-x1",
+    "instance": "1x Nvidia RTX PRO 6000 Blackwell",
+    "price_per_running_replica_hour_usd": 2.75,
+    "pricing_source": "https://endpoints.huggingface.co/new?accelerator=gpu&instance_id=aws-us-east-2-nvidia-rtx-pro-6000-x1&vendor=aws"
+  },
+  "inference_providers": {
+    "product": "Hugging Face Inference Providers routed requests",
+    "status": "no_routed_inference_provider_prices_for_exact_model",
+    "available_inference_providers": [],
+    "prices": [],
+    "source": {
+      "model_api": "https://huggingface.co/api/models/nvidia/Qwen3.6-35B-A3B-NVFP4?expand=inferenceProviderMapping",
+      "pricing_doc": "https://huggingface.co/docs/inference-providers/pricing",
+      "model_page": "https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4"
+    }
+  },
+  "comparison": {
+    "direct_price_comparison_possible": false,
+    "reason": "The exact model has no routed Hugging Face Inference Providers mapping/prices, so there is no same-model provider $/token price to compare against.",
+    "conclusion": "For this exact model on Hugging Face, the dedicated endpoint is currently the available HF-hosted path; it is not meaningfully classifiable as cheaper or more expensive than Inference Providers because that product has no listed provider for the model."
+  },
+  "derived_endpoint_costs_64k_decode": {
+    "minimum_per_user_floor_tok_s": 50,
+    "best_feasible_point": {
+      "profile": "hf-qwen36-64k",
+      "workload": "decode-64k",
+      "concurrency": 16,
+      "aggregate_output_tok_s": 1174.7874578675678,
+      "per_user_output_tok_s": 73.42421611672299,
+      "p95_latency_ms": 15373.3115,
+      "p95_ttft_ms": 4070.2763,
+      "meets_50_tok_s_per_user_floor": true,
+      "endpoint_cost_per_1m_output_tokens_usd": 0.6502358224656848,
+      "endpoint_cost_per_1m_total_tokens_usd": 0.010319284021524721
+    },
+    "peak_raw_throughput_point": {
+      "profile": "hf-qwen36-64k",
+      "workload": "decode-64k",
+      "concurrency": 128,
+      "aggregate_output_tok_s": 1504.6232249681545,
+      "per_user_output_tok_s": 11.754868945063707,
+      "p95_latency_ms": 89150.588,
+      "p95_ttft_ms": 79003.6815,
+      "meets_50_tok_s_per_user_floor": false,
+      "endpoint_cost_per_1m_output_tokens_usd": 0.5076944687631395,
+      "endpoint_cost_per_1m_total_tokens_usd": 0.008057143636684874
+    },
+    "all_points": [
+      {
+        "profile": "hf-qwen36-64k",
+        "workload": "decode-64k",
+        "concurrency": 1,
+        "aggregate_output_tok_s": 183.9364680924452,
+        "per_user_output_tok_s": 183.9364680924452,
+        "p95_latency_ms": 5990.032,
+        "p95_ttft_ms": 1019.5863499999998,
+        "meets_50_tok_s_per_user_floor": true,
+        "endpoint_cost_per_1m_output_tokens_usd": 4.15300400627984,
+        "endpoint_cost_per_1m_total_tokens_usd": 0.06590843875814512
+      },
+      {
+        "profile": "hf-qwen36-64k",
+        "workload": "decode-64k",
+        "concurrency": 4,
+        "aggregate_output_tok_s": 487.4179876991217,
+        "per_user_output_tok_s": 121.85449692478042,
+        "p95_latency_ms": 8453.22445,
+        "p95_ttft_ms": 2526.8478,
+        "meets_50_tok_s_per_user_floor": true,
+        "endpoint_cost_per_1m_output_tokens_usd": 1.5672152201334637,
+        "endpoint_cost_per_1m_total_tokens_usd": 0.024871805613673467
+      },
+      {
+        "profile": "hf-qwen36-64k",
+        "workload": "decode-64k",
+        "concurrency": 8,
+        "aggregate_output_tok_s": 812.8711074877664,
+        "per_user_output_tok_s": 101.6088884359708,
+        "p95_latency_ms": 10199.1535,
+        "p95_ttft_ms": 2964.7227500000004,
+        "meets_50_tok_s_per_user_floor": true,
+        "endpoint_cost_per_1m_output_tokens_usd": 0.9397417153252496,
+        "endpoint_cost_per_1m_total_tokens_usd": 0.014913761026797092
+      },
+      {
+        "profile": "hf-qwen36-64k",
+        "workload": "decode-64k",
+        "concurrency": 16,
+        "aggregate_output_tok_s": 1174.7874578675678,
+        "per_user_output_tok_s": 73.42421611672299,
+        "p95_latency_ms": 15373.3115,
+        "p95_ttft_ms": 4070.2763,
+        "meets_50_tok_s_per_user_floor": true,
+        "endpoint_cost_per_1m_output_tokens_usd": 0.6502358224656848,
+        "endpoint_cost_per_1m_total_tokens_usd": 0.010319284021524721
+      },
+      {
+        "profile": "hf-qwen36-64k",
+        "workload": "decode-64k",
+        "concurrency": 32,
+        "aggregate_output_tok_s": 1419.0578586976428,
+        "per_user_output_tok_s": 44.34555808430134,
+        "p95_latency_ms": 25937.1085,
+        "p95_ttft_ms": 14885.4142,
+        "meets_50_tok_s_per_user_floor": false,
+        "endpoint_cost_per_1m_output_tokens_usd": 0.5383070776197645,
+        "endpoint_cost_per_1m_total_tokens_usd": 0.008542967693922245
+      },
+      {
+        "profile": "hf-qwen36-64k",
+        "workload": "decode-64k",
+        "concurrency": 64,
+        "aggregate_output_tok_s": 1468.5502664301905,
+        "per_user_output_tok_s": 22.946097912971727,
+        "p95_latency_ms": 47073.04915,
+        "p95_ttft_ms": 37470.4849,
+        "meets_50_tok_s_per_user_floor": false,
+        "endpoint_cost_per_1m_output_tokens_usd": 0.5201652993096245,
+        "endpoint_cost_per_1m_total_tokens_usd": 0.008255056513747683
+      },
+      {
+        "profile": "hf-qwen36-64k",
+        "workload": "decode-64k",
+        "concurrency": 128,
+        "aggregate_output_tok_s": 1504.6232249681545,
+        "per_user_output_tok_s": 11.754868945063707,
+        "p95_latency_ms": 89150.588,
+        "p95_ttft_ms": 79003.6815,
+        "meets_50_tok_s_per_user_floor": false,
+        "endpoint_cost_per_1m_output_tokens_usd": 0.5076944687631395,
+        "endpoint_cost_per_1m_total_tokens_usd": 0.008057143636684874
+      }
+    ]
+  }
+}

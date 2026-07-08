@@ -27,9 +27,9 @@ try to use as much memory we can use. like 80% of the memory. without ooming the
 first document this the type of benchmark we aim for. then execute the benchmark without OOM'in the device
 ```
 
-## Default Grid
+## Baseline Grid
 
-Run two benchmark families:
+Start with two benchmark families:
 
 - `max-throughput-reference`: minimum `4k` context, intentionally optimized for
   maximum aggregate token throughput even if the setting is not practically
@@ -38,7 +38,17 @@ Run two benchmark families:
   `32k`, and `64k`, with concurrency `1`, `4`, `8`, `16`, and `32` where the
   hardware can safely run them. `128k` is opt-in and capped at `c4`; at that
   KV budget, higher concurrency is an hours-long stress exercise, not a
-  default grid point.
+  baseline grid point.
+
+The baseline grid is the first pass, not the end of the benchmark. After it
+finishes, make an explicit extension decision:
+
+- extend the same artifact when the largest completed point still shows useful
+  throughput or acceptable tail latency,
+- stop only when the result already shows a clear limit, such as failures,
+  memory pressure, queueing-dominated latency, or a documented operator cap,
+- record the reason when you stop instead of silently treating `c32` or `64k`
+  as a final boundary.
 
 `4k-reference` is not a substitute for the active `4k` sweep point. A default
 sweep should include both: the reference row for toy/max-throughput comparison
@@ -73,7 +83,7 @@ Request counts scale with concurrency: `prompts_per_user` (default 2) gives
 for `c32`-sized sample counts. Do not go below the floor of 8 requests per
 point; that trades hours for noise.
 
-Long-output behavior is a stress preset, not the default:
+Long-output behavior is a stress preset, not the baseline:
 `localperf sweep plan --stress` adds `4096`-token decode spot checks at
 `32k c4` and `64k c1/c4` plus the `128k` points at `c1/c4`.
 
@@ -91,14 +101,99 @@ Hand-authored specs stay legal but must declare `context_target` and
 ## Extension Rule
 
 The default grid is not a hard ceiling. If the hardware has clear memory and
-latency headroom, continue the same ladder with further powers of two:
+latency headroom, continue the same ladder with further powers of two. The
+extension pass is part of the default workflow unless the baseline gives a
+concrete reason to stop.
 
-- context: `256k`, `512k`, and onward,
-- concurrency: `64`, `128`, and onward.
+Extend one dimension at a time:
+
+- concurrency: `64`, `128`, `256`, `512`, and onward,
+- context: `128k`, `256k`, `512k`, `1m`, and onward.
 
 Only extend one dimension at a time, and stop before the machine OOMs. A failed
 startup or memory-guard kill is a result; do not keep pushing the same shape
 without changing the profile.
+
+Think of the sweep as tiers:
+
+| Tier | Purpose | Typical contexts | Typical concurrency |
+| --- | --- | --- | --- |
+| Baseline | characterize normal active-context behavior | `4k,8k,16k,32k,64k` | `1,4,8,16,32` |
+| Throughput extension | find the aggregate decode knee | best baseline contexts, usually `32k,64k` | `64,128,256,512` |
+| Long-context extension | find the supported context ceiling | `128k,256k,512k,1m` | `1,4` |
+| Long-context stress | test queueing and tail latency after long context works | largest working context | `8,16,32+` |
+
+The tiers append to the same model-level artifact. Do not flatten them into
+separate reports; the point is to see the baseline, extension, and stop reason
+together.
+
+Concurrency extension is usually the first follow-up after a clean baseline:
+
+```sh
+localperf sweep plan --model <model-id> \
+  --contexts 32k,64k --concurrency 64,128,256,512 \
+  --out spec-concurrency-extension.json
+```
+
+Use the highest-context decode rows first when the goal is maximum useful
+aggregate generation throughput. Add prefill rows when the baseline prefill
+ladder reached its largest concurrency without an adaptive skip or unacceptable
+TTFT.
+
+Long-context extension requires the server profile to support the requested
+context. Do not send a `128k` active-context workload to a server started with
+`--max-model-len 65536`; redeploy or start a larger-context profile first, then
+run:
+
+```sh
+localperf sweep plan --model <model-id> \
+  --contexts 128k,256k,512k \
+  --concurrency 1,4 \
+  --out spec-long-context-extension.json
+```
+
+The generator intentionally caps contexts `>=128k` at `c4` in normal planning.
+Higher concurrency at those contexts is a deliberate stress run. If you force
+`128k c8+` or `256k c8+`, keep it in a separate run batch appended to the same
+model-level artifact, state the reason, and expect it to be hours-long or
+queueing-dominated.
+
+For a hosted OpenAI-compatible endpoint, verify the served context limit before
+running the long-context tier:
+
+```sh
+curl -sS "$BASE_URL/v1/models" \
+  -H "Authorization: Bearer $TOKEN" | jq '.data[0].max_model_len'
+```
+
+If the server fails to start at a requested context because the model's derived
+maximum context is lower, record that startup failure as the context ceiling.
+Do not override it with engine escape hatches such as
+`VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` for benchmark results unless the model owner
+documents that longer RoPE scaling is valid.
+
+After `128k` or larger works at `c1,c4`, a separate long-context concurrency
+stress run can probe queueing:
+
+```sh
+localperf sweep plan --model <model-id> \
+  --contexts 128k,256k --concurrency 8,16,32 \
+  --out spec-long-context-concurrency.json
+```
+
+Useful extension presets:
+
+- **Throughput hunt:** extend decode at the best completed contexts with
+  `c64,c128,c256`; stop when output tok/s is flat or p95/p99 latency becomes
+  unusable.
+- **Tail-latency boundary:** repeat the best throughput context around the
+  knee, for example `c16,c32,c64`, and add SLOs such as
+  `{"ttft_p95_ms": 2000}` when a product latency target exists.
+- **Long-context stress:** run `--stress` first, then extend `128k` or larger
+  only after the server profile and KV budget are explicitly sized for it.
+- **Endpoint queueing test:** for hosted endpoints, it is valid to run client
+  concurrency above server `max_num_seqs`; label it as queueing behavior, not
+  extra in-engine parallelism.
 
 ## Model-Level Artifacts
 
@@ -134,9 +229,13 @@ artifact after each batch; the report lists every run and aggregates repeated
 points across runs with mean ± spread.
 
 The final step of every default sweep is to render the completed SQLite
-artifact into 1 HTML report per model. Do not call the sweep complete until the
-model-level SQLite artifact and the matching model-level HTML report both
-exist.
+artifact into 1 HTML report per model. Do not call the sweep complete until:
+
+- the baseline grid is recorded,
+- the extension decision is recorded, either as appended extension runs or as a
+  concrete stop reason,
+- the model-level SQLite artifact and the matching model-level HTML report both
+  exist.
 
 ## Reporting Requirements
 
@@ -156,6 +255,13 @@ it easy to answer: "At this context length, how many users can we run, and what
 aggregate and per-user throughput do they get?" Context labels in reports must
 follow `2026-07-02-context-semantics.md`: label rows by declared-and-measured
 active context or by measured token shape, never by `max_model_len` alone.
+
+Reports must also include a short extension note:
+
+- which points were extended beyond the baseline grid,
+- which points were not extended and why,
+- whether higher client concurrency exceeded server admission limits such as
+  `max_num_seqs`.
 
 ## Safety Rules
 
@@ -178,6 +284,11 @@ concurrency exceeds 2x vLLM's reported maximum concurrency. Disable with
 `"runner": {"adaptive": {"enabled": false}}`; negative thresholds disable
 individual rules.
 
+An adaptive skip inside the baseline grid is not a global stop signal. It only
+means that one workload/profile point hit a local rule. After the baseline,
+review the completed rows and still extend the contexts or phases that reached
+the largest tested concurrency cleanly.
+
 Long sweeps are crash-tolerant: the artifact is refreshed after every point
 (run status `running` until the sweep finishes), so partial results render at
 any time, and `bench run --resume` with the same `--run-dir` skips points
@@ -188,8 +299,7 @@ recorded with enough metadata to reproduce the run.
 
 ## Spec Provenance
 
-Create sweep specs only through the generator; never hand-write or
-post-edit the JSON:
+Prefer creating sweep specs through the generator:
 
 ```sh
 localperf sweep plan \
@@ -201,12 +311,19 @@ localperf sweep plan \
   --out spec.json
 ```
 
-Machine-specific runtime choices (vllm path, GPU memory, KV budget, extra
-serve args) are generator flags, so nothing forces editing the output. A
-deliberate concurrency cap is a declared trim: `--trim <context>=<max>:<reason>`
-removes the higher points from the grid, records the decision in the spec,
-and reports render the trimmed points like adaptive skips — with the reason,
-never as silent holes.
+Machine-specific runtime choices for managed vLLM runs (vLLM path, GPU memory,
+KV budget, extra serve args) are generator flags, so normal local sweeps should
+not require editing the output. A deliberate concurrency cap is a declared trim:
+`--trim <context>=<max>:<reason>` removes the higher points from the grid,
+records the decision in the spec, and reports render the trimmed points like
+adaptive skips — with the reason, never as silent holes.
+
+Some runs are necessarily adapted after generation: deployed endpoints,
+non-vLLM servers, custom health routes, auth, or extension points that the
+generator intentionally caps as stress. Those specs are valid as custom grids
+when they still declare `context_target` and `context_semantics`, pass
+validation, and document what was changed. Append those runs to the same
+model-level artifact rather than creating a separate final artifact.
 
 Generated specs carry a `generator` stamp (tool, intent, content hash).
 `bench run` verifies the hash and prints the provenance; reports and the

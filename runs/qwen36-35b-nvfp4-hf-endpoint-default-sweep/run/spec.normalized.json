@@ -1,0 +1,461 @@
+{
+  "version": "1",
+  "name": "qwen36-35b-nvfp4-hf-endpoint-default-sweep",
+  "description": "Default active-context/concurrency sweep against the deployed Hugging Face Inference Endpoint for nvidia/Qwen3.6-35B-A3B-NVFP4.",
+  "model": "/repository",
+  "engines": [
+    {
+      "name": "hf-inference-endpoint",
+      "type": "openai-compatible",
+      "managed": false,
+      "endpoint_base_url": "https://ugmgglehlpy403um.us-east-2.aws.endpoints.huggingface.cloud"
+    }
+  ],
+  "runner": {
+    "vllm_command": "vllm",
+    "vllm_bench_command": "vllm",
+    "one_awake_profile": true,
+    "stop_managed_on_exit": false,
+    "append_timestamp_to_run": true,
+    "adaptive": {
+      "min_throughput_gain_pct": 10,
+      "max_concurrency_factor": 2
+    }
+  },
+  "safety": {
+    "min_mem_available_gib": 1,
+    "poll_interval_millis": 1000,
+    "startup_timeout_sec": 300,
+    "workload_timeout_sec": 7200,
+    "http_timeout_sec": 300
+  },
+  "warmup": {
+    "enabled": false
+  },
+  "profiles": [
+    {
+      "name": "hf-qwen36-64k",
+      "engine": "hf-inference-endpoint",
+      "model": "/repository",
+      "host": "127.0.0.1",
+      "port": 0,
+      "endpoint_base_url": "https://ugmgglehlpy403um.us-east-2.aws.endpoints.huggingface.cloud",
+      "managed": false,
+      "health_path": "/health",
+      "serve": {},
+      "max_model_len": 65536,
+      "max_num_seqs": 16,
+      "max_num_batched_tokens": 8192,
+      "kv_cache_dtype": "fp8",
+      "enable_prefix_caching": true
+    }
+  ],
+  "workloads": [
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 4031,
+      "random_output_len": 1,
+      "random_range_ratio": "0",
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+      "name": "prefill-4k",
+      "phase": "prefill",
+      "context_target": 4096,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "traffic": {},
+      "stream": true,
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 3008,
+      "random_output_len": 1024,
+      "random_range_ratio": "0",
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+      "name": "decode-4k",
+      "phase": "decode",
+      "context_target": 4096,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "traffic": {},
+      "stream": true,
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 8063,
+      "random_output_len": 1,
+      "random_range_ratio": "0",
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+      "name": "prefill-8k",
+      "phase": "prefill",
+      "context_target": 8192,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "traffic": {},
+      "stream": true,
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 7040,
+      "random_output_len": 1024,
+      "random_range_ratio": "0",
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+      "name": "decode-8k",
+      "phase": "decode",
+      "context_target": 8192,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "traffic": {},
+      "stream": true,
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 16127,
+      "random_output_len": 1,
+      "random_range_ratio": "0",
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+      "name": "prefill-16k",
+      "phase": "prefill",
+      "context_target": 16384,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "traffic": {},
+      "stream": true,
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 15104,
+      "random_output_len": 1024,
+      "random_range_ratio": "0",
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+      "name": "decode-16k",
+      "phase": "decode",
+      "context_target": 16384,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "traffic": {},
+      "stream": true,
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 32255,
+      "random_output_len": 1,
+      "random_range_ratio": "0",
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+      "name": "prefill-32k",
+      "phase": "prefill",
+      "context_target": 32768,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "traffic": {},
+      "stream": true,
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 31232,
+      "random_output_len": 1024,
+      "random_range_ratio": "0",
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+      "name": "decode-32k",
+      "phase": "decode",
+      "context_target": 32768,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "traffic": {},
+      "stream": true,
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 64511,
+      "random_output_len": 1,
+      "random_range_ratio": "0",
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+      "name": "prefill-64k",
+      "phase": "prefill",
+      "context_target": 65536,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "traffic": {},
+      "stream": true,
+      "ignore_eos": true,
+      "temperature": 0
+    },
+    {
+      "backend": "openai-chat",
+      "endpoint": "/v1/chat/completions",
+      "dataset_name": "random",
+      "request_rate": "inf",
+      "seed": 0,
+      "random_input_len": 63488,
+      "random_output_len": 1024,
+      "random_range_ratio": "0",
+      "extra_body": "{\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+      "name": "decode-64k",
+      "phase": "decode",
+      "context_target": 65536,
+      "context_semantics": "active",
+      "load_generator": "localperf_http",
+      "dataset": {
+        "prepared": {}
+      },
+      "request": {},
+      "load": {},
+      "profiles": [
+        "hf-qwen36-64k"
+      ],
+      "num_prompts": 0,
+      "prompts_per_user": 2,
+      "repeats": 1,
+      "max_concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "traffic": {},
+      "stream": true,
+      "ignore_eos": true,
+      "temperature": 0
+    }
+  ],
+  "generator": {
+    "tool": "localperf sweep plan",
+    "version": "1",
+    "intent": {
+      "model": "/repository",
+      "contexts": [
+        4096,
+        8192,
+        16384,
+        32768,
+        65536
+      ],
+      "concurrency": [
+        1,
+        4,
+        8,
+        16,
+        32
+      ],
+      "repeats": 1,
+      "prompts_per_user": 2,
+      "min_mem_available_gib": 1,
+      "base_port": 8100
+    },
+    "content_hash": "63ab36afd6559158f68d1bd324d4aad040b4928b63e9da859635cff4c6d2c941"
+  }
+}

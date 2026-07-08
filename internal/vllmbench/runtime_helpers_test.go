@@ -127,6 +127,23 @@ func TestParseMeminfoErrorBranches(t *testing.T) {
 	}
 }
 
+func TestParseDarwinVMStat(t *testing.T) {
+	data := []byte(`Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               10.
+Pages active:                             99.
+Pages inactive:                           20.
+Pages speculative:                         5.
+Pages purgeable:                           1.
+`)
+	available, err := parseDarwinVMStat(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if available != 36*16384 {
+		t.Fatalf("available bytes = %d, want %d", available, 36*16384)
+	}
+}
+
 func TestCheckMemoryEventWritesSuccessAndFailure(t *testing.T) {
 	original := checkMemoryFloor
 	defer func() { checkMemoryFloor = original }()

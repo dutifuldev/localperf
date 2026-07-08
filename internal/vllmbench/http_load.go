@@ -514,6 +514,7 @@ func (client openAIHTTPClient) sendRequest(ctx context.Context, endpoint string,
 		return httpLoadResponse{}, newHTTPLoadFailure("request_create", "", err.Error(), time.Now().UTC(), firstByteAt)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	client.applyAuthHeader(req)
 	resp, err := client.client.Do(req)
 	if err != nil {
 		return httpLoadResponse{}, newHTTPLoadFailure("request_send", "", err.Error(), time.Now().UTC(), firstByteAt)
@@ -575,6 +576,7 @@ func (client openAIHTTPClient) sendStreamingRequest(ctx context.Context, endpoin
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	client.applyAuthHeader(req)
 	resp, err := client.client.Do(req)
 	if err != nil {
 		return nil, newHTTPLoadFailure("request_send", "", err.Error(), time.Now().UTC(), firstByteAt)
@@ -591,6 +593,42 @@ func (client openAIHTTPClient) sendStreamingRequest(ctx context.Context, endpoin
 	}
 	stream.firstByteAt = firstByteAt
 	return stream, nil
+}
+
+func (client openAIHTTPClient) applyAuthHeader(req *http.Request) {
+	token := client.bearerToken()
+	if token == "" {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+}
+
+func (client openAIHTTPClient) bearerToken() string {
+	for _, value := range []string{
+		client.profile.Env["OPENAI_API_KEY"],
+		client.profile.Env["HF_TOKEN"],
+		os.Getenv("OPENAI_API_KEY"),
+		os.Getenv("HF_TOKEN"),
+	} {
+		if token := normalizeBearerToken(value); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+func normalizeBearerToken(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if token, ok := strings.CutPrefix(value, "Bearer "); ok {
+		return strings.TrimSpace(token)
+	}
+	if token, ok := strings.CutPrefix(value, "bearer "); ok {
+		return strings.TrimSpace(token)
+	}
+	return value
 }
 
 func (stream *httpStreamResult) consume(body io.Reader) *httpLoadFailure {

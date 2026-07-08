@@ -1,0 +1,24 @@
+{
+  "model": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+  "checked_at": "2026-07-07T15:54:51+00:00",
+  "source": {
+    "model_api": "https://huggingface.co/api/models/nvidia/Qwen3.6-35B-A3B-NVFP4?expand=inferenceProviderMapping",
+    "pricing_doc": "https://huggingface.co/docs/inference-providers/pricing",
+    "model_page": "https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4"
+  },
+  "product": "Hugging Face Inference Providers routed requests",
+  "billing_notes": [
+    "Hugging Face Inference Providers routed requests are billed at provider pass-through rates with no additional Hugging Face markup, according to the pricing documentation.",
+    "Pricing is model/provider-specific when a routed provider mapping exists for the model.",
+    "This exact model currently has an empty inferenceProviderMapping from the Hugging Face model API, so there are no routed-provider prices to record for it.",
+    "This does not describe the dedicated Hugging Face Inference Endpoint used for our benchmark; that endpoint is a separate product billed by provisioned hardware/runtime time."
+  ],
+  "inference_provider_mapping": {},
+  "prices": [],
+  "status": "no_routed_inference_provider_prices_for_exact_model",
+  "model_page_available_inference_providers": [],
+  "model_tags_relevant_to_deploy": [
+    "deploy:azure",
+    "region:us"
+  ]
+}

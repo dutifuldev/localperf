@@ -1,0 +1,8 @@
+{
+  "completed": 128,
+  "duration_seconds": 89.32794825,
+  "failed": 0,
+  "load_generator": "localperf_http",
+  "output_throughput": 1468.5502664301905,
+  "request_output_throughput_stddev": 15.781198984422769
+}
