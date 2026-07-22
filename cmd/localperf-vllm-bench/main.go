@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/dutifuldev/localperf/internal/benchcli"
+	"github.com/osolmaz/localperf/internal/benchcli"
 )
 
 func main() {

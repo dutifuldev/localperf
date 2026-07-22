@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dutifuldev/localperf/internal/bench"
-	"github.com/dutifuldev/localperf/internal/collections"
+	"github.com/osolmaz/localperf/internal/bench"
+	"github.com/osolmaz/localperf/internal/collections"
 )
 
 type CommandSpec struct {

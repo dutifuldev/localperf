@@ -20,8 +20,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/dutifuldev/localperf/internal/report"
-	"github.com/dutifuldev/localperf/internal/reportmodel"
+	"github.com/osolmaz/localperf/internal/report"
+	"github.com/osolmaz/localperf/internal/reportmodel"
 )
 
 const defaultAddr = "127.0.0.1:0"

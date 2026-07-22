@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dutifuldev/localperf/internal/report"
+	"github.com/osolmaz/localperf/internal/report"
 )
 
 func TestBuildMergesRunsButSplitsActiveContexts(t *testing.T) {

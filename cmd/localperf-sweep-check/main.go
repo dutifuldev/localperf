@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dutifuldev/localperf/internal/collections"
+	"github.com/osolmaz/localperf/internal/collections"
 )
 
 type config struct {

@@ -20,11 +20,11 @@ localperf view runs/models/<model-slug>.sqlite
 Install with Go:
 
 ```sh
-go install github.com/dutifuldev/localperf/cmd/localperf@v0.1.0
+go install github.com/osolmaz/localperf/cmd/localperf@v0.1.0
 ```
 
 Or download a prebuilt binary (linux/darwin, amd64/arm64) from the
-[latest release](https://github.com/dutifuldev/localperf/releases/latest).
+[latest release](https://github.com/osolmaz/localperf/releases/latest).
 From a repo checkout, `go run ./cmd/localperf` works everywhere `localperf`
 appears below.
 

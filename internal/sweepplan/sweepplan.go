@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dutifuldev/localperf/internal/vllmbench"
+	"github.com/osolmaz/localperf/internal/vllmbench"
 )
 
 type PlanRequest struct {

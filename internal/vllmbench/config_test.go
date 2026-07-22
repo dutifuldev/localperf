@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dutifuldev/localperf/internal/artifact"
+	"github.com/osolmaz/localperf/internal/artifact"
 )
 
 func TestBuildPlanAndBenchCommand(t *testing.T) {

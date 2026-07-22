@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dutifuldev/localperf/internal/artifact"
+	"github.com/osolmaz/localperf/internal/artifact"
 )
 
 // TestModelLevelArtifactAppendsRuns checks the model-level accumulation

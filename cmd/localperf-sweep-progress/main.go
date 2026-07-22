@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dutifuldev/localperf/internal/collections"
+	"github.com/osolmaz/localperf/internal/collections"
 )
 
 type row struct {

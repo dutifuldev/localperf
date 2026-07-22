@@ -1,4 +1,4 @@
-module github.com/dutifuldev/localperf
+module github.com/osolmaz/localperf
 
 go 1.26
 

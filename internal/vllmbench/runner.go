@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dutifuldev/localperf/internal/artifact"
+	"github.com/osolmaz/localperf/internal/artifact"
 )
 
 type RunOptions struct {

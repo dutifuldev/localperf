@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dutifuldev/localperf/internal/vllmbench"
+	"github.com/osolmaz/localperf/internal/vllmbench"
 )
 
 // TestGeneratedSpecRoundTripsValidation is the guarantee that the generator

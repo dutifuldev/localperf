@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/dutifuldev/localperf/internal/collections"
+	"github.com/osolmaz/localperf/internal/collections"
 )
 
 func TestParseResultFileVariants(t *testing.T) {

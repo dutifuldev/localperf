@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dutifuldev/localperf/internal/artifact"
+	"github.com/osolmaz/localperf/internal/artifact"
 )
 
 func TestRenderSQLiteHTMLReportEscapesAndIsStandalone(t *testing.T) {

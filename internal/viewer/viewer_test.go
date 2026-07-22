@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dutifuldev/localperf/internal/artifact"
-	"github.com/dutifuldev/localperf/internal/reportmodel"
+	"github.com/osolmaz/localperf/internal/artifact"
+	"github.com/osolmaz/localperf/internal/reportmodel"
 )
 
 func TestNewHandlerServesTabbedReports(t *testing.T) {

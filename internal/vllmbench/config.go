@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dutifuldev/localperf/internal/artifact"
+	"github.com/osolmaz/localperf/internal/artifact"
 
-	"github.com/dutifuldev/localperf/internal/bench"
-	"github.com/dutifuldev/localperf/internal/collections"
+	"github.com/osolmaz/localperf/internal/bench"
+	"github.com/osolmaz/localperf/internal/collections"
 )
 
 const DefaultHealthPath = "/v1/models"

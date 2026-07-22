@@ -14,12 +14,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dutifuldev/localperf/internal/artifact"
-	"github.com/dutifuldev/localperf/internal/collections"
-	"github.com/dutifuldev/localperf/internal/report"
-	"github.com/dutifuldev/localperf/internal/sweepplan"
-	"github.com/dutifuldev/localperf/internal/viewer"
-	"github.com/dutifuldev/localperf/internal/vllmbench"
+	"github.com/osolmaz/localperf/internal/artifact"
+	"github.com/osolmaz/localperf/internal/collections"
+	"github.com/osolmaz/localperf/internal/report"
+	"github.com/osolmaz/localperf/internal/sweepplan"
+	"github.com/osolmaz/localperf/internal/viewer"
+	"github.com/osolmaz/localperf/internal/vllmbench"
 )
 
 const defaultHTTPLoadMinMemAvailableGiB = 40.0

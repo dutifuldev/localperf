@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dutifuldev/localperf/internal/bench"
+	"github.com/osolmaz/localperf/internal/bench"
 )
 
 type DatasetSpec struct {

@@ -3,7 +3,7 @@ package sweepplan
 import (
 	"testing"
 
-	"github.com/dutifuldev/localperf/internal/vllmbench"
+	"github.com/osolmaz/localperf/internal/vllmbench"
 )
 
 func TestPlanStampsVerifiableProvenance(t *testing.T) {

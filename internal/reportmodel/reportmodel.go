@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dutifuldev/localperf/internal/report"
+	"github.com/osolmaz/localperf/internal/report"
 )
 
 type Document struct {
