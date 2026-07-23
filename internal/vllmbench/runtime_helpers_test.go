@@ -144,6 +144,64 @@ Pages purgeable:                           1.
 	}
 }
 
+func TestReadDarwinMemorySnapshotWith(t *testing.T) {
+	vmStat := []byte("Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 262144.\n")
+	snapshot, err := readDarwinMemorySnapshotWith(
+		func() (uint64, error) { return 8 << 30, nil },
+		func() ([]byte, error) { return vmStat, nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.MemTotalGiB != 8 || snapshot.MemAvailableGiB != 1 {
+		t.Fatalf("snapshot = %+v, want 8 GiB total and 1 GiB available", snapshot)
+	}
+
+	totalErr := errors.New("total memory failed")
+	_, err = readDarwinMemorySnapshotWith(
+		func() (uint64, error) { return 0, totalErr },
+		func() ([]byte, error) { return vmStat, nil },
+	)
+	if !errors.Is(err, totalErr) {
+		t.Fatalf("total memory error = %v, want %v", err, totalErr)
+	}
+
+	vmStatErr := errors.New("vm_stat failed")
+	_, err = readDarwinMemorySnapshotWith(
+		func() (uint64, error) { return 8 << 30, nil },
+		func() ([]byte, error) { return nil, vmStatErr },
+	)
+	if !errors.Is(err, vmStatErr) {
+		t.Fatalf("vm_stat error = %v, want %v", err, vmStatErr)
+	}
+
+	_, err = readDarwinMemorySnapshotWith(
+		func() (uint64, error) { return 8 << 30, nil },
+		func() ([]byte, error) { return []byte("invalid vm_stat output"), nil },
+	)
+	if err == nil {
+		t.Fatal("invalid vm_stat output returned no error")
+	}
+}
+
+func TestParseDarwinTotalMemoryBytes(t *testing.T) {
+	total, err := parseDarwinTotalMemoryBytes([]byte("8589934592\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 8<<30 {
+		t.Fatalf("total bytes = %d, want %d", total, uint64(8<<30))
+	}
+
+	commandErr := errors.New("sysctl failed")
+	if _, err := parseDarwinTotalMemoryBytes(nil, commandErr); !errors.Is(err, commandErr) {
+		t.Fatalf("command error = %v, want %v", err, commandErr)
+	}
+	if _, err := parseDarwinTotalMemoryBytes([]byte("not-a-number"), nil); err == nil {
+		t.Fatal("invalid total memory returned no error")
+	}
+}
+
 func TestCheckMemoryEventWritesSuccessAndFailure(t *testing.T) {
 	original := checkMemoryFloor
 	defer func() { checkMemoryFloor = original }()
