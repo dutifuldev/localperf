@@ -76,11 +76,21 @@ func ParseMeminfo(reader io.Reader) (MemorySnapshot, error) {
 }
 
 func readDarwinMemorySnapshot() (MemorySnapshot, error) {
-	totalBytes, err := darwinTotalMemoryBytes()
+	return readDarwinMemorySnapshotWith(
+		darwinTotalMemoryBytes,
+		func() ([]byte, error) { return exec.Command("vm_stat").Output() },
+	)
+}
+
+func readDarwinMemorySnapshotWith(
+	readTotal func() (uint64, error),
+	readVMStat func() ([]byte, error),
+) (MemorySnapshot, error) {
+	totalBytes, err := readTotal()
 	if err != nil {
 		return MemorySnapshot{}, err
 	}
-	vmStat, err := exec.Command("vm_stat").Output()
+	vmStat, err := readVMStat()
 	if err != nil {
 		return MemorySnapshot{}, err
 	}
@@ -95,9 +105,12 @@ func readDarwinMemorySnapshot() (MemorySnapshot, error) {
 }
 
 func darwinTotalMemoryBytes() (uint64, error) {
-	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
-	if err != nil {
-		return 0, err
+	return parseDarwinTotalMemoryBytes(exec.Command("sysctl", "-n", "hw.memsize").Output())
+}
+
+func parseDarwinTotalMemoryBytes(out []byte, commandErr error) (uint64, error) {
+	if commandErr != nil {
+		return 0, commandErr
 	}
 	total, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
 	if err != nil {
