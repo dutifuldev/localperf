@@ -5,10 +5,10 @@ mode="${LOCALPERF_MUTATION_MODE:-scan}"
 
 case "$mode" in
   scan)
-    go run github.com/osolmaz/slophammer/go/cmd/slophammer-go@v0.4.0 mutate . --scan
+    go run github.com/osolmaz/slophammer/go/cmd/slophammer-go@v0.4.1 mutate . --scan
     ;;
   full)
-    go run github.com/osolmaz/slophammer/go/cmd/slophammer-go@v0.4.0 mutate .
+    go run github.com/osolmaz/slophammer/go/cmd/slophammer-go@v0.4.1 mutate .
     ;;
   *)
     echo "unknown LOCALPERF_MUTATION_MODE: $mode" >&2

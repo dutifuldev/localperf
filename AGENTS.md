@@ -8,7 +8,7 @@ Before finishing code changes, run:
 go test ./...
 go vet ./...
 npx -y @simpledoc/simpledoc check
-go run github.com/osolmaz/slophammer/go/cmd/slophammer-go@v0.4.0 check .
+go run github.com/osolmaz/slophammer/go/cmd/slophammer-go@v0.4.1 check .
 ```
 
 The default CI path is non-mutating. `scripts/check-crap.sh` and
